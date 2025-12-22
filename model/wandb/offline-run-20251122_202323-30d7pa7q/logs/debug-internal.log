@@ -1,0 +1,141 @@
+2025-11-22 20:23:23,900 INFO    StreamThr :273893 [internal.py:wandb_internal():86] W&B internal server running at pid: 273893, started at: 2025-11-22 20:23:23.894545
+2025-11-22 20:23:23,903 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: status
+2025-11-22 20:23:23,915 INFO    WriterThread:273893 [datastore.py:open_for_write():85] open: /home/nklotts/tencdm/model/wandb/offline-run-20251122_202323-30d7pa7q/run-30d7pa7q.wandb
+2025-11-22 20:23:24,012 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: run_start
+2025-11-22 20:23:24,034 ERROR   HandlerThread:273893 [gpu.py:is_available():339] Error initializing NVML: Driver Not Loaded
+2025-11-22 20:23:24,035 DEBUG   HandlerThread:273893 [system_info.py:__init__():31] System info init
+2025-11-22 20:23:24,036 DEBUG   HandlerThread:273893 [system_info.py:__init__():46] System info init done
+2025-11-22 20:23:24,036 INFO    HandlerThread:273893 [system_monitor.py:start():181] Starting system monitor
+2025-11-22 20:23:24,036 INFO    SystemMonitor:273893 [system_monitor.py:_start():145] Starting system asset monitoring threads
+2025-11-22 20:23:24,036 INFO    HandlerThread:273893 [system_monitor.py:probe():201] Collecting system info
+2025-11-22 20:23:24,037 INFO    SystemMonitor:273893 [interfaces.py:start():190] Started cpu monitoring
+2025-11-22 20:23:24,038 INFO    SystemMonitor:273893 [interfaces.py:start():190] Started disk monitoring
+2025-11-22 20:23:24,038 INFO    SystemMonitor:273893 [interfaces.py:start():190] Started memory monitoring
+2025-11-22 20:23:24,039 INFO    SystemMonitor:273893 [interfaces.py:start():190] Started network monitoring
+2025-11-22 20:23:24,055 DEBUG   HandlerThread:273893 [system_info.py:probe():195] Probing system
+2025-11-22 20:23:24,058 DEBUG   HandlerThread:273893 [system_info.py:_probe_git():180] Probing git
+2025-11-22 20:23:24,092 DEBUG   HandlerThread:273893 [system_info.py:_probe_git():188] Probing git done
+2025-11-22 20:23:24,092 DEBUG   HandlerThread:273893 [system_info.py:probe():240] Probing system done
+2025-11-22 20:23:24,092 DEBUG   HandlerThread:273893 [system_monitor.py:probe():210] {'os': 'Linux-3.10.0-1160.59.1.el7.x86_64-x86_64-with-glibc2.17', 'python': '3.9.23', 'heartbeatAt': '2025-11-22T17:23:24.055437', 'startedAt': '2025-11-22T17:23:23.842845', 'docker': None, 'cuda': None, 'args': (), 'state': 'running', 'program': '/home/nklotts/tencdm/model/train_conditional_encoder.py', 'codePath': 'model/train_conditional_encoder.py', 'git': {'remote': 'https://github.com/M0RJIQUE/tencdm.git', 'commit': 'b8c04cdfa3e50cefdff8102018efc8beb600cfbc'}, 'email': None, 'root': '/home/nklotts/tencdm', 'host': 'sms', 'username': 'nklotts', 'executable': '/home/nklotts/.conda/envs/pgwtd/bin/python', 'cpu_count': 24, 'cpu_count_logical': 48, 'cpu_freq': {'current': 2300.0, 'min': 0.0, 'max': 0.0}, 'cpu_freq_per_core': [{'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}, {'current': 2300.0, 'min': 0.0, 'max': 0.0}], 'disk': {'total': 499.751953125, 'used': 235.9743423461914}, 'memory': {'total': 376.3468360900879}}
+2025-11-22 20:23:24,093 INFO    HandlerThread:273893 [system_monitor.py:probe():211] Finished collecting system info
+2025-11-22 20:23:24,093 INFO    HandlerThread:273893 [system_monitor.py:probe():214] Publishing system info
+2025-11-22 20:23:24,093 DEBUG   HandlerThread:273893 [system_info.py:_save_pip():51] Saving list of pip packages installed into the current environment
+2025-11-22 20:23:24,097 DEBUG   HandlerThread:273893 [system_info.py:_save_pip():67] Saving pip packages done
+2025-11-22 20:23:24,098 DEBUG   HandlerThread:273893 [system_info.py:_save_conda():74] Saving list of conda packages installed into the current environment
+2025-11-22 20:23:24,121 ERROR   HandlerThread:273893 [system_info.py:_save_conda():85] Error saving conda packages: [Errno 2] No such file or directory: 'conda'
+Traceback (most recent call last):
+  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/wandb/sdk/internal/system/system_info.py", line 81, in _save_conda
+    subprocess.call(
+  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/subprocess.py", line 349, in call
+    with Popen(*popenargs, **kwargs) as p:
+  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/subprocess.py", line 951, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/subprocess.py", line 1837, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'conda'
+2025-11-22 20:23:24,153 DEBUG   HandlerThread:273893 [system_info.py:_save_conda():86] Saving conda packages done
+2025-11-22 20:23:24,158 INFO    HandlerThread:273893 [system_monitor.py:probe():216] Finished publishing system info
+2025-11-22 20:23:27,942 DEBUG   SenderThread:273893 [sender.py:send():375] send: exit
+2025-11-22 20:23:27,942 INFO    SenderThread:273893 [sender.py:send_exit():598] handling exit code: 1
+2025-11-22 20:23:27,942 INFO    SenderThread:273893 [sender.py:send_exit():600] handling runtime: 3
+2025-11-22 20:23:27,945 INFO    SenderThread:273893 [sender.py:_save_file():1378] saving file wandb-summary.json with policy end
+2025-11-22 20:23:27,945 INFO    SenderThread:273893 [sender.py:send_exit():606] send defer
+2025-11-22 20:23:27,946 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,946 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 0
+2025-11-22 20:23:27,946 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,947 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 0
+2025-11-22 20:23:27,947 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 1
+2025-11-22 20:23:27,947 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,947 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 1
+2025-11-22 20:23:27,948 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,948 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 1
+2025-11-22 20:23:27,948 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 2
+2025-11-22 20:23:27,948 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,948 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 2
+2025-11-22 20:23:27,949 INFO    HandlerThread:273893 [system_monitor.py:finish():190] Stopping system monitor
+2025-11-22 20:23:27,950 INFO    HandlerThread:273893 [interfaces.py:finish():202] Joined cpu monitor
+2025-11-22 20:23:27,950 DEBUG   SystemMonitor:273893 [system_monitor.py:_start():159] Starting system metrics aggregation loop
+2025-11-22 20:23:27,950 INFO    HandlerThread:273893 [interfaces.py:finish():202] Joined disk monitor
+2025-11-22 20:23:27,951 DEBUG   SystemMonitor:273893 [system_monitor.py:_start():166] Finished system metrics aggregation loop
+2025-11-22 20:23:27,951 INFO    HandlerThread:273893 [interfaces.py:finish():202] Joined memory monitor
+2025-11-22 20:23:27,951 DEBUG   SystemMonitor:273893 [system_monitor.py:_start():170] Publishing last batch of metrics
+2025-11-22 20:23:27,952 INFO    HandlerThread:273893 [interfaces.py:finish():202] Joined network monitor
+2025-11-22 20:23:27,954 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,954 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 2
+2025-11-22 20:23:27,955 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 3
+2025-11-22 20:23:27,955 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,955 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 3
+2025-11-22 20:23:27,955 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,956 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 3
+2025-11-22 20:23:27,956 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 4
+2025-11-22 20:23:27,956 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,956 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 4
+2025-11-22 20:23:27,957 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,957 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 4
+2025-11-22 20:23:27,957 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 5
+2025-11-22 20:23:27,957 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,957 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 5
+2025-11-22 20:23:27,958 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,958 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 5
+2025-11-22 20:23:27,958 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 6
+2025-11-22 20:23:27,958 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,958 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 6
+2025-11-22 20:23:27,959 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,959 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 6
+2025-11-22 20:23:27,959 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 7
+2025-11-22 20:23:27,959 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: status_report
+2025-11-22 20:23:27,960 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,960 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 7
+2025-11-22 20:23:27,960 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: status_report
+2025-11-22 20:23:27,960 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,961 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 7
+2025-11-22 20:23:27,961 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 8
+2025-11-22 20:23:27,961 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,961 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 8
+2025-11-22 20:23:27,962 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,962 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 8
+2025-11-22 20:23:27,962 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 9
+2025-11-22 20:23:27,962 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,962 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 9
+2025-11-22 20:23:27,963 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,963 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 9
+2025-11-22 20:23:27,963 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 10
+2025-11-22 20:23:27,963 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,963 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 10
+2025-11-22 20:23:27,964 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,964 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 10
+2025-11-22 20:23:27,964 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 11
+2025-11-22 20:23:27,964 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,965 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 11
+2025-11-22 20:23:27,965 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,965 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 11
+2025-11-22 20:23:27,965 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 12
+2025-11-22 20:23:27,965 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,966 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 12
+2025-11-22 20:23:27,966 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,966 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 12
+2025-11-22 20:23:27,966 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 13
+2025-11-22 20:23:27,967 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,967 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 13
+2025-11-22 20:23:27,967 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,967 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 13
+2025-11-22 20:23:27,968 INFO    SenderThread:273893 [sender.py:transition_state():626] send defer: 14
+2025-11-22 20:23:27,968 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: defer
+2025-11-22 20:23:27,969 DEBUG   SenderThread:273893 [sender.py:send():375] send: final
+2025-11-22 20:23:27,969 INFO    HandlerThread:273893 [handler.py:handle_request_defer():170] handle defer: 14
+2025-11-22 20:23:27,969 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: defer
+2025-11-22 20:23:27,970 INFO    SenderThread:273893 [sender.py:send_request_defer():622] handle sender defer: 14
+2025-11-22 20:23:27,970 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: poll_exit
+2025-11-22 20:23:27,971 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: poll_exit
+2025-11-22 20:23:27,971 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: poll_exit
+2025-11-22 20:23:27,972 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: server_info
+2025-11-22 20:23:27,972 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: poll_exit
+2025-11-22 20:23:27,973 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: get_summary
+2025-11-22 20:23:27,974 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: sampled_history
+2025-11-22 20:23:27,974 DEBUG   SenderThread:273893 [sender.py:send_request():402] send_request: server_info
+2025-11-22 20:23:27,975 INFO    MainThread:273893 [wandb_run.py:_footer_history_summary_info():3476] rendering history
+2025-11-22 20:23:27,975 INFO    MainThread:273893 [wandb_run.py:_footer_history_summary_info():3508] rendering summary
+2025-11-22 20:23:27,975 DEBUG   HandlerThread:273893 [handler.py:handle_request():144] handle_request: shutdown
+2025-11-22 20:23:27,976 INFO    HandlerThread:273893 [handler.py:finish():845] shutting down handler
+2025-11-22 20:23:28,974 INFO    WriterThread:273893 [datastore.py:close():298] close: /home/nklotts/tencdm/model/wandb/offline-run-20251122_202323-30d7pa7q/run-30d7pa7q.wandb
+2025-11-22 20:23:28,975 INFO    SenderThread:273893 [sender.py:finish():1550] shutting down sender
