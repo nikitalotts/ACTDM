@@ -8,23 +8,23 @@ class EncNormalizer(nn.Module):
     def __init__(self, enc_mean_path: str, enc_std_path: str):
         super().__init__()
         location = 'cuda' if torch.cuda.is_available() else 'cpu'
-        # self.enc_mean = nn.Parameter(
-        #     torch.load(enc_mean_path, map_location=location)[None, None, :],
-        #     requires_grad=False
-        # )
-        # self.enc_std = nn.Parameter(
-        #     torch.load(enc_std_path, map_location=location)[None, None, :],
-        #     requires_grad=False
-        # )
         self.enc_mean = nn.Parameter(
-            torch.tensor([1]),
+            torch.load(enc_mean_path, map_location=location)[None, None, :],
             requires_grad=False
         )
         self.enc_std = nn.Parameter(
-            torch.tensor([1]),
+            torch.load(enc_std_path, map_location=location)[None, None, :],
             requires_grad=False
         )
-        m=1
+        # self.enc_mean = nn.Parameter(
+        #     torch.tensor([1]),
+        #     requires_grad=False
+        # )
+        # self.enc_std = nn.Parameter(
+        #     torch.tensor([1]),
+        #     requires_grad=False
+        # )
+        # m=1
 
     def forward(self, *args, **kwargs):
         return nn.Identity()(*args, **kwargs)

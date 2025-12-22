@@ -177,7 +177,7 @@ def parse():
     parser.add_argument("--local-rank", type=int, default=None)
     parser.add_argument("--swap_cfg_coef", type=float, default=0.)
     parser.add_argument("--scheduler", type=str, default='sd')
-    parser.add_argument("--coef_d", type=str, default=9)
+    parser.add_argument("--coef_d", type=float, default=9)
     parser.add_argument("--emb", type=bool, default=False)
     parser.add_argument("--mode", type=str, default="transformer")
     parser.add_argument(

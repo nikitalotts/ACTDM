@@ -46,7 +46,7 @@ class Encoder(torch.nn.Module):
     ):
         if self.emb:
             return (self.embeddings[input_ids] - self.emb_mean.cuda()[None, :, :]) / self.emb_std.cuda()[None, :, :]
-        
+
         sequence_output = self.encoder(
             input_ids=input_ids, attention_mask=attention_mask
         ).last_hidden_state

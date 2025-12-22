@@ -40,7 +40,12 @@ class BertDecoder(nn.Module):
         # Явно преобразуем вход в float
         if x.dtype != torch.float:
             x = x.float()
-        
+
+        if 'attention_mask' in kwargs and kwargs['attention_mask'] is not None:
+            kwargs['attention_mask'] = self.get_extended_attention_mask(
+                kwargs['attention_mask'], dtype=x.dtype
+            )
+
         if kwargs.get('encoder_attention_mask', None) is not None:
             kwargs['encoder_attention_mask'] = self.get_extended_attention_mask(kwargs['encoder_attention_mask'],
                                                                            dtype=x.dtype)
@@ -55,7 +60,7 @@ class Decoder(nn.Module):
         super().__init__()
 
         self.num_hidden_layers = decoder_config.num_hidden_layers
-        
+
         arch_config = deepcopy(diffusion_config)
         arch_config.is_conditional = decoder_config.is_conditional
         self.blocks = torch.nn.ModuleList(
@@ -67,7 +72,7 @@ class Decoder(nn.Module):
         # Явно преобразуем вход в float
         if x.dtype != torch.float:
             x = x.float()
-            
+
         extended_cond_mask = self.get_extended_attention_mask(cond_mask)
         for _, block in enumerate(self.blocks):
             x = block(
@@ -77,7 +82,7 @@ class Decoder(nn.Module):
                 encoder_attention_mask=extended_cond_mask
             )
         x = self.fc(x)
-        return x        
+        return x
 
     def get_extended_attention_mask(self, attention_mask):
         if attention_mask is None:
