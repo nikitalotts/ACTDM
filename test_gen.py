@@ -17,7 +17,7 @@ def create_test_config(device='cpu'):
     config.decoder.mode = "transformer"
     config.decoder.num_hidden_layers = 3
     config.decoder.is_conditional = False
-    config.decoder.decoder_path = "datasets/rocstories/decoder-bert-base-cased-80-transformer.pth"
+    config.decoder.decoder_path = "datasets/rocstories/decoder_rocstories_bert_cased_spt_3l_transformer_0_15x_t_noise.pth"
     
     config.se_config = create_se_config()
     
@@ -33,8 +33,8 @@ def create_test_config(device='cpu'):
     
     config.training = ConfigDict()
     config.training.checkpoints_folder = "checkpoints"
-    config.training.checkpoints_prefix = "1tencdm-bert-base-cased-384-0.0002-rocstories-cfg=0.0"
-    config.training.checkpoint_name = "last"
+    config.training.checkpoints_prefix = "tencdm-bert-base-cased-384-0.0002-rocstories-cfg=0.0"
+    config.training.checkpoint_name = "rocstory-bert-base-cased-sd-9-spt_100000"
     
     config.validation = ConfigDict()
     config.validation.batch_size = 4
@@ -113,7 +113,7 @@ def full_generation_test(device='cpu'):
     
     try:
         from model.encoder import Encoder
-        from model.decoder import BertDecoder
+        from model.decoder import Decoder
         from model.score_estimator import ScoreEstimatorEMB
         from utils.ema_model import ExponentialMovingAverage
         
@@ -139,7 +139,7 @@ def full_generation_test(device='cpu'):
         
         decoder_state = torch.load(config.decoder.decoder_path, map_location=device, weights_only=False)
         
-        decoder = BertDecoder(
+        decoder = Decoder(
             decoder_config=config.decoder,
             diffusion_config=config.se_config
         )

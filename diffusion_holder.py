@@ -31,7 +31,7 @@ from data.util import tokenize, BatchEncoding
 from model.score_estimator import ScoreEstimatorEMB
 from model.encoder import Encoder
 from model.enc_normalizer import EncNormalizer
-from model.decoder import Decoder, BertDecoder
+from model.decoder import BertDecoder #, Decoder
 
 from estimation_utils.util import gather_texts, compute_metric
 from estimation_utils.metrics import compute_metric
@@ -250,7 +250,10 @@ class DiffusionRunner:
 
     def restore_decoder(self):
         decoder_path = self.config.decoder.decoder_path
-        self.decoder.load_state_dict(torch.load(decoder_path)["decoder"])
+        checkpoint = torch.load(decoder_path)
+        decoder_checkpoint = checkpoint["decoder"] if "decoder" in checkpoint else checkpoint
+        print('DECINCH', "decoder" in checkpoint, checkpoint.keys())
+        self.decoder.load_state_dict(decoder_checkpoint)
 
     def switch_to_ema(self) -> None:
         ema = self.ema
@@ -763,6 +766,7 @@ class DiffusionRunner:
         if self.config.is_conditional:
             result_dict["SRC"] = []
 
+        print('Loader size:', len(loader))
         for batch in loader:
             if dist.is_initialized():
                 batch = batch.to(f"cuda:{dist.get_rank()}")
@@ -840,8 +844,28 @@ class DiffusionRunner:
         else:
             cond_x = None
             cond_mask = None
-        output = self.decoder(pred_embeddings, cond_x=cond_x, cond_mask=cond_mask)
+
+        if self.config.decoder.is_conditional and cond_x is not None:
+            # Для conditional decoder - преобразуем в правильные аргументы
+
+            if isinstance(self.decoder, BertDecoder):
+                output = self.decoder(
+                    pred_embeddings,
+                    encoder_hidden_states=cond_x,
+                    encoder_attention_mask=cond_mask
+                )
+            else:
+                output = self.decoder(
+                    pred_embeddings,
+                    cond_x=cond_x,
+                    cond_mask=cond_mask
+                )
+        else:
+            # Для unconditional - просто эмбеддинги
+            output = self.decoder(pred_embeddings)
+
         return output
+
 
     @torch.no_grad()
     def pred_embeddings(

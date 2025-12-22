@@ -1,0 +1,20 @@
+{
+  "config": {
+    "encoder": "bert-base-cased",
+    "checkpoint": "1tencdm-bert-base-cased-384-0.0002-rocstories-cfg=0.0",
+    "num_steps": 50,
+    "num_samples": 10
+  },
+  "texts": [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "had was a riderun row. to a in Riding.run paddle drive nowhere down nowhere ride ridew. behind drive ride paddle let Unable nowhere behind. nowhere. towed let. the. could to drive To and and towed",
+    ""
+  ]
+}
