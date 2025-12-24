@@ -1,0 +1,16 @@
+/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/wandb/apis/public.py:3109: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import parse_version
+/home/nklotts/tencdm/model/enc_normalizer.py:13: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  torch.load(enc_mean_path, map_location=location)[None, None, :],
+/home/nklotts/tencdm/model/enc_normalizer.py:17: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  torch.load(enc_std_path, map_location=location)[None, None, :],
+Traceback (most recent call last):
+  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/home/nklotts/tencdm/train_conditional_encoder.py", line 498, in <module>
+    main()
+  File "/home/nklotts/tencdm/train_conditional_encoder.py", line 468, in main
+    cond_encoder = ConditionalEncoder(config.model.encoder_link, tokenizer).train()
+TypeError: __init__() takes from 1 to 2 positional arguments but 3 were given

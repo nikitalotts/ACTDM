@@ -1,0 +1,25 @@
+Starting script...
+datasets ['rocstories']
+INFO using cuda
+Training on 1 GPU
+config.emb = False
+Training Conditional BERT NSP on rocstories
+=== START TRAIN ===
+Num params: 111263233
+Trainable: 111263233, Total: 111263233
+Batch size: 64
+Getting empty embedding...
+Empty embedding shape: torch.Size([1, 80, 768])
+Getting datasets...
+Datasets loaded
+Optimizer created
+Creating data loaders...
+Train loader length: 1378
+Valid loader length: 157
+Training steps: 4134, Warmup steps: 413
+Scheduler created
+Starting training for 3 epochs...
+
+=== EPOCH 1/3 ===
+Model set to train mode
+Creating tqdm...
