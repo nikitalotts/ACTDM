@@ -53,13 +53,11 @@ def get_datasets(config):
         config,
         dataset_name=config.cond_encoder.dataset,
         split="train",
-        task='train_coniditonal_encoder'
     )
     test_dataset = get_dataset_iter(
         config,
         dataset_name=config.cond_encoder.dataset,
         split="test",
-        task='train_coniditonal_encoder'
     )
     return train_dataset, test_dataset
 
@@ -80,16 +78,16 @@ def save_checkpoint(model, config):
 def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, eval=False, batch_idx=0):
     """
     Один шаг обучения классификатора.
-    
+
     Согласно PDF (Algorithm 2, секция 4.2):
     - x_t^+ - зашумлённое правильное продолжение
     - x_t^- - зашумлённый случайный текст
     - L_cls = -log σ(f^+) - log(1 - σ(f^-))
-    
+
     Это эквивалентно BCE loss:
     L = BCE(f^+, 1) + BCE(f^-, 0)
     """
-    
+
     # Debug: проверка сырых текстов
     if not eval and batch_idx == 0:
         print(f"\n=== RAW TEXT CHECK ===", file=sys.stderr, flush=True)
@@ -156,7 +154,7 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
         print(f"trg mean: {trg_latent.mean():.4f}, std: {trg_latent.std():.4f}", file=sys.stderr, flush=True)
 
     batch_size = src_latent.shape[0]
-    
+
     # Сохраняем src_mask (trg_mask НЕ нужна для консистентности с инференсом)
     src_mask = src["attention_mask"]  # [batch, seq_len]
 
@@ -182,7 +180,7 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
         # Берём CLS токены для анализа
         cls_src = src_latent[:, 0, :]
         cls_trg = trg_latent[:, 0, :]
-        
+
         cos_sim_pos = F.cosine_similarity(cls_src, cls_trg, dim=-1)
         cos_sim_neg = F.cosine_similarity(cls_src, trg_latent[indices][:, 0, :], dim=-1)
 
@@ -194,9 +192,9 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
     # Debug: примеры пар
     if not eval and batch_idx < 3:
         for i in range(min(3, batch_size)):
-            print(f"Pos src: {batch['text_src'][i][:50]}...", file=sys.stderr, flush=True)
-            print(f"Pos trg: {batch['text_trg'][i][:50]}...", file=sys.stderr, flush=True)
-            print(f"Neg trg: {batch['text_trg'][indices[i].item()][:50]}...", file=sys.stderr, flush=True)
+            print(f"Pos src: {batch['text_src'][i]}", file=sys.stderr, flush=True)
+            print(f"Pos trg: {batch['text_trg'][i]}", file=sys.stderr, flush=True)
+            print(f"Neg trg: {batch['text_trg'][indices[i].item()]}", file=sys.stderr, flush=True)
             print("---", file=sys.stderr, flush=True)
 
     # Объединяем positive и negative
@@ -209,38 +207,38 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
 
     # === ЗАШУМЛЕНИЕ (согласно PDF Algorithm 2) ===
     # x_t = sqrt(α̅_t) * x_0 + sqrt(1-α̅_t) * ε
+    eps_t = 0.01 # eps сразу как на диффузии
+    dynamic = DynamicSDE(config=config)
+
+    # Curriculum learning: постепенно увеличиваем диапазон t
     if not eval:
-        # Curriculum learning: постепенно увеличиваем T
-        target_T = config.cond_encoder.T
         warmup_epochs = config.cond_encoder.epochs // 2
 
         if epoch < warmup_epochs:
             progress = epoch / warmup_epochs
-            current_T = config.cond_encoder.eps + (target_T - config.cond_encoder.eps) * progress
+            current_max_t = eps_t + (dynamic.T - eps_t) * progress
         else:
-            current_T = target_T
+            current_max_t = dynamic.T
 
         if batch_idx == 0:
-            print(f"Curriculum T: {current_T:.4f} (target: {target_T:.4f})", file=sys.stderr, flush=True)
-
-        dynamic = DynamicSDE(config=config)
-        
-        # Случайный шаг t для каждого примера
-        if device.type == 'cuda':
-            t = torch.cuda.FloatTensor(total_batch_size).uniform_() * (
-                    current_T - config.cond_encoder.eps) + config.cond_encoder.eps
-        else:
-            t = torch.FloatTensor(total_batch_size).uniform_() * (
-                    current_T - config.cond_encoder.eps) + config.cond_encoder.eps
-            t = t.to(device)
-        
-        # Зашумляем x_0 -> x_t
-        marg_forward = dynamic.marginal(trg_embeds_all, t)
-        noisy_trg_embeds = marg_forward['x_t']
+            print(f"Curriculum T: [{eps_t:.4f}, {current_max_t:.4f}] (target max: {dynamic.T})", file=sys.stderr,
+                  flush=True)
     else:
-        # При валидации - минимальный шум
-        t = torch.ones(total_batch_size, device=device) * config.cond_encoder.eps
-        noisy_trg_embeds = trg_embeds_all
+        current_max_t = dynamic.T
+
+    if device.type == 'cuda':
+        t = torch.cuda.FloatTensor(total_batch_size).uniform_() * (current_max_t - eps_t) + eps_t
+    else:
+        t = torch.FloatTensor(total_batch_size).uniform_() * (current_max_t - eps_t) + eps_t
+        t = t.to(device)
+
+    if not eval and batch_idx == 0:
+        print(f"t ~ Uniform[{eps_t}, {current_max_t}]", file=sys.stderr, flush=True)
+        print(f"t sample: {t[:5]}", file=sys.stderr, flush=True)
+
+    # Зашумляем x_0 -> x_t
+    marg_forward = dynamic.marginal(trg_embeds_all, t)
+    noisy_trg_embeds = marg_forward['x_t']
 
     # === FORWARD PASS ===
     # f(x_t, t, y) - логит классификатора
@@ -265,7 +263,7 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
     if not eval:
         probs_pos = probs[:batch_size]
         probs_neg = probs[batch_size:]
-        
+
         logits_pos = logits[:batch_size]
         logits_neg = logits[batch_size:]
         loss_pos = F.binary_cross_entropy_with_logits(logits_pos, torch.ones_like(logits_pos))
@@ -297,7 +295,7 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
 def train(config, encoder, cond_encoder, tokenizer, device):
     print("=== START TRAIN ===")
     print("Training classifier for classifier guidance (PDF Algorithm 2)")
-    
+
     total_number_params = sum(p.numel() for p in cond_encoder.parameters() if p.requires_grad)
     print(f"Num params: {total_number_params}")
 
@@ -342,7 +340,7 @@ def train(config, encoder, cond_encoder, tokenizer, device):
 
     step = 0
     print(f"Starting training for {config.cond_encoder.epochs} epochs...")
-    
+
     for epoch in range(config.cond_encoder.epochs):
         print(f"\n=== EPOCH {epoch + 1}/{config.cond_encoder.epochs} ===")
 
@@ -437,15 +435,17 @@ def main():
     config = create_config(args)
 
     # Настройки
-    config.cond_encoder.epochs = 30
-    config.cond_encoder.T = 0.15
-    config.cond_encoder.lr = 2e-5
+    config.cond_encoder.epochs = 5
+    config.cond_encoder.lr = 1e-4
     config.model.encoder_link = "bert-base-cased"
     config.decoder.mode = "transformer"
-    config.decoder.decoder_path = "datasets/rocstories/decoder_rocstories_bert_cased_spt_3l_transformer_0_15x_t_noise.pth"
+    config.decoder.decoder_path = "datasets/rocstories/decoder_rocstories_bert_cased_spt_3l_transformer_0_15x_t_noise.pt"
     config.training.checkpoints_folder = "checkpoints"
     config.training.checkpoints_prefix = "tencdm-bert-base-cased-384-0.0002-rocstories-cfg=0.0"
     config.training.checkpoint_name = "rocstory-bert-base-cased-sd-9-spt_100000"
+
+    config.is_conditional = True
+    config.cond_encoder.use_conditional_encoder = True
 
     # Encoder для получения эмбеддингов
     if not config.emb:
@@ -455,14 +455,14 @@ def main():
         )
     else:
         enc_normalizer = None
-        
+
     encoder = Encoder(
         config.model.encoder_link,
         enc_normalizer=enc_normalizer,
         is_change_sp_tokens=False,
         emb=config.emb
     ).eval()
-    
+
     tokenizer = AutoTokenizer.from_pretrained(encoder.encoder_link)
 
     # Conditional Encoder (классификатор)
@@ -490,9 +490,10 @@ def main():
 
     print(f"config.emb = {config.emb}")
     print('Training Classifier for Classifier Guidance (PDF Algorithm 2)')
-    
+
     wandb.init(project=config.project_name, name="classifier_guidance", mode="offline")
 
+    print(config, end="\n\n\n")
     train(config, encoder, cond_encoder, tokenizer, device)
 
 
