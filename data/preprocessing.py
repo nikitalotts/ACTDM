@@ -3,6 +3,10 @@ from collections import defaultdict
 from typing import Union
 
 import numpy as np
+import random
+
+random.seed(42)
+np.random.seed(42)
 
 
 def batch_preprocessing(batch, dataset_name, split, swap_cfg_coef, task: Union[str, None]):
@@ -40,23 +44,48 @@ def batch_preprocessing(batch, dataset_name, split, swap_cfg_coef, task: Union[s
 
     elif dataset_name == "rocstories":
         if task == 'train_coniditonal_encoder':
-            n_cond = 3
             new_batch = {
                 "text_src": [],
                 "text_trg": [],
             }
-
             for sentences in batch["sentences"]:
                 assert len(sentences) == 5, sentences
+                # n_cond: сколько предложений в src (1-4)
+                # n_trg: сколько предложений в trg (1 до 5-n_cond)
+                n_cond = random.randint(1, 4)
+                max_trg = 5 - n_cond  # Максимум предложений в trg
+                n_trg = random.randint(1, max_trg)  # Случайная длина trg
+                
                 text_cond = " ".join(sentences[:n_cond])
-                text_trg = " ".join(sentences[n_cond:])
-
+                text_trg = " ".join(sentences[n_cond:n_cond + n_trg])
+                
                 new_batch["text_src"].append(text_cond)
                 new_batch["text_trg"].append(text_trg)
         else:
             new_batch = {
                 "text_trg": batch["target"],
             }
+        return new_batch
+
+    # elif dataset_name == "rocstories":
+    #     if task == 'train_coniditonal_encoder':
+    #         n_cond = 1
+    #         new_batch = {
+    #             "text_src": [],
+    #             "text_trg": [],
+    #         }
+
+    #         for sentences in batch["sentences"]:
+    #             assert len(sentences) == 5, sentences
+    #             text_cond = " ".join(sentences[:n_cond])
+    #             text_trg = " ".join(sentences[n_cond:])
+
+    #             new_batch["text_src"].append(text_cond)
+    #             new_batch["text_trg"].append(text_trg)
+    #     else:
+    #         new_batch = {
+    #             "text_trg": batch["target"],
+    #         }
 
     else:
         raise Exception(f"Unknown dataset: {dataset_name}")

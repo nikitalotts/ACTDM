@@ -58,9 +58,6 @@ class DynamicSDE(DynamicBase):
         """
         params = self.marginal_params(t)
         mu, std = params["mu"], params["std"]
-        if t.dim() == 1:
-            mu = mu[:, 0, :]  # cast to [128, 1]
-            std = std[:, 0, :]
         noise = torch.randn_like(x_0)
         x_t = x_0 * mu + noise * std
         score = -noise / params["std"]
