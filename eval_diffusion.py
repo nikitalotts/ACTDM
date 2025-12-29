@@ -1,10 +1,3 @@
-"""
-Скрипт для eval/генерации через DiffusionRunner.
-Запуск: torchrun --nproc_per_node=1 eval_diffusion.py [args]
-
-Или через shell скрипт: ./run_eval.sh
-"""
-
 import os
 import sys
 import time
@@ -16,25 +9,14 @@ from utils.util import set_seed, parse
 from create_config import create_config
 
 if __name__ == '__main__':
-    # Парсим стандартные аргументы как в train_diffusion.py
     args = parse()
-
-    # Создаем конфиг
     config = create_config(args)
-
-    # === ПЕРЕОПРЕДЕЛЯЕМ ПУТИ К ЧЕКПОИНТАМ ===
-    # Раскомментируй и измени если нужно:
-
-    # Путь к декодеру
     config.decoder.decoder_path = "datasets/rocstories/decoder_rocstories_bert_cased_spt_3l_transformer_0_15x_t_noise.pt"
 
-    # Имя чекпоинта (без .pth)
     config.training.checkpoint_name = "rocstory-bert-base-cased-sd-9-spt_100000"
 
-    # Префикс папки чекпоинтов (если отличается от сгенерированного)
     # config.training.checkpoints_prefix = "tencdm-bert-base-cased-384-0.0002-rocstories-cfg=0.0"
 
-    # DDP инициализация (нужна даже для 1 GPU)
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         rank = int(os.environ["RANK"])
         world_size = int(os.environ['WORLD_SIZE'])
@@ -71,15 +53,11 @@ if __name__ == '__main__':
     seed = config.seed + dist.get_rank()
     set_seed(seed)
 
-    # Запуск - DiffusionRunner при eval=True сам вызовет estimate("test")
     start_time = time.time()
 
     diffusion = DiffusionRunner(config, eval=config.eval)
 
     elapsed = time.time() - start_time
-
-    # classifier_guidance_scale
-    # cond_encoder_path
 
     if dist.get_rank() == 0:
         print(f"\n{'=' * 60}")

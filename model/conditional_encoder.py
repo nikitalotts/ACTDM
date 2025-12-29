@@ -1,12 +1,3 @@
-"""
-Классификатор для classifier guidance в текстовой диффузии.
-
-Согласно PDF:
-- Модель выдаёт логит f(x_t, t, y) ∈ R
-- p(y | x_t) = σ(f(x_t, t, y))
-- При инференсе: ∇_{x_t} log p(y|x_t) = (1 - σ(f)) · ∇_{x_t} f
-"""
-
 import math
 import torch
 import torch.nn as nn
@@ -25,9 +16,6 @@ class ConditionalEncoder(nn.Module):
 
     Выход:
     - logits f(x_t, t, y): [batch]
-
-    Примечание: trg_mask НЕ используется для консистентности между обучением и инференсом.
-    При инференсе диффузия генерирует все позиции, padding нет.
     """
 
     def __init__(self, encoder_link, tokenizer, hidden_dim=768):
@@ -55,7 +43,6 @@ class ConditionalEncoder(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim)
         )
 
-        # Score head: предсказывает скалярный логит f(x_t, t, y) ∈ R
         self.score_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -93,12 +80,12 @@ class ConditionalEncoder(nn.Module):
         # 3. Стандартный BERT формат:
         # [CLS] time src... [SEP] noisy_trg... [SEP]
         inputs_embeds = torch.cat([
-            cls_token,  # [batch, 1, hidden]
-            t_embed.unsqueeze(1),  # [batch, 1, hidden]
-            src_embeds,  # [batch, seq_len_src, hidden]
-            sep_token,  # [batch, 1, hidden]
-            noisy_trg_embeds,  # [batch, seq_len_trg, hidden]
-            sep_token,  # [batch, 1, hidden]
+            cls_token,
+            t_embed.unsqueeze(1),
+            src_embeds,
+            sep_token,
+            noisy_trg_embeds,
+            sep_token,
         ], dim=1)
 
         # 4. Attention mask
@@ -109,12 +96,12 @@ class ConditionalEncoder(nn.Module):
             src_mask = torch.ones(batch_size, seq_len_src, device=device, dtype=torch.long)
 
         attention_mask = torch.cat([
-            ones,  # CLS
-            ones,  # time
-            src_mask,  # src
-            ones,  # SEP
-            trg_ones,  # trg
-            ones,  # SEP
+            ones,
+            ones,
+            src_mask,
+            ones,
+            trg_ones,
+            ones,
         ], dim=1)
 
         # 5. BERT

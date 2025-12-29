@@ -1,14 +1,3 @@
-"""
-Обучение классификатора для classifier guidance в текстовой диффузии.
-
-Согласно PDF (Algorithm 2):
-1. Выбираем случайный шаг t
-2. Зашумляем правильное продолжение: x_t^+ = sqrt(α̅_t) * x_0 + sqrt(1-α̅_t) * ε
-3. Зашумляем неправильное продолжение: x_t^- = sqrt(α̅_t) * x_0^- + sqrt(1-α̅_t) * ε'
-4. Получаем логиты: f^+ = Classifier(x_t^+, t, y), f^- = Classifier(x_t^-, t, y)
-5. Лосс: L_cls = -log σ(f^+) - log(1 - σ(f^-))
-"""
-
 import os
 import sys
 import torch
@@ -76,19 +65,6 @@ def save_checkpoint(model, config):
 
 
 def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, eval=False, batch_idx=0):
-    """
-    Один шаг обучения классификатора.
-
-    Согласно PDF (Algorithm 2, секция 4.2):
-    - x_t^+ - зашумлённое правильное продолжение
-    - x_t^- - зашумлённый случайный текст
-    - L_cls = -log σ(f^+) - log(1 - σ(f^-))
-
-    Это эквивалентно BCE loss:
-    L = BCE(f^+, 1) + BCE(f^-, 0)
-    """
-
-    # Debug: проверка сырых текстов
     if not eval and batch_idx == 0:
         print(f"\n=== RAW TEXT CHECK ===", file=sys.stderr, flush=True)
         print(f"text_src[0]: '{batch['text_src'][0]}'", file=sys.stderr, flush=True)
@@ -119,15 +95,12 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
         return_token_type_ids=False
     ).to(device)
 
-    # Debug: проверка токенизации
     if not eval and batch_idx == 0:
         print(f"\n=== TOKENIZATION CHECK ===", file=sys.stderr, flush=True)
         print(f"src input_ids[0]: {src['input_ids'][0]}", file=sys.stderr, flush=True)
         print(f"trg input_ids[0]: {trg['input_ids'][0]}", file=sys.stderr, flush=True)
         print(f"Are input_ids identical? {torch.equal(src['input_ids'][0], trg['input_ids'][0])}", file=sys.stderr, flush=True)
 
-    # Получаем ПОЛНЫЕ последовательности эмбеддингов от encoder
-    # Эмбеддинги содержат: [CLS_emb] [tok1_emb] ... [SEP_emb] [PAD_emb]...
     with torch.no_grad():
         # y - префикс (условие)
         src_latent = encoder(
@@ -165,7 +138,6 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
     labels_pos = torch.ones(batch_size, dtype=torch.float32, device=device)
 
     # === NEGATIVE PAIRS: (y, x_0^-) ===
-    # x_0^- - случайный текст (перемешанные trg из батча)
     indices = torch.randperm(batch_size, device=device)
     while (indices == torch.arange(batch_size, device=device)).any():
         indices = torch.randperm(batch_size, device=device)
@@ -175,7 +147,6 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
     src_mask_neg = src_mask
     labels_neg = torch.zeros(batch_size, dtype=torch.float32, device=device)
 
-    # Debug: косинусная близость
     if not eval and batch_idx == 0:
         # Берём CLS токены для анализа
         cls_src = src_latent[:, 0, :]
@@ -189,7 +160,6 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
         print(f"NEGATIVE pairs: {cos_sim_neg.mean():.4f} ± {cos_sim_neg.std():.4f}", file=sys.stderr, flush=True)
         print(f"Difference: {(cos_sim_pos.mean() - cos_sim_neg.mean()):.4f}", file=sys.stderr, flush=True)
 
-    # Debug: примеры пар
     if not eval and batch_idx < 3:
         for i in range(min(3, batch_size)):
             print(f"Pos src: {batch['text_src'][i]}", file=sys.stderr, flush=True)
@@ -205,8 +175,6 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
 
     total_batch_size = src_embeds_all.shape[0]
 
-    # === ЗАШУМЛЕНИЕ (согласно PDF Algorithm 2) ===
-    # x_t = sqrt(α̅_t) * x_0 + sqrt(1-α̅_t) * ε
     eps_t = 0.01 # eps сразу как на диффузии
     dynamic = DynamicSDE(config=config)
 
@@ -229,8 +197,6 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
     marg_forward = dynamic.marginal(trg_embeds_all, t)
     noisy_trg_embeds = marg_forward['x_t']
 
-    # === FORWARD PASS ===
-    # f(x_t, t, y) - логит классификатора
     # Передаём только src_mask, без trg_mask
     logits = cond_encoder(
         src_embeds=src_embeds_all,
@@ -239,21 +205,19 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
         src_mask=src_mask_all
     )
 
-    # === LOSS (согласно PDF секция 4.2) ===
-    # L_cls = -log σ(f^+) - log(1 - σ(f^-))
-    t_normalized = (t - eps_t) / (current_max_t - eps_t)
-    weights = torch.clamp(1.0 - t_normalized, min=0.0)
-    weights = weights / (weights.mean() + 1e-8)
 
-    loss_per_sample = F.binary_cross_entropy_with_logits(logits, labels_all, reduction='none')
-    loss = (loss_per_sample * weights).mean()
+    # t_normalized = (t - eps_t) / (current_max_t - eps_t)
+    # weights = torch.clamp(1.0 - t_normalized, min=0.0)
+    # weights = weights / (weights.mean() + 1e-8)
+
+    # loss_per_sample = F.binary_cross_entropy_with_logits(logits, labels_all, reduction='none')
+    # loss = (loss_per_sample * weights).mean()
 
     # Метрики
     probs = torch.sigmoid(logits)
     preds = (probs > 0.5).float()
     acc = torch.mean((preds == labels_all).float())
 
-    # Debug info (как в оригинале)
     if not eval:
         probs_pos = probs[:batch_size]
         probs_neg = probs[batch_size:]
@@ -467,10 +431,6 @@ def main():
     # Conditional Encoder (классификатор)
     cond_encoder = ConditionalEncoder(config.model.encoder_link, tokenizer).train()
 
-    # config.cond_encoder.cond_encoder_path = 'datasets/rocstories/enc_backup/conditional-encoder.pth'
-
-    config.cond_encoder.cond_encoder_path += 'sptokenscratchweights'
-
     cond_encoder_path = config.cond_encoder.cond_encoder_path
     if os.path.exists(cond_encoder_path):
         print(f"Loading existing model from: {cond_encoder_path}")
@@ -502,9 +462,6 @@ def main():
         encoder = encoder.to(device)
         cond_encoder = cond_encoder.to(device)
         print('Training on CPU')
-
-    print(f"config.emb = {config.emb}")
-    print('Training Classifier for Classifier Guidance (PDF Algorithm 2)')
 
     wandb.init(project=config.project_name, name="classifier_guidance", mode="offline")
 
