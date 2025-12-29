@@ -8,7 +8,6 @@
 #SBATCH --nodes=1
 #SBATCH --time=1:00:00
 
-#echo 'export WANDB_API_KEY="94ad1ee0e14faa7ca831e3325dc339ada652c154"' >> ~/.bashrc
 source ~/.bashrc
 eval "$(conda shell.bash hook)"
 
