@@ -178,24 +178,46 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
     eps_t = 0.01 # eps сразу как на диффузии
     dynamic = DynamicSDE(config=config)
 
-    current_max_t = dynamic.T
+    if not eval:
+        # Curriculum learning
+        target_T = config.cond_encoder.T
+        warmup_epochs = config.cond_encoder.epochs // 2
 
-    # if device.type == 'cuda':
-    #     t = torch.cuda.FloatTensor(total_batch_size).uniform_() * (current_max_t - eps_t) + eps_t
-    # else:
-    #     t = torch.FloatTensor(total_batch_size).uniform_() * (current_max_t - eps_t) + eps_t
-    #     t = t.to(device)
-    #
-    # if not eval and batch_idx == 0:
-    #     print(f"t ~ Uniform[{eps_t}, {current_max_t}]", file=sys.stderr, flush=True)
-    #     print(f"t sample: {t[:5]}", file=sys.stderr, flush=True)
+        if epoch < warmup_epochs:
+            progress = epoch / warmup_epochs
+            current_T = config.cond_encoder.eps + (target_T - config.cond_encoder.eps) * progress
+        else:
+            current_T = target_T
 
-    u = torch.cuda.FloatTensor(total_batch_size).uniform_()
-    t = eps_t + (u ** 0.5) * (current_max_t - eps_t)
+        if batch_idx == 0:
+            print(f"Curriculum T: {current_T:.4f} (target: {target_T:.4f})", file=sys.stderr, flush=True)
 
-    # Зашумляем x_0 -> x_t
-    marg_forward = dynamic.marginal(trg_embeds_all, t)
-    noisy_trg_embeds = marg_forward['x_t']
+        dynamic = DynamicSDE(config=config)
+        
+        # Случайный шаг t для каждого примера
+        if device.type == 'cuda':
+            t = torch.cuda.FloatTensor(total_batch_size).uniform_() * (
+                    current_T - config.cond_encoder.eps) + config.cond_encoder.eps
+        else:
+            t = torch.FloatTensor(total_batch_size).uniform_() * (
+                    current_T - config.cond_encoder.eps) + config.cond_encoder.eps
+            t = t.to(device)
+        
+        # Зашумляем x_0 -> x_t
+        marg_forward = dynamic.marginal(trg_embeds_all, t)
+        noisy_trg_embeds = marg_forward['x_t']
+    else:
+        # При валидации - минимальный шум
+        t = torch.ones(total_batch_size, device=device) * config.cond_encoder.eps
+        noisy_trg_embeds = trg_embeds_all
+
+
+    # u = torch.cuda.FloatTensor(total_batch_size).uniform_()
+    # t = eps_t + (u ** 0.5) * (current_max_t - eps_t)
+
+    # # Зашумляем x_0 -> x_t
+    # marg_forward = dynamic.marginal(trg_embeds_all, t)
+    # noisy_trg_embeds = marg_forward['x_t']
 
     # Передаём только src_mask, без trg_mask
     logits = cond_encoder(
@@ -205,13 +227,14 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
         src_mask=src_mask_all
     )
 
-
     # t_normalized = (t - eps_t) / (current_max_t - eps_t)
     # weights = torch.clamp(1.0 - t_normalized, min=0.0)
     # weights = weights / (weights.mean() + 1e-8)
 
     # loss_per_sample = F.binary_cross_entropy_with_logits(logits, labels_all, reduction='none')
     # loss = (loss_per_sample * weights).mean()
+
+    loss = F.binary_cross_entropy_with_logits(logits, labels_all)
 
     # Метрики
     probs = torch.sigmoid(logits)
