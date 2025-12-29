@@ -1,98 +1,0 @@
-/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/wandb/apis/public.py:3109: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  from pkg_resources import parse_version
-/home/nklotts/tencdm/model/enc_normalizer.py:13: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  torch.load(enc_mean_path, map_location=location)[None, None, :],
-/home/nklotts/tencdm/model/enc_normalizer.py:17: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  torch.load(enc_std_path, map_location=location)[None, None, :],
-/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/wandb/apis/public.py:3109: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  from pkg_resources import parse_version
-wandb: Tracking run with wandb version 0.15.0
-wandb: W&B syncing is set to `offline` in this directory.  
-wandb: Run `wandb online` or set WANDB_MODE=online to enable cloud syncing.
-Dataset preprocessing (num_proc=30):   0%|          | 0/88161 [00:00<?, ? examples/s]Dataset preprocessing (num_proc=30):   3%|▎         | 2939/88161 [00:00<00:12, 6607.84 examples/s]Dataset preprocessing (num_proc=30):   7%|▋         | 5878/88161 [00:00<00:08, 9589.69 examples/s]Dataset preprocessing (num_proc=30):  10%|█         | 8817/88161 [00:00<00:06, 11479.81 examples/s]Dataset preprocessing (num_proc=30):  13%|█▎        | 11756/88161 [00:01<00:06, 12622.17 examples/s]Dataset preprocessing (num_proc=30):  17%|█▋        | 14695/88161 [00:01<00:05, 14117.31 examples/s]Dataset preprocessing (num_proc=30):  20%|██        | 17634/88161 [00:01<00:05, 13660.29 examples/s]Dataset preprocessing (num_proc=30):  23%|██▎       | 20573/88161 [00:01<00:04, 13691.31 examples/s]Dataset preprocessing (num_proc=30):  27%|██▋       | 23512/88161 [00:01<00:04, 14390.49 examples/s]Dataset preprocessing (num_proc=30):  30%|███       | 26451/88161 [00:02<00:04, 14773.05 examples/s]Dataset preprocessing (num_proc=30):  33%|███▎      | 29390/88161 [00:02<00:04, 14213.75 examples/s]Dataset preprocessing (num_proc=30):  37%|███▋      | 32329/88161 [00:02<00:03, 15463.50 examples/s]Dataset preprocessing (num_proc=30):  40%|████      | 35268/88161 [00:02<00:03, 14033.25 examples/s]Dataset preprocessing (num_proc=30):  43%|████▎     | 38207/88161 [00:02<00:03, 13774.51 examples/s]Dataset preprocessing (num_proc=30):  47%|████▋     | 41146/88161 [00:02<00:02, 15960.70 examples/s]Dataset preprocessing (num_proc=30):  50%|█████     | 44085/88161 [00:03<00:02, 15956.51 examples/s]Dataset preprocessing (num_proc=30):  53%|█████▎    | 47024/88161 [00:03<00:02, 16927.77 examples/s]Dataset preprocessing (num_proc=30):  57%|█████▋    | 49963/88161 [00:03<00:02, 15957.05 examples/s]Dataset preprocessing (num_proc=30):  60%|██████    | 52902/88161 [00:03<00:02, 14876.25 examples/s]Dataset preprocessing (num_proc=30):  63%|██████▎   | 55841/88161 [00:03<00:02, 15571.59 examples/s]Dataset preprocessing (num_proc=30):  67%|██████▋   | 58780/88161 [00:04<00:01, 15333.94 examples/s]Dataset preprocessing (num_proc=30):  70%|███████   | 61719/88161 [00:04<00:01, 14585.57 examples/s]Dataset preprocessing (num_proc=30):  73%|███████▎  | 64657/88161 [00:04<00:01, 15837.57 examples/s]Dataset preprocessing (num_proc=30):  77%|███████▋  | 67595/88161 [00:04<00:01, 15367.27 examples/s]Dataset preprocessing (num_proc=30):  80%|████████  | 70533/88161 [00:04<00:01, 14015.56 examples/s]Dataset preprocessing (num_proc=30):  83%|████████▎ | 73471/88161 [00:05<00:00, 15668.06 examples/s]Dataset preprocessing (num_proc=30):  87%|████████▋ | 76409/88161 [00:05<00:00, 15971.99 examples/s]Dataset preprocessing (num_proc=30):  90%|█████████ | 79347/88161 [00:05<00:00, 16786.72 examples/s]Dataset preprocessing (num_proc=30):  93%|█████████▎| 82285/88161 [00:05<00:00, 15288.20 examples/s]Dataset preprocessing (num_proc=30):  97%|█████████▋| 85223/88161 [00:05<00:00, 16426.13 examples/s]Dataset preprocessing (num_proc=30): 100%|██████████| 88161/88161 [00:06<00:00, 15846.24 examples/s]Dataset preprocessing (num_proc=30): 100%|██████████| 88161/88161 [00:06<00:00, 14335.03 examples/s]
-Dataset preprocessing (num_proc=30):   0%|          | 0/10000 [00:00<?, ? examples/s]Dataset preprocessing (num_proc=30):   3%|▎         | 334/10000 [00:00<00:04, 2141.74 examples/s]Dataset preprocessing (num_proc=30):  17%|█▋        | 1670/10000 [00:00<00:01, 7377.89 examples/s]Dataset preprocessing (num_proc=30):  30%|███       | 3006/10000 [00:00<00:00, 9174.62 examples/s]Dataset preprocessing (num_proc=30):  47%|████▋     | 4672/10000 [00:00<00:00, 11460.25 examples/s]Dataset preprocessing (num_proc=30):  67%|██████▋   | 6670/10000 [00:00<00:00, 13472.84 examples/s]Dataset preprocessing (num_proc=30):  83%|████████▎ | 8335/10000 [00:00<00:00, 13919.52 examples/s]Dataset preprocessing (num_proc=30): 100%|██████████| 10000/10000 [00:00<00:00, 14659.37 examples/s]Dataset preprocessing (num_proc=30): 100%|██████████| 10000/10000 [00:00<00:00, 10999.60 examples/s]
-  0%|          | 0/1378 [00:00<?, ?it/s]
-=== RAW TEXT CHECK ===
-text_src[0]: 'Beth decided on a University she wanted to attend. It was a private school and she was concerned she may not get in. Beth applied to 2 other schools as back ups.'
-text_trg[0]: 'The back ups accepted her but the main one was still undecided. When Beth received a letter she was devastated to have been rejected.'
-Are texts identical? False
-
-=== TOKENIZATION CHECK ===
-src input_ids[0]: tensor([  101,  6452,  1879,  1113,   170,  1239,  1131,  1458,  1106,  4739,
-          119,  1135,  1108,   170,  2029,  1278,  1105,  1131,  1108,  4264,
-         1131,  1336,  1136,  1243,  1107,   119,  6452,  3666,  1106,   123,
-         1168,  2126,  1112,  1171, 12534,   119,   102,     0,     0,     0,
-            0,     0,     0,     0], device='cuda:0')
-trg input_ids[0]: tensor([  101,  1109,  1171, 12534,  3134,  1123,  1133,  1103,  1514,  1141,
-         1108,  1253,  5576, 10294, 10517,   119,  1332,  6452,  1460,   170,
-         2998,  1131,  1108, 14778,  1106,  1138,  1151,  5164,   119,   102,
-            0,     0,     0,     0], device='cuda:0')
-Are input_ids identical? False
-
-=== EMBEDDINGS ===
-cls_src shape: torch.Size([64, 768])
-cls_trg shape: torch.Size([64, 768])
-src mean: -0.0074, std: 0.5917
-trg mean: -0.0075, std: 0.5968
-Pos src: Beth decided on a University she wanted to attend....
-Pos trg: The back ups accepted her but the main one was sti...
-Neg trg: Suzanne is selling pies 7 days a week. She's booke...
----
-Pos src: Anna decided to bake her own bread. She mixed her ...
-Pos trg: But when she took it out, her face fell - it was f...
-Neg trg: But slowly she grew to accept the rule change. Soo...
----
-Pos src: Joe has always wanted to see a baseball game. One ...
-Pos trg: They have a terrific day together at the game. Joe...
-Neg trg: Hank realized that his hard work was teaching him ...
----
-/home/nklotts/tencdm/train_conditional_encoder.py:227: UserWarning: The torch.cuda.*DtypeTensor constructors are no longer recommended. It's best to use methods such as torch.tensor(data, dtype=*, device='cuda') to create tensors. (Triggered internally at ../torch/csrc/tensor/python_tensor.cpp:78.)
-  t = torch.cuda.FloatTensor(total_batch_size).uniform_() * (
-
-=== LOSS & METRICS ===
-loss_pos: 0.6422
-loss_neg: 0.7451
-total loss: 0.6936
-
-Probs positive (first 5): tensor([0.5255, 0.5124, 0.5373, 0.5279, 0.5090], device='cuda:0',
-       grad_fn=<SliceBackward0>)
-Probs negative (first 5): tensor([0.5124, 0.5160, 0.5358, 0.5267, 0.5122], device='cuda:0',
-       grad_fn=<SliceBackward0>)
-probs_pos mean: 0.5263
-probs_neg mean: 0.5252
-
-Pred distribution: 0=1, 1=127
-Label distribution: 0=64, 1=64
-Accuracy positive: 0.9844
-Accuracy negative: 0.0000
-  0%|          | 0/1378 [00:00<?, ?it/s]
-Traceback (most recent call last):
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/runpy.py", line 197, in _run_module_as_main
-    return _run_code(code, main_globals, None,
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/runpy.py", line 87, in _run_code
-    exec(code, run_globals)
-  File "/home/nklotts/tencdm/train_conditional_encoder.py", line 482, in <module>
-    main()
-  File "/home/nklotts/tencdm/train_conditional_encoder.py", line 478, in main
-    train(config, encoder, cond_encoder, tokenizer, device)
-  File "/home/nklotts/tencdm/train_conditional_encoder.py", line 366, in train
-    optimizer.step()
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/torch/optim/lr_scheduler.py", line 130, in wrapper
-    return func.__get__(opt, opt.__class__)(*args, **kwargs)
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/torch/optim/optimizer.py", line 484, in wrapper
-    out = func(*args, **kwargs)
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/torch/optim/optimizer.py", line 89, in _use_grad
-    ret = func(self, *args, **kwargs)
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/torch/optim/adamw.py", line 227, in step
-    adamw(
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/torch/optim/optimizer.py", line 161, in maybe_fallback
-    return func(*args, **kwargs)
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/torch/optim/adamw.py", line 767, in adamw
-    func(
-  File "/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/torch/optim/adamw.py", line 529, in _multi_tensor_adamw
-    torch._foreach_lerp_(device_exp_avgs, device_grads, 1 - beta1)
-RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!
-wandb: Waiting for W&B process to finish... (failed 1).
-wandb: You can sync this run to the cloud by running:
-wandb: wandb sync /home/nklotts/tencdm/wandb/offline-run-20251223_130819-rwl7to50
-wandb: Find logs at: ./wandb/offline-run-20251223_130819-rwl7to50/logs

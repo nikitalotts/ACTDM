@@ -26,21 +26,13 @@ if __name__ == '__main__':
     # Раскомментируй и измени если нужно:
 
     # Путь к декодеру
-    config.decoder.decoder_path = "datasets/rocstories/decoder_rocstories_bert_cased_spt_3l_transformer_0_15x_t_noise.pth"
+    config.decoder.decoder_path = "datasets/rocstories/decoder_rocstories_bert_cased_spt_3l_transformer_0_15x_t_noise.pt"
 
     # Имя чекпоинта (без .pth)
     config.training.checkpoint_name = "rocstory-bert-base-cased-sd-9-spt_100000"
 
     # Префикс папки чекпоинтов (если отличается от сгенерированного)
     # config.training.checkpoints_prefix = "tencdm-bert-base-cased-384-0.0002-rocstories-cfg=0.0"
-
-    # === ПАРАМЕТРЫ ГЕНЕРАЦИИ ===
-    config.validation.num_gen_texts = 98161  # Сколько текстов генерировать
-    # config.validation.batch_size = 32
-    # config.dynamic.N = 50  # Шаги диффузии
-
-    # === EVAL MODE ===
-    config.eval = True
 
     # DDP инициализация (нужна даже для 1 GPU)
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -59,6 +51,8 @@ if __name__ == '__main__':
     config.training.batch_size_per_gpu = config.training.batch_size // dist.get_world_size()
     # config.is_conditional = True
 
+    config.cond_encoder.cond_encoder_path = '/home/nklotts/tencdm/datasets/rocstories/enc_backup/conditional-encoder-bert-base-cased-80-transformer.pthsptokenscratch'
+
     if dist.get_rank() == 0:
         print("=" * 60)
         print("EVAL DIFFUSION MODEL")
@@ -71,7 +65,8 @@ if __name__ == '__main__':
         print(f"  Emb: {config.emb}")
         print(f"  Num gen texts: {config.validation.num_gen_texts}")
         print(f"  Diffusion steps: {config.dynamic.N}")
-        print()
+        print('###################')
+        print(config)
 
     seed = config.seed + dist.get_rank()
     set_seed(seed)
@@ -79,9 +74,12 @@ if __name__ == '__main__':
     # Запуск - DiffusionRunner при eval=True сам вызовет estimate("test")
     start_time = time.time()
 
-    diffusion = DiffusionRunner(config, eval=True)
+    diffusion = DiffusionRunner(config, eval=config.eval)
 
     elapsed = time.time() - start_time
+
+    # classifier_guidance_scale
+    # cond_encoder_path
 
     if dist.get_rank() == 0:
         print(f"\n{'=' * 60}")

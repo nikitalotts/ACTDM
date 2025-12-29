@@ -54,8 +54,7 @@ class DownstreamTaskDatasetDDP:
             partial(batch_preprocessing,
                     split=self.split,
                     dataset_name=self.dataset_name,
-                    swap_cfg_coef=self.config.data.swap_cfg_coef,
-                    task=self.task
+                    config=self.config
                     ),
             batched=True,
             load_from_cache_file=False,

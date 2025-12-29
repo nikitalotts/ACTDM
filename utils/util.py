@@ -189,4 +189,13 @@ def parse():
             "bart-base"
         ])
     parser.add_argument('--project_name', type=str, default='test')
+    parser.add_argument("--is_conditional", action='store_true')
+    parser.add_argument("--use_conditional_encoder", action='store_true')
+    parser.add_argument("--eval", action='store_true')
+    parser.add_argument("--num_diffusion_steps", type=int, default=None)
+    parser.add_argument("--num_generated_texts", type=int, default=None)
+    parser.add_argument("--classifier_guidance_scale", type=float, default=0.0)
+    parser.add_argument("--guidance_coef_type", type=str, default='ddpm')
+
+    # is eval
     return parser.parse_args()

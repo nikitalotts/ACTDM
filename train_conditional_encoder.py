@@ -210,31 +210,20 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
     eps_t = 0.01 # eps сразу как на диффузии
     dynamic = DynamicSDE(config=config)
 
-    # Curriculum learning: постепенно увеличиваем диапазон t
-    if not eval:
-        warmup_epochs = config.cond_encoder.epochs // 2
+    current_max_t = dynamic.T
 
-        if epoch < warmup_epochs:
-            progress = epoch / warmup_epochs
-            current_max_t = eps_t + (dynamic.T - eps_t) * progress
-        else:
-            current_max_t = dynamic.T
+    # if device.type == 'cuda':
+    #     t = torch.cuda.FloatTensor(total_batch_size).uniform_() * (current_max_t - eps_t) + eps_t
+    # else:
+    #     t = torch.FloatTensor(total_batch_size).uniform_() * (current_max_t - eps_t) + eps_t
+    #     t = t.to(device)
+    #
+    # if not eval and batch_idx == 0:
+    #     print(f"t ~ Uniform[{eps_t}, {current_max_t}]", file=sys.stderr, flush=True)
+    #     print(f"t sample: {t[:5]}", file=sys.stderr, flush=True)
 
-        if batch_idx == 0:
-            print(f"Curriculum T: [{eps_t:.4f}, {current_max_t:.4f}] (target max: {dynamic.T})", file=sys.stderr,
-                  flush=True)
-    else:
-        current_max_t = dynamic.T
-
-    if device.type == 'cuda':
-        t = torch.cuda.FloatTensor(total_batch_size).uniform_() * (current_max_t - eps_t) + eps_t
-    else:
-        t = torch.FloatTensor(total_batch_size).uniform_() * (current_max_t - eps_t) + eps_t
-        t = t.to(device)
-
-    if not eval and batch_idx == 0:
-        print(f"t ~ Uniform[{eps_t}, {current_max_t}]", file=sys.stderr, flush=True)
-        print(f"t sample: {t[:5]}", file=sys.stderr, flush=True)
+    u = torch.cuda.FloatTensor(total_batch_size).uniform_()
+    t = eps_t + (u ** 0.5) * (current_max_t - eps_t)
 
     # Зашумляем x_0 -> x_t
     marg_forward = dynamic.marginal(trg_embeds_all, t)
@@ -252,7 +241,12 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
 
     # === LOSS (согласно PDF секция 4.2) ===
     # L_cls = -log σ(f^+) - log(1 - σ(f^-))
-    loss = F.binary_cross_entropy_with_logits(logits, labels_all)
+    t_normalized = (t - eps_t) / (current_max_t - eps_t)
+    weights = torch.clamp(1.0 - t_normalized, min=0.0)
+    weights = weights / (weights.mean() + 1e-8)
+
+    loss_per_sample = F.binary_cross_entropy_with_logits(logits, labels_all, reduction='none')
+    loss = (loss_per_sample * weights).mean()
 
     # Метрики
     probs = torch.sigmoid(logits)
@@ -435,8 +429,13 @@ def main():
     config = create_config(args)
 
     # Настройки
-    config.cond_encoder.epochs = 5
+    # config.cond_encoder.epochs = 15
     config.cond_encoder.lr = 1e-4
+
+    config.cond_encoder.epochs = 15
+    # config.cond_encoder.lr = 1e-5
+    config.cond_encoder.weight_decay = 0.01
+
     config.model.encoder_link = "bert-base-cased"
     config.decoder.mode = "transformer"
     config.decoder.decoder_path = "datasets/rocstories/decoder_rocstories_bert_cased_spt_3l_transformer_0_15x_t_noise.pt"
@@ -459,7 +458,7 @@ def main():
     encoder = Encoder(
         config.model.encoder_link,
         enc_normalizer=enc_normalizer,
-        is_change_sp_tokens=False,
+        is_change_sp_tokens=True,
         emb=config.emb
     ).eval()
 
@@ -467,6 +466,22 @@ def main():
 
     # Conditional Encoder (классификатор)
     cond_encoder = ConditionalEncoder(config.model.encoder_link, tokenizer).train()
+
+    # config.cond_encoder.cond_encoder_path = 'datasets/rocstories/enc_backup/conditional-encoder.pth'
+
+    config.cond_encoder.cond_encoder_path += 'sptokenscratchweights'
+
+    cond_encoder_path = config.cond_encoder.cond_encoder_path
+    if os.path.exists(cond_encoder_path):
+        print(f"Loading existing model from: {cond_encoder_path}")
+        checkpoint = torch.load(cond_encoder_path, map_location='cpu')
+        print('CONDINCH', "cond_encoder" in checkpoint, checkpoint.keys())
+        cond_encoder_checkpoint = checkpoint["cond_encoder"] if "cond_encoder" in checkpoint else checkpoint
+        cond_encoder.load_state_dict(cond_encoder_checkpoint)
+        print(f"Successfully loaded model from: {cond_encoder_path}")
+    else:
+        print(f"No existing model found at: {cond_encoder_path}")
+        print("Starting training from scratch")
 
     # Device setup
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0

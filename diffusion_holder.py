@@ -7,6 +7,7 @@ import time
 import ml_collections
 import torch.distributed as dist
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from ml_collections import ConfigDict
 from typing import Optional, Union, Dict, Tuple
 from tqdm.auto import trange
@@ -22,6 +23,7 @@ import heapq
 
 from diffusion_utils.dynamic import DynamicSDE
 from diffusion_utils.solvers import create_solver
+from model.conditional_encoder import ConditionalEncoder
 
 from utils.ema_model import ExponentialMovingAverage
 from utils.util import mse_loss, get_stat, reduce_tensor, set_seed
@@ -86,6 +88,12 @@ class DiffusionRunner:
                 broadcast_buffers=False,
             )
 
+        # Conditional Encoder
+        self.cond_encoder = None
+        self.guidance_scale = config.validation.classifier_guidance_scale
+        if self.guidance_scale > 0:
+            self._load_cond_encoder(config.cond_encoder.cond_encoder_path)
+
         # Number of parameters
         self.config.params_number = ml_collections.ConfigDict()
         self.config.params_number.score_estimator = sum(p.numel() for p in self.score_estimator.parameters() if p.requires_grad)
@@ -144,6 +152,79 @@ class DiffusionRunner:
                 self.estimate("test")
                 self.validate()
 
+    def _load_cond_encoder(self, path: str) -> None:
+        """Загружает обученный классификатор для classifier guidance."""
+        if not os.path.exists(path):
+            print(f"WARNING: Cond encoder not found at {path}")
+            print("Classifier guidance will be disabled.")
+            self.guidance_scale = 0
+            return
+
+        self.cond_encoder = ConditionalEncoder(
+            encoder_link=self.config.model.encoder_link,
+            tokenizer=self.tokenizer
+        ).cuda().eval()
+
+        checkpoint = torch.load(path, map_location="cpu")
+        self.cond_encoder.load_state_dict(checkpoint["cond_encoder"])
+
+        # Замораживаем
+        for param in self.cond_encoder.parameters():
+            param.requires_grad = False
+
+        print(f"Loaded ConditionalEncoder from {path}")
+        print(f"Classifier guidance scale: {self.guidance_scale}")
+        # print(self.cond_encoder)
+
+    def compute_classifier_guidance(
+            self,
+            x_t: torch.Tensor,
+            cond_x: torch.Tensor,
+            t: torch.Tensor,
+            cond_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Вычисляет градиент классификатора для guidance.
+
+        Согласно PDF секция 4.1 и формула (3):
+        ∇_{x_t} log p(y|x_t) = (1 - σ(f(x_t, t, y))) · ∇_{x_t} f(x_t, t, y)
+
+        Args:
+            x_t: [batch, seq_len, hidden] - текущее зашумлённое состояние
+            cond_x: [batch, seq_len, hidden] - условие (префикс y)
+            t: [batch] - временной шаг
+            cond_mask: [batch, seq_len] - маска для условия
+
+        Returns:
+            grad: [batch, seq_len, hidden] - градиент для модификации x_t
+        """
+        # Включаем градиенты для x_t
+        x_t_grad = x_t.detach().clone().requires_grad_(True)
+
+        # f(x_t, t, y) - логит классификатора
+        logits = self.cond_encoder(
+            src_embeds=cond_x.detach(),
+            noisy_trg_embeds=x_t_grad,
+            t=t,
+            src_mask=cond_mask
+        )  # [batch]
+
+        # Согласно PDF формула (3):
+        # ∇_{x_t} log p(y|x_t) = (1 - σ(f)) · ∇_{x_t} f
+        #
+        # Но проще вычислить градиент log σ(f) напрямую:
+        # log p(y|x_t) = log σ(f) = -softplus(-f)
+        log_prob = -F.softplus(-logits)  # [batch]
+
+        # Вычисляем градиент
+        grad = torch.autograd.grad(
+            outputs=log_prob.sum(),
+            inputs=x_t_grad,
+            create_graph=False
+        )[0]  # [batch, seq_len, hidden]
+
+        return grad
+
     def restore_parameters(self, device: Optional[torch.device] = None) -> None:
         prefix_folder = os.path.join(self.config.training.checkpoints_folder, self.config.training.checkpoints_prefix)
         
@@ -151,15 +232,20 @@ class DiffusionRunner:
         checkpoint_names = [str(t).replace(".pth", "") for t in checkpoint_names]
         checkpoint_names = [int(t) for t in checkpoint_names if t.isdigit()]
 
-        if not checkpoint_names:
-            return False
-            
+        print('CHEKCNAMES', checkpoint_names)
+
         name = self.config.training.checkpoint_name
+
+        if not name and not checkpoint_names:
+            return None
+
         if not name:
             name = max(checkpoint_names)
         checkpoint_name = f"{prefix_folder}/{name}.pth"
         load = torch.load(checkpoint_name)
+
         self.step = load["step"]
+        print('LOADED Diffusion from', checkpoint_name, self.step)
         self.ema.load_state_dict(load["ema"])
         self.switch_to_ema()
         
@@ -251,8 +337,8 @@ class DiffusionRunner:
     def restore_decoder(self):
         decoder_path = self.config.decoder.decoder_path
         checkpoint = torch.load(decoder_path)
-        decoder_checkpoint = checkpoint["decoder"] if "decoder" in checkpoint else checkpoint
         print('DECINCH', "decoder" in checkpoint, checkpoint.keys())
+        decoder_checkpoint = checkpoint["decoder"] if "decoder" in checkpoint else checkpoint
         self.decoder.load_state_dict(decoder_checkpoint)
 
     def switch_to_ema(self) -> None:
@@ -645,7 +731,7 @@ class DiffusionRunner:
             x_0_self_cond=x_0_self_cond
         )
         return x_0
-        
+
     def calc_score(
             self,
             model,
@@ -666,13 +752,31 @@ class DiffusionRunner:
             attention_mask=attention_mask, cond_mask=cond_mask,
             x_0_self_cond=x_0_self_cond
         )
-        
+
+        # CFG (classifier-free guidance)
         if not model.training and self.config.validation.cfg_coef and self.config.is_conditional:
-            x_0_null = self.predict_x_0_unconditional(model, x_t=x_t, t=t, attention_mask=attention_mask, x_0_self_cond=x_0_self_cond)
+            x_0_null = self.predict_x_0_unconditional(model, x_t=x_t, t=t, attention_mask=attention_mask,
+                                                      x_0_self_cond=x_0_self_cond)
             x_0 = x_0 + self.config.validation.cfg_coef * (x_0 - x_0_null)
-        
+
+        # Classifier guidance
+        if not model.training and self.cond_encoder is not None and self.guidance_scale > 0 and cond is not None:
+            with torch.enable_grad():
+                guidance_grad = self.compute_classifier_guidance(
+                    x_t=x_t,
+                    cond_x=cond,
+                    t=t,
+                    cond_mask=cond_mask
+                )
+
+            # Модифицируем x_0: x_0' = x_0 + λ·σ²·∇log p(y|x_t)
+            sigma_sq = params["std"] ** 2
+            x_0 = x_0 + self.guidance_scale * sigma_sq.view(-1, 1, 1) * guidance_grad
+
+        # Пересчитываем eps и score на основе (возможно модифицированного) x_0
         eps_theta = (x_t - params["mu"] * x_0) / params["std"]
         score = -eps_theta / params["std"]
+
         return {
             "score": score,
             "x_0": x_0,
@@ -783,6 +887,7 @@ class DiffusionRunner:
             gen_text = self.generate_text_batch(
                 batch_size=len(batch["text_trg"]),
                 cond_x=src_x,
+                cond_mask=batch["attention_mask_src"] if self.config.is_conditional else None,
                 attention_mask=None,
             )[0]
 
@@ -866,7 +971,6 @@ class DiffusionRunner:
 
         return output
 
-
     @torch.no_grad()
     def pred_embeddings(
             self,
@@ -891,7 +995,8 @@ class DiffusionRunner:
                 timesteps = torch.linspace(self.dynamic.T, eps_t, self.dynamic.N + 1, device=self.device)
             elif self.config.timesteps == "quad":
                 deg = 2
-                timesteps = torch.linspace(1, 0, self.dynamic.N + 1, device=self.device) ** deg * (self.dynamic.T - eps_t) + eps_t
+                timesteps = torch.linspace(1, 0, self.dynamic.N + 1, device=self.device) ** deg * (
+                            self.dynamic.T - eps_t) + eps_t
 
             for idx in tqdm(range(self.dynamic.N)):
                 t = timesteps[idx]
@@ -910,10 +1015,94 @@ class DiffusionRunner:
 
                 x, x_mean = output["x"], output["x_mean"]
                 x_0_self_cond = output["x_0"]
-                
+
             pred_embeddings = x_mean
 
         return pred_embeddings
+
+    # @torch.no_grad()
+    # def pred_embeddings(
+    #         self,
+    #         batch_size,
+    #         cond_x=None,
+    #         cond_mask=None,
+    #         attention_mask=None,
+    # ) -> torch.Tensor:
+    #     self.score_estimator.eval()
+    #     shape = (
+    #         batch_size,
+    #         self.config.data.max_sequence_len,
+    #         self.encoder.encoder.config.hidden_size
+    #     )
+    #
+    #     with torch.no_grad():
+    #         x = self.dynamic.prior_sampling(shape).to(self.device)
+    #         x_0_self_cond = torch.zeros_like(x, dtype=x.dtype)
+    #         eps_t = 0.01
+    #
+    #         if self.config.timesteps == "linear":
+    #             timesteps = torch.linspace(self.dynamic.T, eps_t, self.dynamic.N + 1, device=self.device)
+    #         elif self.config.timesteps == "quad":
+    #             deg = 2
+    #             timesteps = torch.linspace(1, 0, self.dynamic.N + 1, device=self.device) ** deg * (self.dynamic.T - eps_t) + eps_t
+    #
+    #         use_guidance = (
+    #                 self.cond_encoder is not None and
+    #                 self.guidance_scale > 0 and
+    #                 cond_x is not None
+    #         )
+    #
+    #         if use_guidance:
+    #             print(f"#INFO Using classifier guidance with scale={self.guidance_scale}")
+    #
+    #
+    #         for idx in tqdm(range(self.dynamic.N)):
+    #             t = timesteps[idx]
+    #             next_t = timesteps[idx + 1]
+    #
+    #             input_t = t * torch.ones(shape[0], device=self.device)
+    #             next_input_t = next_t * torch.ones(shape[0], device=self.device)
+    #
+    #             if use_guidance:
+    #                 with torch.enable_grad():
+    #                     guidance_grad = self.compute_classifier_guidance(
+    #                         x_t=x,
+    #                         cond_x=cond_x,
+    #                         t=input_t,
+    #                         cond_mask=cond_mask
+    #                     )
+    #
+    #                 coef_type = self.config.validation.guidance_coef_type
+    #
+    #                 if coef_type == "ddpm":
+    #                     # PDF формула (16): (1 - α_t) / √α_t
+    #                     # β_t = 1 - α_t, поэтому коэффициент = β_t / √(1 - β_t)
+    #                     beta_t = self.dynamic.scheduler.beta_t(input_t)
+    #                     alpha_t = 1.0 - beta_t
+    #                     guidance_coef = beta_t / (torch.sqrt(alpha_t) + 1e-8)
+    #                     guidance_coef = guidance_coef.view(-1, 1, 1)
+    #                 else:  # "sigma_sq" — Dhariwal & Nichol
+    #                     # σ_t² = std²
+    #                     params = self.dynamic.marginal_params(input_t)
+    #                     guidance_coef = params["std"] ** 2
+    #
+    #                 x = x + self.guidance_scale * guidance_coef * guidance_grad
+    #
+    #             with torch.no_grad():
+    #                 output = self.diff_eq_solver.step(
+    #                     x_t=x, t=input_t, next_t=next_input_t,
+    #                     cond=cond_x,
+    #                     cond_mask=cond_mask,
+    #                     attention_mask=attention_mask,
+    #                     x_0_self_cond=x_0_self_cond,
+    #                 )
+    #
+    #             x, x_mean = output["x"], output["x_mean"]
+    #             x_0_self_cond = output["x_0"]
+    #
+    #         pred_embeddings = x_mean
+    #
+    #     return pred_embeddings
 
     @torch.no_grad()
     def estimate(self, split: str):
@@ -962,7 +1151,7 @@ class DiffusionRunner:
             if not os.path.exists(prefix_folder):
                 os.makedirs(prefix_folder)
 
-            file_name = f"{self.step}-N={self.config.dynamic.N}-len={len(result_list)}.json"
+            file_name = f"{self.step}-N={self.config.dynamic.N}-len={len(result_list)}-guidance_scale={str(self.guidance_scale)}-{str(random.randint(100, 999))}.json"
             save_path = os.path.join(prefix_folder, file_name)
             json.dump(result_list, open(save_path, "w"), indent=4)
             print(f"Texts are saved in {save_path}")

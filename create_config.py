@@ -34,15 +34,18 @@ def create_config(args):
     loss.ce_coef = 0.
 
     validation = config.validation = ml_collections.ConfigDict()
-    validation.batch_size = 384
-    validation.num_gen_texts = 5000
+    validation.batch_size = 256
+    validation.num_gen_texts = args.num_diffusion_steps or 5000
     validation.texts_path = f"{config.work_dir}/generated_texts"
     validation.cfg_coef = 0.
+    validation.classifier_guidance_scale = args.classifier_guidance_scale
+    # validation.guidance_coef_type = args.guidance_coef_type
+    validation.guidance_coef_type = "ddpm"
 
     dynamic = config.dynamic = ml_collections.ConfigDict()
     dynamic.solver = 'euler'
     dynamic.scheduler = args.scheduler
-    dynamic.N = 50
+    dynamic.N = args.num_diffusion_steps or 50
     dynamic.beta_min = 0.1
     dynamic.beta_max = 20
     dynamic.ode_sampling = False
@@ -84,7 +87,7 @@ def create_config(args):
     config.seed = 0
     config.ddp = True
     config.use_self_cond = True
-    config.is_conditional = False if 'rocstories' in data.datasets.datasets_list or 'wikipedia' in data.datasets.datasets_list else True
+    config.is_conditional = args.is_conditional or (False if 'rocstories' in data.datasets.datasets_list or 'wikipedia' in data.datasets.datasets_list else True)
     config.emb = args.emb
     config.mode = args.mode
 
@@ -92,7 +95,7 @@ def create_config(args):
     decoder.dataset = data.datasets.datasets_list[0]
     decoder.name = f"decoder-{model.encoder_name_hash}-{config.decoder.max_sequence_len}-transformer"
     decoder.name += decoder.suffix
-    decoder.is_conditional = config.is_conditional
+    decoder.is_conditional = False #config.is_conditional
     if decoder.is_conditional:
         decoder.name += "-conditional"
     if config.emb:
@@ -113,6 +116,7 @@ def create_config(args):
     if cond_encoder.empty_trg_prob > 0:
         cond_encoder.name += f'-empty_trg_prob={cond_encoder.empty_trg_prob}'
     cond_encoder.name += f'-epochs-{cond_encoder.epochs}'
+    cond_encoder.use_conditional_encoder = args.use_conditional_encoder or False
 
     # ИСПРАВЛЕНИЕ: Используем оригинальный конфиг вместо ml_collections
     config.se_config = create_se_config()
@@ -124,7 +128,7 @@ def create_config(args):
     config.timesteps = "linear"
     pref = "emb" if config.emb else "tencdm"
     training.checkpoints_prefix = f"{pref}-{model.encoder_name_hash}-{training.batch_size}-{optim.lr}-{data.datasets.datasets_list[0]}-cfg={data.swap_cfg_coef}"
-    config.eval = False
+    config.eval = args.eval or False
     
     config.tracked_dataset = data.datasets.datasets_list[0]
     config.tracked_metric = data.datasets.metrics[config.tracked_dataset]["tracked_metric"]
@@ -164,8 +168,6 @@ def create_datasets_config(args):
     else:
         config.datasets_list = [args.dataset_name]
     config.metrics = {
-        "rocstories": {"metrics": ["mauve", "div", "ppl"],
-                       "tracked_metric": "mauve"},
         "wikipedia": {"metrics": ["mauve", "div", "ppl"],
                        "tracked_metric": "mauve"},
         "qqp": {
@@ -181,6 +183,18 @@ def create_datasets_config(args):
             "tracked_metric": "bert-score",
         },
     }
+
+    if args.use_conditional_encoder:
+        config.metrics["rocstories"] = {
+            "metrics": ["bleu", "bert-score", "rouge1", "rouge2", "rougeL"], # + ["mauve", "div", "ppl"],
+            "tracked_metric": "bert-score",
+        }
+    else:
+        config.metrics["rocstories"] = {
+            "metrics": ["mauve", "div", "ppl"],
+            "tracked_metric": "mauve"
+        }
+
     return config
 
 

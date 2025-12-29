@@ -238,7 +238,11 @@ def main():
     encoder = torch.nn.DataParallel(encoder).cuda()
     decoder = BertDecoder(decoder_config=config.decoder, diffusion_config=config.se_config).train().cuda()
     print('DATA:', config.project_name, ' ; ', config.decoder.name)
+    print(type(decoder), config.decoder.decoder_path)
+    print(decoder)
     wandb.init(project=config.project_name, name=config.decoder.name, mode="offline")
+
+    print(config)
     train(config, encoder, decoder, tokenizer)
 
 
