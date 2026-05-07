@@ -1,0 +1,1611 @@
+/var/spool/slurm/d/job3956525/slurm_script: line 12: conda: command not found
+Starting script...
+/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/wandb/apis/public.py:3109: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import parse_version
+datasets ['rocstories']
+RANK and WORLD_SIZE in environ: 0/1
+============================================================
+EVAL DIFFUSION MODEL
+============================================================
+
+Конфиг:
+  Checkpoint prefix: actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0
+  Checkpoint name: 100000
+  Decoder: datasets/rocstories/3-3decoder-bert-base-cased-80-transformer.pth
+  Scheduler: sd, coef_d: 9.0
+  Emb: False
+  Num gen texts: 5000
+  Diffusion steps: 50
+###################
+cond_encoder:
+  T: 1.0
+  batch_size: 32
+  betas: &id001 !!python/tuple
+  - 0.9
+  - 0.98
+  cond_encoder_path: /home/nklotts/tencdm/datasets/rocstories/enc_backup/conditional-encoder-bert-base-cased-80-transformer.pthsptokenscratch
+  dataset: rocstories
+  empty_trg_prob: 0.0
+  epochs: 3
+  eps: 0.001
+  lr: 1.0e-05
+  max_norm: 5.0
+  max_sequence_len: 80
+  mode: transformer
+  name: conditional-encoder-bert-base-cased-80-transformer-epochs-3
+  suffix: ''
+  use_conditional_encoder: true
+  weight_decay: 0.001
+data:
+  base_path: /home/nklotts/tencdm/datasets
+  datasets:
+    datasets_list:
+    - rocstories
+    downstream_tasks:
+    - qqp
+    - xsum
+    - paradetox
+    - wiki_auto
+    metrics:
+      qqp:
+        metrics:
+        - bleu
+        - bert-score
+        - rouge1
+        - rouge2
+        - rougeL
+        tracked_metric: bert-score
+      rocstories:
+        metrics:
+        - bleu
+        - bert-score
+        - rouge1
+        - rouge2
+        - rougeL
+        tracked_metric: bert-score
+      wiki_auto:
+        metrics:
+        - bleu
+        - bert-score
+        - rouge1
+        - rouge2
+        - rougeL
+        tracked_metric: bert-score
+      wikipedia:
+        metrics:
+        - mauve
+        - div
+        - ppl
+        tracked_metric: mauve
+      xsum:
+        metrics:
+        - bleu
+        - bert-score
+        - rouge1
+        - rouge2
+        - rougeL
+        tracked_metric: bert-score
+  enc_gen_mean: /home/nklotts/tencdm/datasets/rocstories/statistics/encodings-bert-base-cased-mean.pt
+  enc_gen_std: /home/nklotts/tencdm/datasets/rocstories/statistics/encodings-bert-base-cased-std.pt
+  max_context_len: 45
+  max_sequence_len: 35
+  path: ''
+  swap_cfg_coef: 0.0
+ddp: true
+decoder:
+  T: 0.15
+  batch_size: 64
+  betas: *id001
+  dataset: rocstories
+  decoder_path: datasets/rocstories/3-3decoder-bert-base-cased-80-transformer.pth
+  diffusion_forward: true
+  epochs: 1
+  eps: 0.001
+  is_conditional: false
+  lr: 0.0001
+  max_norm: 1.0
+  max_sequence_len: 80
+  mode: transformer
+  name: decoder-bert-base-cased-80-transformer
+  noise_sigma: 0.2
+  num_hidden_layers: 3
+  suffix: ''
+  weight_decay: 0.001
+dynamic:
+  N: 50
+  beta_max: 20
+  beta_min: 0.1
+  coef_d: 9.0
+  ode_sampling: false
+  scheduler: sd
+  solver: euler
+emb: false
+eval: true
+finetuning: false
+higher_better: true
+is_conditional: true
+local_rank: 0
+loss:
+  ce_coef: 0.0
+mode: transformer
+model:
+  conditional_encoder_name: bert-base-cased
+  conditional_encoder_name_hash: bert-base-cased
+  downstream_task: ''
+  ema_rate: 0.9999
+  encoder_link: bert-base-cased
+  encoder_name: bert-base-cased
+  encoder_name_hash: bert-base-cased
+  loss: L_x_0
+  prediction: x_0
+optim:
+  beta_1: 0.9
+  beta_2: 0.98
+  eps: 1.0e-06
+  grad_clip_norm: 1.0
+  linear_warmup: 5
+  lr: 0.0002
+  min_lr: 0.0002
+  warmup_lr: 1.0e-08
+  weight_decay: 0.01
+project_name: pgwtd
+save_top_k: 2
+se_config: !!python/object:transformers.models.bert.configuration_bert.BertConfig
+  _attn_implementation_internal: null
+  _commit_hash: cd5ef92a9fb2f889e972770a36d4ed042daf221e
+  _name_or_path: bert-base-cased
+  add_cross_attention: false
+  architectures:
+  - BertForMaskedLM
+  attention_head_size: 64.0
+  attention_probs_dropout_prob: 0.1
+  bad_words_ids: null
+  begin_suppress_tokens: null
+  bos_token_id: null
+  chunk_size_feed_forward: 0
+  classifier_dropout: null
+  cross_attention_hidden_size: null
+  decoder_start_token_id: null
+  diversity_penalty: 0.0
+  do_sample: false
+  early_stopping: false
+  encoder_no_repeat_ngram_size: 0
+  eos_token_id: null
+  exponential_decay_length_penalty: null
+  finetuning_task: null
+  forced_bos_token_id: null
+  forced_eos_token_id: null
+  gradient_checkpointing: false
+  hidden_act: gelu
+  hidden_dropout_prob: 0.1
+  hidden_size: 768
+  id2label:
+    0: LABEL_0
+    1: LABEL_1
+  initializer_range: 0.02
+  intermediate_size: 3072
+  is_conditional: true
+  is_decoder: false
+  is_encoder_decoder: false
+  label2id:
+    LABEL_0: 0
+    LABEL_1: 1
+  layer_norm_eps: 1.0e-12
+  length_penalty: 1.0
+  max_length: 20
+  max_position_embeddings: 512
+  min_length: 0
+  model_type: bert
+  no_repeat_ngram_size: 0
+  num_attention_heads: 12
+  num_beam_groups: 1
+  num_beams: 1
+  num_hidden_layers: 12
+  num_return_sequences: 1
+  output_attentions: false
+  output_hidden_states: false
+  output_scores: false
+  pad_token_id: 0
+  position_embedding_type: absolute
+  prefix: null
+  problem_type: null
+  pruned_heads: {}
+  remove_invalid_values: false
+  repetition_penalty: 1.0
+  return_dict: true
+  return_dict_in_generate: false
+  sep_token_id: null
+  suppress_tokens: null
+  task_specific_params: null
+  temperature: 1.0
+  tf_legacy_loss: false
+  tie_encoder_decoder: false
+  tie_word_embeddings: true
+  tokenizer_class: null
+  top_k: 50
+  top_p: 1.0
+  torch_dtype: null
+  torchscript: false
+  transformers_version: 4.6.0.dev0
+  type_vocab_size: 2
+  typical_p: 1.0
+  use_bfloat16: false
+  use_cache: true
+  use_self_cond: true
+  vocab_size: 28996
+seed: 0
+timesteps: linear
+tracked_dataset: rocstories
+tracked_metric: bert-score
+training:
+  accum_batch_steps: 1
+  batch_size: 128
+  batch_size_per_gpu: 128
+  checkpoint_freq: 10000
+  checkpoint_name: '100000'
+  checkpoints_folder: checkpoints
+  checkpoints_prefix: actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0
+  eval_freq: 10000
+  ode_sampling: false
+  training_iters: 150000
+use_self_cond: true
+validation:
+  adaptive_confidence: true
+  batch_size: 256
+  cfg_coef: 0.0
+  classifier_guidance_scale: 50.0
+  confidence_threshold: 0.85
+  gradient_norm_target: 0.5
+  guidance_coef_type: ddpm
+  min_scale_factor: 0.1
+  num_gen_texts: 5000
+  semantic_pca_rank: 32
+  semantic_temperature: 0.3
+  texts_path: /home/nklotts/tencdm/generated_texts
+  use_semantic_projection: true
+work_dir: /home/nklotts/tencdm
+
+INFO using cuda
+/home/nklotts/tencdm/model/enc_normalizer.py:13: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  torch.load(enc_mean_path, map_location=location)[None, None, :],
+/home/nklotts/tencdm/model/enc_normalizer.py:17: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  torch.load(enc_std_path, map_location=location)[None, None, :],
+/home/nklotts/tencdm/diffusion_holder.py:383: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(decoder_path)
+DECINCH True dict_keys(['decoder'])
+/home/nklotts/tencdm/diffusion_holder.py:194: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(path, map_location="cpu")
+Loaded ConditionalEncoder from /home/nklotts/tencdm/datasets/rocstories/enc_backup/conditional-encoder-bert-base-cased-80-transformer.pthsptokenscratch
+Classifier guidance scale: 50.0
+Dataset preprocessing (num_proc=30):   0%|          | 0/3000 [00:00<?, ? examples/s]Dataset preprocessing (num_proc=30):   3%|▎         | 100/3000 [00:00<00:04, 595.74 examples/s]Dataset preprocessing (num_proc=30):  27%|██▋       | 800/3000 [00:00<00:00, 3480.10 examples/s]Dataset preprocessing (num_proc=30):  50%|█████     | 1500/3000 [00:00<00:00, 4645.00 examples/s]Dataset preprocessing (num_proc=30):  77%|███████▋  | 2300/3000 [00:00<00:00, 5592.72 examples/s]Dataset preprocessing (num_proc=30): 100%|██████████| 3000/3000 [00:00<00:00, 4456.53 examples/s]
+/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/wandb/apis/public.py:3109: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import parse_version
+wandb: Tracking run with wandb version 0.15.0
+wandb: W&B syncing is set to `offline` in this directory.  
+wandb: Run `wandb online` or set WANDB_MODE=online to enable cloud syncing.
+CHEKCNAMES [110000, 120000, 100000]
+/home/nklotts/tencdm/diffusion_holder.py:253: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  load = torch.load(checkpoint_name)
+LOADED Diffusion from checkpoints/actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0/100000.pth 100000
+Encoder loaded from checkpoint
+Decoder loaded from checkpoint
+/home/nklotts/tencdm/diffusion_holder.py:423: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  self.grad_scaler = GradScaler()
+#INFO ENTER estimate
+#INFO generating result_dict for: rocstories
+Dataset preprocessing (num_proc=30):   0%|          | 0/7000 [00:00<?, ? examples/s]Dataset preprocessing (num_proc=30):   3%|▎         | 234/7000 [00:00<00:04, 1355.44 examples/s]Dataset preprocessing (num_proc=30):  13%|█▎        | 936/7000 [00:00<00:01, 3545.99 examples/s]Dataset preprocessing (num_proc=30):  20%|██        | 1404/7000 [00:00<00:01, 3884.81 examples/s]Dataset preprocessing (num_proc=30):  27%|██▋       | 1872/7000 [00:00<00:01, 3948.54 examples/s]Dataset preprocessing (num_proc=30):  37%|███▋      | 2573/7000 [00:00<00:00, 4822.37 examples/s]Dataset preprocessing (num_proc=30):  47%|████▋     | 3272/7000 [00:00<00:00, 5165.78 examples/s]Dataset preprocessing (num_proc=30):  57%|█████▋    | 3971/7000 [00:00<00:00, 5479.10 examples/s]Dataset preprocessing (num_proc=30):  67%|██████▋   | 4670/7000 [00:00<00:00, 5579.57 examples/s]Dataset preprocessing (num_proc=30):  77%|███████▋  | 5369/7000 [00:01<00:00, 5783.50 examples/s]Dataset preprocessing (num_proc=30):  87%|████████▋ | 6068/7000 [00:01<00:00, 5997.22 examples/s]Dataset preprocessing (num_proc=30):  97%|█████████▋| 6767/7000 [00:01<00:00, 6080.41 examples/s]Dataset preprocessing (num_proc=30): 100%|██████████| 7000/7000 [00:01<00:00, 4868.78 examples/s]
+/home/nklotts/.conda/envs/pgwtd/lib/python3.9/site-packages/torch/utils/data/dataloader.py:557: UserWarning: This DataLoader will create 20 worker processes in total. Our suggested max number of worker in current system is 5, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(_create_warning_msg(
+Loader size: 28
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:04<03:36,  4.41s/it]used guidance
+  4%|▍         | 2/50 [00:04<01:39,  2.06s/it]used guidance
+  6%|▌         | 3/50 [00:05<01:09,  1.49s/it]used guidance
+  8%|▊         | 4/50 [00:06<00:56,  1.22s/it]used guidance
+ 10%|█         | 5/50 [00:07<00:48,  1.07s/it]used guidance
+ 12%|█▏        | 6/50 [00:08<00:43,  1.02it/s]used guidance
+ 14%|█▍        | 7/50 [00:08<00:39,  1.08it/s]used guidance
+ 16%|█▌        | 8/50 [00:09<00:37,  1.13it/s]used guidance
+ 18%|█▊        | 9/50 [00:10<00:35,  1.16it/s]used guidance
+ 20%|██        | 10/50 [00:11<00:33,  1.18it/s]used guidance
+ 22%|██▏       | 11/50 [00:12<00:32,  1.20it/s]used guidance
+ 24%|██▍       | 12/50 [00:12<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:13<00:30,  1.22it/s]used guidance
+ 28%|██▊       | 14/50 [00:14<00:29,  1.22it/s]used guidance
+ 30%|███       | 15/50 [00:15<00:28,  1.23it/s]used guidance
+ 32%|███▏      | 16/50 [00:16<00:27,  1.23it/s]used guidance
+ 34%|███▍      | 17/50 [00:16<00:26,  1.23it/s]used guidance
+ 36%|███▌      | 18/50 [00:17<00:26,  1.23it/s]used guidance
+ 38%|███▊      | 19/50 [00:18<00:25,  1.23it/s]used guidance
+ 40%|████      | 20/50 [00:19<00:24,  1.23it/s]used guidance
+ 42%|████▏     | 21/50 [00:20<00:23,  1.23it/s]used guidance
+ 44%|████▍     | 22/50 [00:21<00:22,  1.23it/s]used guidance
+ 46%|████▌     | 23/50 [00:21<00:22,  1.23it/s]used guidance
+ 48%|████▊     | 24/50 [00:22<00:21,  1.23it/s]used guidance
+ 50%|█████     | 25/50 [00:23<00:20,  1.23it/s]used guidance
+ 52%|█████▏    | 26/50 [00:24<00:19,  1.23it/s]used guidance
+ 54%|█████▍    | 27/50 [00:25<00:18,  1.23it/s]used guidance
+ 56%|█████▌    | 28/50 [00:25<00:17,  1.23it/s]used guidance
+ 58%|█████▊    | 29/50 [00:26<00:17,  1.23it/s]used guidance
+ 60%|██████    | 30/50 [00:27<00:16,  1.23it/s]used guidance
+ 62%|██████▏   | 31/50 [00:28<00:15,  1.23it/s]used guidance
+ 64%|██████▍   | 32/50 [00:29<00:14,  1.23it/s]used guidance
+ 66%|██████▌   | 33/50 [00:29<00:13,  1.23it/s]used guidance
+ 68%|██████▊   | 34/50 [00:30<00:13,  1.23it/s]used guidance
+ 70%|███████   | 35/50 [00:31<00:12,  1.23it/s]used guidance
+ 72%|███████▏  | 36/50 [00:32<00:11,  1.22it/s]used guidance
+ 74%|███████▍  | 37/50 [00:33<00:10,  1.23it/s]used guidance
+ 76%|███████▌  | 38/50 [00:34<00:09,  1.23it/s]used guidance
+ 78%|███████▊  | 39/50 [00:34<00:09,  1.22it/s]used guidance
+ 80%|████████  | 40/50 [00:35<00:08,  1.22it/s]used guidance
+ 82%|████████▏ | 41/50 [00:36<00:07,  1.22it/s]used guidance
+ 84%|████████▍ | 42/50 [00:37<00:06,  1.22it/s]used guidance
+ 86%|████████▌ | 43/50 [00:38<00:05,  1.22it/s]used guidance
+ 88%|████████▊ | 44/50 [00:38<00:04,  1.22it/s]used guidance
+ 90%|█████████ | 45/50 [00:39<00:04,  1.22it/s]used guidance
+ 92%|█████████▏| 46/50 [00:40<00:03,  1.22it/s]used guidance
+ 94%|█████████▍| 47/50 [00:41<00:02,  1.22it/s]used guidance
+ 96%|█████████▌| 48/50 [00:42<00:01,  1.22it/s]used guidance
+ 98%|█████████▊| 49/50 [00:43<00:00,  1.22it/s]used guidance
+100%|██████████| 50/50 [00:43<00:00,  1.22it/s]100%|██████████| 50/50 [00:43<00:00,  1.14it/s]
+EXAMPLE #1
+#DEBUG Source: John and his friends were camping in his backyard. Late that night, the boys heard a growling noise. A large shadow appeared on the tent door.
+#DEBUG Target : The tent flap flew open and the boys screamed. John's father laughed hysterically at their reaction.
+#DEBUG Generated: Hannah is upset She agrees to play with him.
+EXAMPLE #2
+#DEBUG Source: Chet was running late for work. He got to work an hour late. Chet skipped his lunch to make up for the time lost.
+#DEBUG Target : Chet went home. He set his alarm earlier for the morning.
+#DEBUG Generated: He
+EXAMPLE #3
+#DEBUG Source: Addison likes ferryboats. She takes one to work every day. Yesterday, a ferryboat caught on fire.
+#DEBUG Target : Addison got to shore safe but she was scared. Addison has decided to take her car to work instead.
+#DEBUG Generated: Finally, she found one she liked. She bought it.
+EXAMPLE #4
+#DEBUG Source: Harold called the police. He needed to report a crime. Someone had stolen his lawn mower.
+#DEBUG Target : The police came and took a statement. They told Harold they would do their best to find the thief.
+#DEBUG Generated: My girlfriend agreed. I got one.
+EXAMPLE #5
+#DEBUG Source: Ana was snorkeling on vacation. She was enjoying herself greatly. Then her snorkel dipped into the water, causing her to choke.
+#DEBUG Target : Ana coughed and spluttered, frightened. She decided snorkeling wasn't so much fun anymore.
+#DEBUG Generated: Kyle
+EXAMPLE #6
+#DEBUG Source: Earl was working for four percent commission. Earl checked his pay stubs. His boss was only paying him two percent commission.
+#DEBUG Target : Earl confronted his boss. His boss fixed the pay stubs.
+#DEBUG Generated: She watched
+EXAMPLE #7
+#DEBUG Source: Sam was a guitar player. He had an antique guitar. He decided to pass it down to his son.
+#DEBUG Target : His son was grateful. His son became a guitar player.
+#DEBUG Generated: The store owner sold the items to Tggt. Charlie was fired from the store.
+EXAMPLE #8
+#DEBUG Source: One day Quinn went to the library. Quinn picked up five books. She also got some copies of Vogue magazine.
+#DEBUG Target : Then she checked out. She returned the books five weeks later.
+#DEBUG Generated: There were alarm
+EXAMPLE #9
+#DEBUG Source: Abby went outside to play in the new snow. She built a snowman and threw snowballs. Her glasses fell off and she couldn't find them.
+#DEBUG Target : She looked for an hour and still they were lost. The next spring when the snow melted, she finally found her glasses.
+#DEBUG Generated: Tom's friend eventually found out. Tom was diagnosed with ha tanne cancer.
+EXAMPLE #10
+#DEBUG Source: Henry was a great police officer. He always knew everything that was going on in the neighborhood. One day he saw that Mrs Walker was crying.
+#DEBUG Target : He quickly remembered that she had just lost her husband. Henry bought Mrs Walker some flowers to cheer her up.
+#DEBUG Generated: We bought many food and
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.90it/s]used guidance
+  4%|▍         | 2/50 [00:00<00:26,  1.80it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.48it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.31it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.28it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.26it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.24it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.23it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:31,  1.23it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.22it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.22it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.22it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:27,  1.22it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.22it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.22it/s]used guidance
+ 38%|███▊      | 19/50 [00:14<00:25,  1.22it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.22it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.22it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.22it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.22it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.22it/s]used guidance
+ 50%|█████     | 25/50 [00:19<00:20,  1.22it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.22it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:18,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.22it/s]used guidance
+ 60%|██████    | 30/50 [00:23<00:16,  1.22it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.22it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.22it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:13,  1.22it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.22it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.22it/s]used guidance
+ 72%|███████▏  | 36/50 [00:28<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.22it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.22it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.22it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:33<00:06,  1.22it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.22it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.22it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:37<00:02,  1.22it/s]used guidance
+ 96%|█████████▌| 48/50 [00:38<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.22it/s]100%|██████████| 50/50 [00:40<00:00,  1.24it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.51it/s]used guidance
+  4%|▍         | 2/50 [00:00<00:26,  1.81it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.48it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:34,  1.35it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:31,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.22it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.22it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.22it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.22it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.22it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.22it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:19<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:18,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.22it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.22it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:33<00:06,  1.22it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.22it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.22it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:38<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.64it/s]used guidance
+  4%|▍         | 2/50 [00:00<00:26,  1.80it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.48it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.37it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.22it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.22it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.22it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.22it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:19<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.22it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:18,  1.22it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.22it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:33<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:38<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.62it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.79it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.31it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.23it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:31,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.22it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.22it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.22it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.22it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.22it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:19<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:18,  1.22it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.22it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:33<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.22it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:38<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.59it/s]used guidance
+  4%|▍         | 2/50 [00:00<00:26,  1.80it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.48it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:31,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.22it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.22it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:19<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.22it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:38<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.80it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.79it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:32,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.23it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:31,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.22it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:19<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:18,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:38<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.54it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.79it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:32,  1.46it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.63it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.79it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:32,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:34,  1.35it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.23it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:31,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.68it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.79it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:32,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.21it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.75it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.78it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:32,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:34,  1.35it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.29it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.26it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.45it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.80it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.26it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.22it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.22it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.49it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.79it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.35it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.23it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:31,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:19<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:18,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.48it/s]used guidance
+  4%|▍         | 2/50 [00:00<00:26,  1.80it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.22it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.22it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:24,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.50it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.79it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:32,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:34,  1.35it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:33,  1.24it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:23,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:24<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.77it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.78it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:32,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.26it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:24,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:25<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.20it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.56it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.78it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.26it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.22it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.21it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.22it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:24,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.20it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:25<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.20it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.20it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.20it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.20it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:09,  5.43it/s]used guidance
+  4%|▍         | 2/50 [00:00<00:26,  1.80it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:33,  1.36it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.26it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.23it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:24,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:18,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.20it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:25<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.53it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.79it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:31,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:34,  1.35it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.27it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.22it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.22it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:24,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:25<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.20it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:30<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.20it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.20it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.20it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+  0%|          | 0/50 [00:00<?, ?it/s]used guidance
+  2%|▏         | 1/50 [00:00<00:08,  5.75it/s]used guidance
+  4%|▍         | 2/50 [00:01<00:26,  1.78it/s]used guidance
+  6%|▌         | 3/50 [00:01<00:32,  1.47it/s]used guidance
+  8%|▊         | 4/50 [00:02<00:34,  1.35it/s]used guidance
+ 10%|█         | 5/50 [00:03<00:34,  1.30it/s]used guidance
+ 12%|█▏        | 6/50 [00:04<00:34,  1.26it/s]used guidance
+ 14%|█▍        | 7/50 [00:05<00:34,  1.25it/s]used guidance
+ 16%|█▌        | 8/50 [00:05<00:34,  1.23it/s]used guidance
+ 18%|█▊        | 9/50 [00:06<00:33,  1.22it/s]used guidance
+ 20%|██        | 10/50 [00:07<00:32,  1.22it/s]used guidance
+ 22%|██▏       | 11/50 [00:08<00:32,  1.21it/s]used guidance
+ 24%|██▍       | 12/50 [00:09<00:31,  1.21it/s]used guidance
+ 26%|██▌       | 13/50 [00:10<00:30,  1.21it/s]used guidance
+ 28%|██▊       | 14/50 [00:10<00:29,  1.21it/s]used guidance
+ 30%|███       | 15/50 [00:11<00:28,  1.21it/s]used guidance
+ 32%|███▏      | 16/50 [00:12<00:28,  1.21it/s]used guidance
+ 34%|███▍      | 17/50 [00:13<00:27,  1.21it/s]used guidance
+ 36%|███▌      | 18/50 [00:14<00:26,  1.21it/s]used guidance
+ 38%|███▊      | 19/50 [00:15<00:25,  1.21it/s]used guidance
+ 40%|████      | 20/50 [00:15<00:24,  1.21it/s]used guidance
+ 42%|████▏     | 21/50 [00:16<00:24,  1.21it/s]used guidance
+ 44%|████▍     | 22/50 [00:17<00:23,  1.21it/s]used guidance
+ 46%|████▌     | 23/50 [00:18<00:22,  1.21it/s]used guidance
+ 48%|████▊     | 24/50 [00:19<00:21,  1.21it/s]used guidance
+ 50%|█████     | 25/50 [00:20<00:20,  1.21it/s]used guidance
+ 52%|█████▏    | 26/50 [00:20<00:19,  1.21it/s]used guidance
+ 54%|█████▍    | 27/50 [00:21<00:19,  1.21it/s]used guidance
+ 56%|█████▌    | 28/50 [00:22<00:18,  1.21it/s]used guidance
+ 58%|█████▊    | 29/50 [00:23<00:17,  1.21it/s]used guidance
+ 60%|██████    | 30/50 [00:24<00:16,  1.21it/s]used guidance
+ 62%|██████▏   | 31/50 [00:25<00:15,  1.21it/s]used guidance
+ 64%|██████▍   | 32/50 [00:25<00:14,  1.21it/s]used guidance
+ 66%|██████▌   | 33/50 [00:26<00:14,  1.21it/s]used guidance
+ 68%|██████▊   | 34/50 [00:27<00:13,  1.21it/s]used guidance
+ 70%|███████   | 35/50 [00:28<00:12,  1.21it/s]used guidance
+ 72%|███████▏  | 36/50 [00:29<00:11,  1.21it/s]used guidance
+ 74%|███████▍  | 37/50 [00:29<00:10,  1.21it/s]used guidance
+ 76%|███████▌  | 38/50 [00:30<00:09,  1.21it/s]used guidance
+ 78%|███████▊  | 39/50 [00:31<00:09,  1.21it/s]used guidance
+ 80%|████████  | 40/50 [00:32<00:08,  1.21it/s]used guidance
+ 82%|████████▏ | 41/50 [00:33<00:07,  1.21it/s]used guidance
+ 84%|████████▍ | 42/50 [00:34<00:06,  1.21it/s]used guidance
+ 86%|████████▌ | 43/50 [00:34<00:05,  1.21it/s]used guidance
+ 88%|████████▊ | 44/50 [00:35<00:04,  1.21it/s]used guidance
+ 90%|█████████ | 45/50 [00:36<00:04,  1.21it/s]used guidance
+ 92%|█████████▏| 46/50 [00:37<00:03,  1.21it/s]used guidance
+ 94%|█████████▍| 47/50 [00:38<00:02,  1.21it/s]used guidance
+ 96%|█████████▌| 48/50 [00:39<00:01,  1.21it/s]used guidance
+ 98%|█████████▊| 49/50 [00:39<00:00,  1.21it/s]used guidance
+100%|██████████| 50/50 [00:40<00:00,  1.21it/s]100%|██████████| 50/50 [00:40<00:00,  1.23it/s]
+
+[GEN TIMING] rocstories: total 840.27s for 5120 examples → 164.11 ms/example (world_size=1)
+
+================================================================================
+GENERATED EXAMPLES - Step 100000 - TEST (полные тексты)
+================================================================================
+
+========================================
+Dataset: rocstories
+========================================
+
+Пример 1:
+
+SOURCE:
+John and his friends were camping in his backyard. Late that night, the boys heard a growling noise. A large shadow appeared on the tent door.
+
+TARGET:
+The tent flap flew open and the boys screamed. John's father laughed hysterically at their reaction.
+
+GENERATED:
+Hannah is upset She agrees to play with him.
+----------------------------------------
+
+Пример 2:
+
+SOURCE:
+Chet was running late for work. He got to work an hour late. Chet skipped his lunch to make up for the time lost.
+
+TARGET:
+Chet went home. He set his alarm earlier for the morning.
+
+GENERATED:
+He
+----------------------------------------
+
+Пример 3:
+
+SOURCE:
+Addison likes ferryboats. She takes one to work every day. Yesterday, a ferryboat caught on fire.
+
+TARGET:
+Addison got to shore safe but she was scared. Addison has decided to take her car to work instead.
+
+GENERATED:
+Finally, she found one she liked. She bought it.
+----------------------------------------
+
+Пример 4:
+
+SOURCE:
+Harold called the police. He needed to report a crime. Someone had stolen his lawn mower.
+
+TARGET:
+The police came and took a statement. They told Harold they would do their best to find the thief.
+
+GENERATED:
+My girlfriend agreed. I got one.
+----------------------------------------
+
+Пример 5:
+
+SOURCE:
+Ana was snorkeling on vacation. She was enjoying herself greatly. Then her snorkel dipped into the water, causing her to choke.
+
+TARGET:
+Ana coughed and spluttered, frightened. She decided snorkeling wasn't so much fun anymore.
+
+GENERATED:
+Kyle
+----------------------------------------
+
+Пример 6:
+
+SOURCE:
+Earl was working for four percent commission. Earl checked his pay stubs. His boss was only paying him two percent commission.
+
+TARGET:
+Earl confronted his boss. His boss fixed the pay stubs.
+
+GENERATED:
+She watched
+----------------------------------------
+
+Пример 7:
+
+SOURCE:
+Sam was a guitar player. He had an antique guitar. He decided to pass it down to his son.
+
+TARGET:
+His son was grateful. His son became a guitar player.
+
+GENERATED:
+The store owner sold the items to Tggt. Charlie was fired from the store.
+----------------------------------------
+
+Пример 8:
+
+SOURCE:
+One day Quinn went to the library. Quinn picked up five books. She also got some copies of Vogue magazine.
+
+TARGET:
+Then she checked out. She returned the books five weeks later.
+
+GENERATED:
+There were alarm
+----------------------------------------
+
+Пример 9:
+
+SOURCE:
+Abby went outside to play in the new snow. She built a snowman and threw snowballs. Her glasses fell off and she couldn't find them.
+
+TARGET:
+She looked for an hour and still they were lost. The next spring when the snow melted, she finally found her glasses.
+
+GENERATED:
+Tom's friend eventually found out. Tom was diagnosed with ha tanne cancer.
+----------------------------------------
+
+Пример 10:
+
+SOURCE:
+Henry was a great police officer. He always knew everything that was going on in the neighborhood. One day he saw that Mrs Walker was crying.
+
+TARGET:
+He quickly remembered that she had just lost her husband. Henry bought Mrs Walker some flowers to cheer her up.
+
+GENERATED:
+We bought many food and
+----------------------------------------
+================================================================================
+
+Texts are saved in /home/nklotts/tencdm/generated_texts/actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0/100000-N=50-len=1-guidance_scale=50.0-seed=0-195.json
+#INFO metrics for: rocstories
+calculating scores...
+computing bert embedding.
+  0%|          | 0/150 [00:00<?, ?it/s]  1%|          | 1/150 [00:01<03:29,  1.41s/it]  1%|▏         | 2/150 [00:01<01:48,  1.36it/s]  2%|▏         | 3/150 [00:01<01:15,  1.94it/s]  3%|▎         | 4/150 [00:02<01:00,  2.42it/s]  3%|▎         | 5/150 [00:02<00:51,  2.80it/s]  4%|▍         | 6/150 [00:02<00:46,  3.10it/s]  5%|▍         | 7/150 [00:02<00:42,  3.38it/s]  5%|▌         | 8/150 [00:03<00:40,  3.51it/s]  6%|▌         | 9/150 [00:03<00:38,  3.66it/s]  7%|▋         | 10/150 [00:03<00:36,  3.82it/s]  7%|▋         | 11/150 [00:03<00:35,  3.94it/s]  8%|▊         | 12/150 [00:04<00:34,  3.96it/s]  9%|▊         | 13/150 [00:04<00:33,  4.03it/s]  9%|▉         | 14/150 [00:04<00:33,  4.08it/s] 10%|█         | 15/150 [00:04<00:32,  4.12it/s] 11%|█         | 16/150 [00:05<00:31,  4.24it/s] 11%|█▏        | 17/150 [00:05<00:31,  4.18it/s] 12%|█▏        | 18/150 [00:05<00:31,  4.14it/s] 13%|█▎        | 19/150 [00:05<00:30,  4.27it/s] 13%|█▎        | 20/150 [00:06<00:30,  4.26it/s] 14%|█▍        | 21/150 [00:06<00:30,  4.28it/s] 15%|█▍        | 22/150 [00:06<00:29,  4.37it/s] 15%|█▌        | 23/150 [00:06<00:28,  4.43it/s] 16%|█▌        | 24/150 [00:06<00:28,  4.37it/s] 17%|█▋        | 25/150 [00:07<00:28,  4.43it/s] 17%|█▋        | 26/150 [00:07<00:27,  4.48it/s] 18%|█▊        | 27/150 [00:07<00:27,  4.50it/s] 19%|█▊        | 28/150 [00:07<00:27,  4.43it/s] 19%|█▉        | 29/150 [00:08<00:28,  4.27it/s] 20%|██        | 30/150 [00:08<00:27,  4.41it/s] 21%|██        | 31/150 [00:08<00:26,  4.49it/s] 21%|██▏       | 32/150 [00:08<00:25,  4.55it/s] 22%|██▏       | 33/150 [00:08<00:25,  4.59it/s] 23%|██▎       | 34/150 [00:09<00:25,  4.63it/s] 23%|██▎       | 35/150 [00:09<00:24,  4.65it/s] 24%|██▍       | 36/150 [00:09<00:24,  4.64it/s] 25%|██▍       | 37/150 [00:09<00:24,  4.64it/s] 25%|██▌       | 38/150 [00:10<00:23,  4.69it/s] 26%|██▌       | 39/150 [00:10<00:23,  4.68it/s] 27%|██▋       | 40/150 [00:10<00:23,  4.72it/s] 27%|██▋       | 41/150 [00:10<00:23,  4.72it/s] 28%|██▊       | 42/150 [00:10<00:22,  4.76it/s] 29%|██▊       | 43/150 [00:11<00:21,  4.89it/s] 29%|██▉       | 44/150 [00:11<00:21,  4.85it/s] 30%|███       | 45/150 [00:11<00:21,  4.83it/s] 31%|███       | 46/150 [00:11<00:21,  4.83it/s] 31%|███▏      | 47/150 [00:11<00:21,  4.78it/s] 32%|███▏      | 48/150 [00:12<00:20,  4.91it/s] 33%|███▎      | 49/150 [00:12<00:20,  5.00it/s] 33%|███▎      | 50/150 [00:12<00:19,  5.05it/s] 34%|███▍      | 51/150 [00:12<00:19,  5.15it/s] 35%|███▍      | 52/150 [00:12<00:19,  5.04it/s] 35%|███▌      | 53/150 [00:13<00:18,  5.18it/s] 36%|███▌      | 54/150 [00:13<00:18,  5.28it/s] 37%|███▋      | 55/150 [00:13<00:17,  5.32it/s] 37%|███▋      | 56/150 [00:13<00:18,  5.19it/s] 38%|███▊      | 57/150 [00:13<00:18,  4.93it/s] 39%|███▊      | 58/150 [00:14<00:18,  5.08it/s] 39%|███▉      | 59/150 [00:14<00:17,  5.21it/s] 40%|████      | 60/150 [00:14<00:16,  5.30it/s] 41%|████      | 61/150 [00:14<00:16,  5.33it/s] 41%|████▏     | 62/150 [00:14<00:16,  5.33it/s] 42%|████▏     | 63/150 [00:14<00:16,  5.36it/s] 43%|████▎     | 64/150 [00:15<00:15,  5.39it/s] 43%|████▎     | 65/150 [00:15<00:15,  5.37it/s] 44%|████▍     | 66/150 [00:15<00:15,  5.43it/s] 45%|████▍     | 67/150 [00:15<00:15,  5.43it/s] 45%|████▌     | 68/150 [00:15<00:14,  5.53it/s] 46%|████▌     | 69/150 [00:16<00:14,  5.52it/s] 47%|████▋     | 70/150 [00:16<00:14,  5.53it/s] 47%|████▋     | 71/150 [00:16<00:14,  5.57it/s] 48%|████▊     | 72/150 [00:16<00:13,  5.60it/s] 49%|████▊     | 73/150 [00:16<00:13,  5.63it/s] 49%|████▉     | 74/150 [00:16<00:13,  5.58it/s] 50%|█████     | 75/150 [00:17<00:13,  5.59it/s] 51%|█████     | 76/150 [00:17<00:12,  5.70it/s] 51%|█████▏    | 77/150 [00:17<00:12,  5.79it/s] 52%|█████▏    | 78/150 [00:17<00:12,  5.75it/s] 53%|█████▎    | 79/150 [00:17<00:12,  5.81it/s] 53%|█████▎    | 80/150 [00:17<00:12,  5.71it/s] 54%|█████▍    | 81/150 [00:18<00:12,  5.69it/s] 55%|█████▍    | 82/150 [00:18<00:11,  5.92it/s] 55%|█████▌    | 83/150 [00:18<00:11,  5.93it/s] 56%|█████▌    | 84/150 [00:18<00:11,  5.73it/s] 57%|█████▋    | 85/150 [00:18<00:11,  5.61it/s] 57%|█████▋    | 86/150 [00:18<00:11,  5.72it/s] 58%|█████▊    | 87/150 [00:19<00:10,  5.97it/s] 59%|█████▊    | 88/150 [00:19<00:10,  5.91it/s] 59%|█████▉    | 89/150 [00:19<00:10,  6.08it/s] 60%|██████    | 90/150 [00:19<00:09,  6.05it/s] 61%|██████    | 91/150 [00:19<00:09,  5.94it/s] 61%|██████▏   | 92/150 [00:19<00:09,  6.15it/s] 62%|██████▏   | 93/150 [00:20<00:09,  6.25it/s] 63%|██████▎   | 94/150 [00:20<00:08,  6.37it/s] 63%|██████▎   | 95/150 [00:20<00:08,  6.41it/s] 64%|██████▍   | 96/150 [00:20<00:08,  6.43it/s] 65%|██████▍   | 97/150 [00:20<00:08,  6.31it/s] 65%|██████▌   | 98/150 [00:20<00:08,  6.11it/s] 66%|██████▌   | 99/150 [00:21<00:08,  6.28it/s] 67%|██████▋   | 100/150 [00:21<00:08,  6.22it/s] 67%|██████▋   | 101/150 [00:21<00:07,  6.49it/s] 68%|██████▊   | 102/150 [00:21<00:07,  6.69it/s] 69%|██████▊   | 103/150 [00:21<00:06,  6.72it/s] 69%|██████▉   | 104/150 [00:21<00:06,  6.74it/s] 70%|███████   | 105/150 [00:21<00:06,  6.88it/s] 71%|███████   | 106/150 [00:22<00:06,  6.83it/s] 71%|███████▏  | 107/150 [00:22<00:06,  6.95it/s] 72%|███████▏  | 108/150 [00:22<00:05,  7.03it/s] 73%|███████▎  | 109/150 [00:22<00:05,  7.09it/s] 73%|███████▎  | 110/150 [00:22<00:07,  5.69it/s] 74%|███████▍  | 111/150 [00:22<00:06,  6.04it/s] 75%|███████▍  | 112/150 [00:23<00:05,  6.41it/s] 75%|███████▌  | 113/150 [00:23<00:05,  6.71it/s] 76%|███████▌  | 114/150 [00:23<00:05,  6.88it/s] 77%|███████▋  | 115/150 [00:23<00:04,  7.08it/s] 77%|███████▋  | 116/150 [00:23<00:04,  7.21it/s] 78%|███████▊  | 117/150 [00:23<00:04,  7.30it/s] 79%|███████▊  | 118/150 [00:23<00:04,  7.52it/s] 79%|███████▉  | 119/150 [00:23<00:04,  7.47it/s] 80%|████████  | 120/150 [00:24<00:03,  7.51it/s] 81%|████████  | 121/150 [00:24<00:03,  7.70it/s] 81%|████████▏ | 122/150 [00:24<00:03,  7.83it/s] 82%|████████▏ | 123/150 [00:24<00:03,  8.03it/s] 83%|████████▎ | 124/150 [00:24<00:03,  8.18it/s] 83%|████████▎ | 125/150 [00:24<00:02,  8.58it/s] 84%|████████▍ | 126/150 [00:24<00:02,  8.89it/s] 85%|████████▍ | 127/150 [00:24<00:02,  8.80it/s] 85%|████████▌ | 128/150 [00:24<00:02,  9.07it/s] 86%|████████▌ | 129/150 [00:25<00:02,  9.31it/s] 87%|████████▋ | 131/150 [00:25<00:01,  9.71it/s] 89%|████████▊ | 133/150 [00:25<00:01, 10.31it/s] 90%|█████████ | 135/150 [00:25<00:01, 11.01it/s] 91%|█████████▏| 137/150 [00:26<00:01,  7.01it/s] 93%|█████████▎| 139/150 [00:26<00:01,  8.25it/s] 94%|█████████▍| 141/150 [00:26<00:00,  9.35it/s] 95%|█████████▌| 143/150 [00:26<00:00, 10.29it/s] 97%|█████████▋| 145/150 [00:26<00:00, 11.06it/s] 98%|█████████▊| 147/150 [00:26<00:00, 11.71it/s] 99%|█████████▉| 149/150 [00:27<00:00, 12.08it/s]100%|██████████| 150/150 [00:27<00:00,  5.54it/s]
+computing greedy matching.
+  0%|          | 0/79 [00:00<?, ?it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+  1%|▏         | 1/79 [00:00<00:57,  1.36it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+  9%|▉         | 7/79 [00:00<00:06, 10.66it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+ 19%|█▉        | 15/79 [00:00<00:02, 23.36it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+ 32%|███▏      | 25/79 [00:01<00:01, 38.57it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+ 44%|████▍     | 35/79 [00:01<00:00, 51.45it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+ 57%|█████▋    | 45/79 [00:01<00:00, 61.88it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+ 70%|██████▉   | 55/79 [00:01<00:00, 70.06it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+ 82%|████████▏ | 65/79 [00:01<00:00, 76.40it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+ 95%|█████████▍| 75/79 [00:01<00:00, 80.33it/s]Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+Warning: Empty candidate sentence detected; setting raw BERTscores to 0.
+100%|██████████| 79/79 [00:01<00:00, 48.10it/s]
+done in 17341229.96 seconds, 0.00 sentences/sec
+----- rocstories-test -----
+bleu: 0.00084
+bert-score: 0.48478
+rouge1: 0.07351
+rouge2: 0.00234
+rougeL: 0.06409
+#INFO FINISHED MAIN ESIMATE
+#INFO FINISHED switch_back_from_ema
+#INFO FINISHED ddp_score_estimator
+#INFO FINISHED score_estimator.train()
+
+============================================================
+ГОТОВО! Время: 1278.9 сек (21.3 мин)
+============================================================
+wandb: Waiting for W&B process to finish... (success).
+wandb: 
+wandb: Run history:
+wandb:    gen_time/per_example_ms ▁
+wandb:         gen_time/total_sec ▁
+wandb: rocstories-test/bert-score ▁
+wandb:       rocstories-test/bleu ▁
+wandb:     rocstories-test/rouge1 ▁
+wandb:     rocstories-test/rouge2 ▁
+wandb:     rocstories-test/rougeL ▁
+wandb: 
+wandb: Run summary:
+wandb:    gen_time/per_example_ms 164.11486
+wandb:         gen_time/total_sec 840.26807
+wandb: rocstories-test/bert-score 0.48478
+wandb:       rocstories-test/bleu 0.00084
+wandb:     rocstories-test/rouge1 0.07351
+wandb:     rocstories-test/rouge2 0.00234
+wandb:     rocstories-test/rougeL 0.06409
+wandb: 
+wandb: You can sync this run to the cloud by running:
+wandb: wandb sync /home/nklotts/tencdm/wandb/offline-run-20260504_111836-ogb3ja68
+wandb: Find logs at: ./wandb/offline-run-20260504_111836-ogb3ja68/logs
+new diff metrics
+Script finished.
