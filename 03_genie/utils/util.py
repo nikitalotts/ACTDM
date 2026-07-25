@@ -174,6 +174,13 @@ def parse():
         ],
         required=False,
     )
+    parser.add_argument(
+        "--architecture_type", type=str, default="genie",
+        choices=["genie", "diffuseq"],
+        help="Способ подачи условия в диффузию: "
+             "genie -- cross-attention в denoising network, "
+             "diffuseq -- latent replacement (латенты промпта фиксируются на каждом шаге)",
+    )
     parser.add_argument("--local-rank", type=int, default=None)
     parser.add_argument("--swap_cfg_coef", type=float, default=0.)
     parser.add_argument("--scheduler", type=str, default='sd')

@@ -84,12 +84,18 @@ def create_config(args):
     config.use_self_cond = True
     config.is_conditional = False if 'wikipedia' in data.datasets.datasets_list else True
     config.emb = args.emb
+    config.architecture_type = getattr(args, "architecture_type", "genie")
+    if config.architecture_type not in ("genie", "diffuseq"):
+        raise Exception(f"Unknown architecture_type: {config.architecture_type}")
+    # genie: условие подается через cross-attention внутри denoising network
+    # diffuseq: условие подается через latent replacement, cross-attention не нужен
+    config.use_cross_attention = config.is_conditional and config.architecture_type == "genie"
 
-    decoder = config.decoder = create_decoder_config() 
+    decoder = config.decoder = create_decoder_config()
     decoder.dataset = data.datasets.datasets_list[0]
     decoder.name = f"decoder-{model.encoder_name_hash}-128-transformer"
     decoder.name += decoder.suffix
-    decoder.is_conditional = config.is_conditional
+    decoder.is_conditional = config.use_cross_attention
     if decoder.is_conditional:
         decoder.name += "-conditional"
     if config.emb:
@@ -100,10 +106,11 @@ def create_config(args):
 
     config.se_config = create_se_config()
     config.se_config.is_conditional = config.is_conditional
-    config.se_config.is_decoder = config.is_conditional
+    config.se_config.is_decoder = config.use_cross_attention
     config.se_config.vocab_size = AutoConfig.from_pretrained(model.encoder_link).vocab_size
     config.se_config.use_self_cond = config.use_self_cond
 
+    print(f"[CONFIG] architecture_type={config.architecture_type}")
     print(f"[CONFIG] is_conditional={config.is_conditional}")
     print(f"[CONFIG] se_config.is_decoder={config.se_config.is_decoder} (cross-attention: {'ON' if config.se_config.is_decoder else 'OFF'})")
 
@@ -111,6 +118,7 @@ def create_config(args):
     config.timesteps = "linear"
     pref = "emb" if config.emb else "tencdm"
     training.checkpoints_prefix = f"{pref}-{model.encoder_name_hash}-{training.batch_size}-{optim.lr}-{data.datasets.datasets_list[0]}-cfg={data.swap_cfg_coef}"
+    training.checkpoints_prefix += checkpoints_prefix_suffix(config.architecture_type)
     config.eval = False
     
     config.tracked_dataset = data.datasets.datasets_list[0]
@@ -118,6 +126,12 @@ def create_config(args):
     config.higher_better = True
     config.save_top_k = 5
     return config
+
+
+def checkpoints_prefix_suffix(architecture_type):
+    """Чтобы чекпоинты genie и diffuseq не перезаписывали друг друга.
+    Для genie суффикс пустой -- имена остаются обратно совместимыми."""
+    return "" if architecture_type == "genie" else f"-{architecture_type}"
 
 
 def create_se_config():

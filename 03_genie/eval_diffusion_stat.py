@@ -6,7 +6,7 @@ import torch.distributed as dist
 
 from diffusion_holder import DiffusionRunner
 from utils.util import set_seed, parse
-from create_config import create_config
+from create_config import create_config, checkpoints_prefix_suffix
 
 if __name__ == '__main__':
     args = parse()
@@ -16,7 +16,8 @@ if __name__ == '__main__':
 
     config.training.checkpoints_folder = "checkpoints"
     config.training.checkpoints_prefix = "tencdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0"
-    config.training.checkpoint_name = "25000" 
+    config.training.checkpoints_prefix += checkpoints_prefix_suffix(config.architecture_type)
+    config.training.checkpoint_name = "25000" if config.architecture_type == "genie" else "50000"
 
     config.seed = int(getattr(args, "seed", 0))
     config.num_seeds = int(getattr(args, "num_seeds", 5))

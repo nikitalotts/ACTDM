@@ -17,6 +17,9 @@ conda activate pgwtd
 
 export WANDB_MODE=offline
 
+# genie | diffuseq -- способ подачи условия в диффузию
+ARCH_TYPE="${ARCH_TYPE:-genie}"
+
 echo "Starting diffusion evaluation (single run)..."
 
 torchrun --master_port=31250 --nproc_per_node=1 eval_diffusion.py \
@@ -25,6 +28,7 @@ torchrun --master_port=31250 --nproc_per_node=1 eval_diffusion.py \
     --encoder_name bert-base-cased \
     --swap_cfg_coef 0.0 \
     --project_name pgwtd \
+    --architecture_type ${ARCH_TYPE} \
     --seed 0
 
 echo "Diffusion evaluation finished."

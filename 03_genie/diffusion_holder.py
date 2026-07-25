@@ -321,11 +321,15 @@ class DiffusionRunner:
         self.grad_scaler = GradScaler()
 
     def collate_fn(self, batch):
+        # diffuseq конкатенирует латенты промпта и продолжения в одну последовательность,
+        # поэтому длины должны быть фиксированными, а не подгоняться под самый длинный текст батча
+        padding = "max_length" if self.config.architecture_type == "diffuseq" else True
+
         texts_trg = [t["text_trg"] for t in batch]
         tok_trg = self.tokenizer(
             texts_trg,
             add_special_tokens=True,
-            padding=True,
+            padding=padding,
             truncation=True,
             max_length=self.config.data.max_sequence_len,
             return_tensors="pt",
@@ -338,7 +342,7 @@ class DiffusionRunner:
             tok_src = self.tokenizer(
                 texts_src,
                 add_special_tokens=True,
-                padding=True,
+                padding=padding,
                 truncation=True,
                 max_length=self.config.data.max_context_len,
                 return_tensors="pt",
@@ -655,6 +659,33 @@ class DiffusionRunner:
             "eps_theta": eps_theta
         }
 
+    def build_score_estimator_input(self, x_t, cond_x, attention_mask, cond_mask, trg_mask):
+        """Собирает вход denoising network в зависимости от config.architecture_type.
+
+        genie    -- условие подается в каждый блок сети через cross-attention,
+                    поэтому x_t идет как есть, а cond_x/cond_mask -- отдельными аргументами.
+        diffuseq -- условие подается через latent replacement: латенты промпта
+                    конкатенируются с зашумленным продолжением в одну последовательность,
+                    cross-attention не используется.
+
+        Возвращает (src_len, z_t, attention_mask, cond, cond_mask).
+        """
+        if self.config.architecture_type == "diffuseq" and self.config.is_conditional and cond_x is not None:
+            src_len = cond_x.shape[1]
+            z_t = torch.cat([cond_x, x_t], dim=1)
+            if cond_mask is not None:
+                if trg_mask is None:
+                    trg_mask = torch.ones(
+                        x_t.shape[0], x_t.shape[1],
+                        device=cond_mask.device, dtype=cond_mask.dtype,
+                    )
+                combined_mask = torch.cat([cond_mask, trg_mask], dim=1)
+            else:
+                combined_mask = None
+            return src_len, z_t, combined_mask, None, None
+
+        return 0, x_t, attention_mask, cond_x, cond_mask
+
     def calc_loss(
             self,
             clean_x,
@@ -662,36 +693,46 @@ class DiffusionRunner:
             batch=None,
             eps: float = 1e-5,
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
-        mask = None 
-        
+        mask = None
+
         batch_size = clean_x.size(0)
 
         t = self.sample_time(batch_size, eps=eps)
         marg_forward = self.dynamic.marginal(clean_x, t)
         x_t, noise = marg_forward['x_t'], marg_forward['noise']
 
-        x_0_self_cond = torch.zeros_like(clean_x, dtype=clean_x.dtype)
+        src_len, z_t, se_mask, se_cond, se_cond_mask = self.build_score_estimator_input(
+            x_t=x_t,
+            cond_x=cond_x,
+            attention_mask=mask,
+            cond_mask=batch.get("attention_mask_src"),
+            trg_mask=batch.get("attention_mask_trg"),
+        )
+
+        x_0_self_cond = torch.zeros_like(z_t, dtype=z_t.dtype)
         if self.config.use_self_cond and random.random() > 0.5:
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                t_next = t
-                params_next = self.dynamic.marginal_params(t_next)
-                x_t_next = params_next["mu"] * clean_x + params_next["std"] * noise
-
                 with torch.no_grad():
                     x_0_self_cond = self.ddp_score_estimator(
-                        x_t=x_t_next, time_t=t_next, cond=cond_x,
-                        attention_mask=mask, 
-                        cond_mask=batch.get("attention_mask_src"),
+                        x_t=z_t, time_t=t, cond=se_cond,
+                        attention_mask=se_mask,
+                        cond_mask=se_cond_mask,
                         x_0_self_cond=x_0_self_cond
                     ).detach()
+                    if src_len > 0:
+                        x_0_self_cond[:, :src_len, :] = cond_x
 
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            x_0 = self.ddp_score_estimator(
-                x_t=x_t, time_t=t, cond=cond_x,
-                attention_mask=mask, 
-                cond_mask=batch.get("attention_mask_src"),
+            z_0 = self.ddp_score_estimator(
+                x_t=z_t, time_t=t, cond=se_cond,
+                attention_mask=se_mask,
+                cond_mask=se_cond_mask,
                 x_0_self_cond=x_0_self_cond
             )
+
+        # для diffuseq первые src_len позиций -- это латенты промпта, лосс считается
+        # только по продолжению; для genie src_len == 0 и срез ничего не меняет
+        x_0 = z_0[:, src_len:, :]
 
         loss_x_0 = mse_loss(clean_x, x_0, mask)
 
@@ -863,7 +904,16 @@ class DiffusionRunner:
 
         with torch.no_grad():
             x = self.dynamic.prior_sampling(shape).to(self.device)
-            x_0_self_cond = torch.zeros_like(x, dtype=x.dtype)
+
+            src_len, z, se_mask, se_cond, se_cond_mask = self.build_score_estimator_input(
+                x_t=x,
+                cond_x=cond_x,
+                attention_mask=attention_mask,
+                cond_mask=cond_mask,
+                trg_mask=None,
+            )
+
+            x_0_self_cond = torch.zeros_like(z, dtype=z.dtype)
             eps_t = 0.01
 
             if self.config.timesteps == "linear":
@@ -880,17 +930,23 @@ class DiffusionRunner:
                 next_input_t = next_t * torch.ones(shape[0], device=self.device)
 
                 output = self.diff_eq_solver.step(
-                    x_t=x, t=input_t, next_t=next_input_t,
-                    cond=cond_x,
-                    cond_mask=cond_mask,
-                    attention_mask=attention_mask,
+                    x_t=z, t=input_t, next_t=next_input_t,
+                    cond=se_cond,
+                    cond_mask=se_cond_mask,
+                    attention_mask=se_mask,
                     x_0_self_cond=x_0_self_cond,
                 )
 
-                x, x_mean = output["x"], output["x_mean"]
+                z, z_mean = output["x"], output["x_mean"]
                 x_0_self_cond = output["x_0"]
-                
-            pred_embeddings = x_mean
+
+                # diffuseq: латенты промпта фиксируются на каждом шаге обратного процесса
+                if src_len > 0:
+                    z[:, :src_len, :] = cond_x
+                    z_mean[:, :src_len, :] = cond_x
+                    x_0_self_cond[:, :src_len, :] = cond_x
+
+            pred_embeddings = z_mean[:, src_len:, :]
 
         return pred_embeddings
 

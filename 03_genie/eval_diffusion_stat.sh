@@ -17,6 +17,9 @@ conda activate pgwtd
 
 export WANDB_MODE=offline
 
+# genie | diffuseq -- способ подачи условия в диффузию
+ARCH_TYPE="${ARCH_TYPE:-genie}"
+
 BASE_SEED=0
 NUM_SEEDS=20
 SEED_STEP=1000
@@ -30,6 +33,7 @@ torchrun --master_port=31252 --nproc_per_node=1 eval_diffusion_stat.py \
     --encoder_name bert-base-cased \
     --swap_cfg_coef 0.0 \
     --project_name pgwtd \
+    --architecture_type ${ARCH_TYPE} \
     --seed ${BASE_SEED} \
     --num_seeds ${NUM_SEEDS} \
     --seed_step ${SEED_STEP}

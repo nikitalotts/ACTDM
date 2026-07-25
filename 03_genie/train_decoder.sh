@@ -16,8 +16,11 @@ module load Python
 conda deactivate 
 conda activate pgwtd
 
+# genie | diffuseq -- для diffuseq декодер обучается безусловным
+ARCH_TYPE="${ARCH_TYPE:-genie}"
+
 echo "Starting script..."
 
-python -m model.train_decoder --dataset_name='rocstories' --encoder_name='bert-base-cased' --project_name='pgwtd'
+python -m model.train_decoder --dataset_name='rocstories' --encoder_name='bert-base-cased' --project_name='pgwtd' --architecture_type=${ARCH_TYPE}
  
 echo "Script finished."
