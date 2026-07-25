@@ -20,11 +20,10 @@ conda activate pgwtd
 
 export WANDB_MODE=offline
 
-# genie | diffuseq -- способ подачи условия в диффузию
-ARCH_TYPE="${ARCH_TYPE:-genie}"
+source run_flags.sh
 
 echo "Starting script..."
 
-torchrun --nproc_per_node=4 train_diffusion.py --dataset_name rocstories --encoder_name bert-base-cased --project_name='actdm' --architecture_type=${ARCH_TYPE}
+torchrun --nproc_per_node=4 train_diffusion.py --dataset_name rocstories --encoder_name bert-base-cased --project_name='actdm' ${ARCH_FLAGS} ${DATA_FLAGS}
 
 echo "Script finished."

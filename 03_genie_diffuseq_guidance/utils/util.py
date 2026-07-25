@@ -7,6 +7,12 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 from torch.nn.functional import cross_entropy
 
+from utils.schemes import (
+    ARCHITECTURE_TYPES, ARCHITECTURE_TYPE_HELP,
+    SPLIT_SCHEMES, SPLIT_SCHEME_HELP,
+    AUGMENTATION_SCHEMES, AUGMENTATION_SCHEME_HELP,
+)
+
 
 def set_seed(seed: int = 0):
     if seed is not None:
@@ -175,17 +181,45 @@ def parse():
         required=False,
     )
     parser.add_argument(
-        "--architecture_type", type=str, default="genie",
-        choices=["genie", "diffuseq"],
-        help="Способ подачи условия в диффузию: "
-             "genie -- cross-attention в denoising network, "
-             "diffuseq -- latent replacement (латенты промпта фиксируются на каждом шаге)",
+        "--architecture_type", type=str, default=ARCHITECTURE_TYPES[0],
+        choices=ARCHITECTURE_TYPES,
+        help="Как условие связано с диффузией: "
+             + "; ".join(f"{k} -- {v}" for k, v in ARCHITECTURE_TYPE_HELP.items()),
     )
     parser.add_argument("--local-rank", type=int, default=None)
     parser.add_argument("--swap_cfg_coef", type=float, default=0.)
     parser.add_argument("--scheduler", type=str, default='sd')
-    parser.add_argument("--coef_d", type=str, default=9)
-    parser.add_argument("--emb", type=bool, default=False)
+    parser.add_argument("--coef_d", type=float, default=9)
+    # type=bool здесь работал бы неправильно: argparse вызывает bool("False") -> True,
+    # то есть выключить флаг было невозможно
+    parser.add_argument("--emb", action='store_true',
+                        help="Диффундировать word embeddings вместо выхода энкодера")
+    parser.add_argument(
+        "--no_normalize_encodings", action='store_true',
+        help="Не нормализовать энкодинги статистиками датасета (EncNormalizer). "
+             "По умолчанию нормализация включена. Влияет только на режим без --emb: "
+             "при --emb эмбеддинги всегда нормируются по статистикам словаря",
+    )
+    parser.add_argument(
+        "--split_scheme", type=str, default=SPLIT_SCHEMES[0], choices=SPLIT_SCHEMES,
+        help="Схема разбиения истории rocstories на промпт и продолжение "
+             "(должна совпадать с той, с которой скачивался датасет в data/load.py): "
+             + ", ".join(f"{k} -- {v}" for k, v in SPLIT_SCHEME_HELP.items()),
+    )
+    parser.add_argument(
+        "--augmentation_scheme", type=str, default=AUGMENTATION_SCHEMES[0],
+        choices=AUGMENTATION_SCHEMES,
+        help="Схема генерации негативных примеров для классификатора "
+             "(только для architecture_type=guidance): "
+             + ", ".join(f"{k} -- {v}" for k, v in AUGMENTATION_SCHEME_HELP.items()),
+    )
+    parser.add_argument(
+        "--classifier_guidance_scale", type=float, default=0.0,
+        help="Сила classifier guidance. Имеет смысл только при architecture_type=guidance",
+    )
+    parser.add_argument("--mode", type=str, default="transformer",
+                        help="Архитектура декодера")
+    parser.add_argument("--eval", action='store_true')
     parser.add_argument(
         "--encoder_name", type=str, default='bert-base-cased',
         choices=[

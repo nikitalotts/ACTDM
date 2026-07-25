@@ -33,6 +33,7 @@ from model.score_estimator import ScoreEstimatorEMB
 from model.encoder import Encoder
 from model.enc_normalizer import EncNormalizer
 from model.decoder import Decoder
+from model.conditional_encoder import ConditionalEncoder
 
 from estimation_utils.util import gather_texts, compute_metric
 from estimation_utils.metrics import compute_metric
@@ -51,7 +52,7 @@ class DiffusionRunner:
 
         gen_cfg = config.model.encoder_link
         self.tokenizer = AutoTokenizer.from_pretrained(gen_cfg)
-        if not config.emb:
+        if config.normalize_encodings:
             self.gen_enc_normalizer = EncNormalizer(
                 enc_mean_path=self.config.data.enc_gen_mean,
                 enc_std_path=self.config.data.enc_gen_std,
@@ -86,6 +87,14 @@ class DiffusionRunner:
                 device_ids=[config.local_rank],
                 broadcast_buffers=False,
             )
+
+        # classifier guidance -- это режим генерации, а не сила эффекта.
+        # На обучение он не влияет никак: в этом режиме диффузия обучается безусловной.
+        self.cond_encoder = None
+        self.use_guidance = config.classifier_guidance
+        self.guidance_scale = config.guidance_scale if self.use_guidance else 0.
+        if self.use_guidance:
+            self._load_cond_encoder(config.cond_encoder.cond_encoder_path)
 
         self.config.params_number = ml_collections.ConfigDict()
         self.config.params_number.score_estimator = sum(p.numel() for p in self.score_estimator.parameters() if p.requires_grad)
@@ -140,10 +149,62 @@ class DiffusionRunner:
             self.step = 0
             
             if self.load_checkpoint():
-                if self.config.is_conditional:
+                if self.config.is_pipeline_conditional:
                     self.estimate("validation")
                 self.estimate("test")
                 self.validate()
+
+    def _load_cond_encoder(self, path: str) -> None:
+        # Молча отключать guidance нельзя: режим при этом незаметно превращается
+        # в unconditional, и метрики считаются не для того, что запускали.
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"architecture_type=guidance требует обученный ConditionalEncoder, "
+                f"но файл не найден: {path}"
+            )
+
+        self.cond_encoder = ConditionalEncoder(
+            encoder_link=self.config.model.encoder_link,
+            tokenizer=self.tokenizer
+        ).cuda().eval()
+
+        checkpoint = torch.load(path, map_location="cpu")
+        self.cond_encoder.load_state_dict(checkpoint["cond_encoder"])
+
+        for param in self.cond_encoder.parameters():
+            param.requires_grad = False
+
+        print(f"Loaded ConditionalEncoder from {path}")
+        print(f"Classifier guidance scale: {self.guidance_scale}")
+
+    def compute_classifier_guidance(
+            self,
+            x_t: torch.Tensor,
+            cond_x: torch.Tensor,
+            t: torch.Tensor,
+            cond_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x_t_grad = x_t.detach().clone().requires_grad_(True)
+
+        logits = self.cond_encoder(
+            src_embeds=cond_x.detach(),
+            noisy_trg_embeds=x_t_grad,
+            t=t,
+            src_mask=cond_mask
+        )
+
+        prob = torch.sigmoid(logits)
+
+        grad_f = torch.autograd.grad(
+            outputs=logits.sum(),
+            inputs=x_t_grad,
+            create_graph=False
+        )[0]
+
+        # nabla_x log p(y=1|x) = (1 - sigmoid(logits)) * nabla_x logits
+        grad = (1 - prob).view(-1, 1, 1) * grad_f
+
+        return grad
 
     def restore_parameters(self, device: Optional[torch.device] = None) -> None:
         prefix_folder = os.path.join(self.config.training.checkpoints_folder, self.config.training.checkpoints_prefix)
@@ -323,7 +384,7 @@ class DiffusionRunner:
     def collate_fn(self, batch):
         # diffuseq конкатенирует латенты промпта и продолжения в одну последовательность,
         # поэтому длины должны быть фиксированными, а не подгоняться под самый длинный текст батча
-        padding = "max_length" if self.config.architecture_type == "diffuseq" else True
+        padding = "max_length" if self.config.use_latent_replacement else True
 
         texts_trg = [t["text_trg"] for t in batch]
         tok_trg = self.tokenizer(
@@ -337,7 +398,7 @@ class DiffusionRunner:
             return_token_type_ids=False,
         )
         
-        if self.config.is_conditional:
+        if self.config.is_pipeline_conditional:
             texts_src = [t["text_src"] for t in batch]
             tok_src = self.tokenizer(
                 texts_src,
@@ -448,7 +509,7 @@ class DiffusionRunner:
 
                     for i in range(min(3, len(batch["text_trg"]))):
                         print(f"\nПример {i + 1}:")
-                        if self.config.is_conditional and "text_src" in batch:
+                        if self.config.is_pipeline_conditional and "text_src" in batch:
                             src_text = batch["text_src"][i]
                             print(f"SOURCE (полный текст):")
                             print(src_text)
@@ -486,8 +547,8 @@ class DiffusionRunner:
             if self.step % self.config.training.eval_freq == 0:
                 total_start = time.time()
                 print('#INFO enter self.step % self.config.training.eval_freq == 0:')
-                if self.config.is_conditional:
-                    print('#INFO enter self.config.is_conditional: ')
+                if self.config.is_pipeline_conditional:
+                    print('#INFO enter self.config.is_pipeline_conditional: ')
                     val_start = time.time()
                     self.estimate("validation")
                     val_time = time.time() - val_start
@@ -641,9 +702,15 @@ class DiffusionRunner:
             x_0_self_cond=None
     ) -> Dict[str, torch.Tensor]:
         params = self.dynamic.marginal_params(t)
+
+        # Условие доходит до denoising network только в условных режимах.
+        # В guidance/unconditional сеть безусловная, но cond все равно приходит
+        # сюда -- он нужен классификатору ниже.
         x_0 = model(
-            x_t=x_t, time_t=t, cond=cond,
-            attention_mask=attention_mask, cond_mask=cond_mask,
+            x_t=x_t, time_t=t,
+            cond=cond if self.config.is_conditional else None,
+            attention_mask=attention_mask,
+            cond_mask=cond_mask if self.config.is_conditional else None,
             x_0_self_cond=x_0_self_cond
         )
         
@@ -653,6 +720,29 @@ class DiffusionRunner:
         
         eps_theta = (x_t - params["mu"] * x_0) / params["std"]
         score = -eps_theta / params["std"]
+
+        # Classifier guidance применяется только на генерации: обучаться под
+        # guided score нельзя, диффузия должна оставаться безусловной.
+        if self.use_guidance and not model.training:
+            if cond is None:
+                raise Exception("classifier guidance требует cond (энкодинги промпта)")
+
+            # Классификатор обучен на нормализованных латентах (Encoder применяет
+            # enc_normalizer.normalize, а зашумление идет уже поверх), поэтому
+            # x_t и cond подаются как есть, без денормализации.
+            with torch.enable_grad():
+                guidance_grad = self.compute_classifier_guidance(
+                    x_t=x_t, cond_x=cond, t=t, cond_mask=cond_mask
+                )
+
+            # nabla log p(x_t|y) = nabla log p(x_t) + s * nabla log p(y|x_t)
+            score = score + self.guidance_scale * guidance_grad
+
+            # x_0 пересчитывается из guided score, чтобы солвер и self-conditioning
+            # видели согласованные x_0/score/eps_theta
+            x_0 = (x_t + params["std"] ** 2 * score) / params["mu"]
+            eps_theta = (x_t - params["mu"] * x_0) / params["std"]
+
         return {
             "score": score,
             "x_0": x_0,
@@ -670,7 +760,7 @@ class DiffusionRunner:
 
         Возвращает (src_len, z_t, attention_mask, cond, cond_mask).
         """
-        if self.config.architecture_type == "diffuseq" and self.config.is_conditional and cond_x is not None:
+        if self.config.use_latent_replacement and cond_x is not None:
             src_len = cond_x.shape[1]
             z_t = torch.cat([cond_x, x_t], dim=1)
             if cond_mask is not None:
@@ -776,7 +866,7 @@ class DiffusionRunner:
             "GEN": [],
             "TRG": []
         }
-        if self.config.is_conditional:
+        if self.config.is_pipeline_conditional:
             result_dict["SRC"] = []
 
         print('Loader size:', len(loader))
@@ -792,7 +882,7 @@ class DiffusionRunner:
                 torch.cuda.synchronize()
             _t0 = time.time()
 
-            if self.config.is_conditional:
+            if self.config.is_pipeline_conditional:
                 src_x = self.encoder(**{
                     "input_ids": batch["input_ids_src"],
                     "attention_mask": batch["attention_mask_src"]
@@ -815,7 +905,7 @@ class DiffusionRunner:
             if not self.printed_example_estimate and dist.get_rank() == 0:
                 for i in range(10):
                     print(f'EXAMPLE #{i+1}')
-                    if self.config.is_conditional and "text_src" in batch:
+                    if self.config.is_pipeline_conditional and "text_src" in batch:
                         print(f"#DEBUG Source: {batch['text_src'][i]}")
                     print(f"#DEBUG Target : {batch['text_trg'][i]}")
 
@@ -832,7 +922,7 @@ class DiffusionRunner:
                     result_dict["TRG"] += batch["text_trg"]
                 
             result_dict["GEN"] += gen_text
-            if self.config.is_conditional:
+            if self.config.is_pipeline_conditional:
                 result_dict["SRC"] += batch["text_src"]
 
             if len(result_dict["TRG"]) >= (self.config.validation.num_gen_texts // dist.get_world_size()):
@@ -877,7 +967,9 @@ class DiffusionRunner:
 
     @torch.no_grad()
     def pred_logits(self, pred_embeddings, cond_x=None, cond_mask=None):
-        if not self.config.emb:
+        # Декодер ждет латенты в том же виде, в каком их отдает энкодер.
+        # Денормализация нужна ровно тогда, когда нормализация применялась.
+        if self.gen_enc_normalizer is not None:
             pred_embeddings = self.gen_enc_normalizer.denormalize(pred_embeddings)
             if self.config.decoder.is_conditional and cond_x is not None:
                 cond_x = self.gen_enc_normalizer.denormalize(cond_x)
@@ -1050,7 +1142,8 @@ class DiffusionRunner:
             if not os.path.exists(prefix_folder):
                 os.makedirs(prefix_folder)
 
-            file_name = f"{self.step}-N={self.config.dynamic.N}-seed={self.config.seed}-len={len(result_list)}.json"
+            file_name = (f"{self.step}-N={self.config.dynamic.N}-seed={self.config.seed}"
+                         f"-len={len(result_list)}-gs={self.guidance_scale}.json")
             save_path = os.path.join(prefix_folder, file_name)
             json.dump(result_list, open(save_path, "w"), indent=4)
             print(f"Texts are saved in {save_path}")
