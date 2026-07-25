@@ -17,6 +17,9 @@ module load Python
 conda deactivate
 conda activate pgwtd
 
+MODE="${MODE:-unconditional}"
+source mode_flags.sh
+
 echo "Starting script..."
 
 torchrun --nproc_per_node=1 eval_diffusion.py \
@@ -27,6 +30,7 @@ torchrun --nproc_per_node=1 eval_diffusion.py \
     --swap_cfg_coef 0.0 \
     --mode transformer \
     --project_name='pgwtd' \
-    --eval
+    --eval \
+    ${MODE_FLAGS} ${DATA_FLAGS}
 
 echo "Script finished."

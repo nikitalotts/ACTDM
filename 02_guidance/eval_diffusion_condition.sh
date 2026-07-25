@@ -17,6 +17,9 @@ module load Python
 conda deactivate
 conda activate pgwtd
 
+MODE="${MODE:-conditional}"
+source mode_flags.sh
+
 echo "Starting script..."
 
 torchrun --master_port=31250 --nproc_per_node=1 eval_diffusion.py \
@@ -28,9 +31,7 @@ torchrun --master_port=31250 --nproc_per_node=1 eval_diffusion.py \
     --mode transformer \
     --project_name='pgwtd' \
     --eval \
-    --use_conditional_encoder \
-    --is_conditional \
-    --classifier_guidance_scale=250.0
+    ${MODE_FLAGS} ${DATA_FLAGS}
 
 
 echo "new diff metrics"

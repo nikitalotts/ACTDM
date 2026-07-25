@@ -6,7 +6,7 @@ import torch.distributed as dist
 
 from diffusion_holder import DiffusionRunner
 from utils.util import set_seed, parse
-from create_config import create_config
+from create_config import create_config, checkpoints_prefix_suffix
 
 if __name__ == '__main__':
     args = parse()
@@ -17,7 +17,7 @@ if __name__ == '__main__':
     config.decoder.mode = "transformer"
     config.decoder.decoder_path = "datasets/rocstories/3-3decoder-bert-base-cased-80-transformer.pth"
     config.training.checkpoints_folder = "checkpoints"
-    config.training.checkpoints_prefix = "actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0"
+    config.training.checkpoints_prefix = "actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0" + checkpoints_prefix_suffix(config)
     config.training.checkpoint_name = "100000"
 
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -42,6 +42,10 @@ if __name__ == '__main__':
         print("EVAL DIFFUSION MODEL")
         print("=" * 60)
         print(f"\nКонфиг:")
+        print(f"  Mode: {config.generation_mode} "
+              f"(is_conditional={config.is_conditional}, "
+              f"classifier_guidance={config.classifier_guidance}, "
+              f"scale={config.guidance_scale})")
         print(f"  Checkpoint prefix: {config.training.checkpoints_prefix}")
         print(f"  Checkpoint name: {config.training.checkpoint_name}")
         print(f"  Decoder: {config.decoder.decoder_path}")

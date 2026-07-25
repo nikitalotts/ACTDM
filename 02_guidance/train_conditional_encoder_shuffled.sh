@@ -17,8 +17,10 @@ module load Python
 conda deactivate 
 conda activate pgwtd
 
+source mode_flags.sh
+
 echo "Starting script..."
 
-python -m train_conditional_encoder_shuffled --dataset_name='rocstories' --encoder_name='bert-base-cased' --project_name='actdm'
+python -m train_conditional_encoder_shuffled --dataset_name='rocstories' --encoder_name='bert-base-cased' --project_name='actdm' ${DATA_FLAGS}
  
 echo "Script finished."

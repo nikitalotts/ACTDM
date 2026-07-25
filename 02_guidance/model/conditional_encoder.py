@@ -48,7 +48,7 @@ class ConditionalEncoder(nn.Module):
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding
 
-    def forward(self, src_embeds, noisy_trg_embeds, t, src_mask=None):
+    def forward(self, src_embeds, noisy_trg_embeds, t, src_mask=None, trg_mask=None):
         device = src_embeds.device
         batch_size = src_embeds.shape[0]
         seq_len_src = src_embeds.shape[1]
@@ -70,17 +70,18 @@ class ConditionalEncoder(nn.Module):
         ], dim=1)
 
         ones = torch.ones(batch_size, 1, device=device, dtype=torch.long)
-        trg_ones = torch.ones(batch_size, seq_len_trg, device=device, dtype=torch.long)
 
         if src_mask is None:
             src_mask = torch.ones(batch_size, seq_len_src, device=device, dtype=torch.long)
+        if trg_mask is None:
+            trg_mask = torch.ones(batch_size, seq_len_trg, device=device, dtype=torch.long)
 
         attention_mask = torch.cat([
             ones,
             ones,
             src_mask,
             ones,
-            trg_ones,
+            trg_mask,
             ones,
         ], dim=1)
 

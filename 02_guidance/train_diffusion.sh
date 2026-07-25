@@ -19,6 +19,8 @@ conda activate pgwtd
 
 export WANDB_MODE=offline
 
+source mode_flags.sh
+
 echo "Starting script..."
 
 torchrun --master_port=31503 --nproc_per_node=4 train_diffusion.py \
@@ -29,8 +31,6 @@ torchrun --master_port=31503 --nproc_per_node=4 train_diffusion.py \
     --swap_cfg_coef 0.0 \
     --mode transformer \
     --project_name='actdm' \
-    --use_conditional_encoder \
-    --is_conditional \
-    --classifier_guidance_scale=10.0
+    ${MODE_FLAGS} ${DATA_FLAGS}
  
 echo "Script finished."

@@ -7,7 +7,7 @@ import torch.distributed as dist
 
 from diffusion_holder import DiffusionRunner
 from utils.util import set_seed, parse
-from create_config import create_config
+from create_config import create_config, checkpoints_prefix_suffix
 
 if __name__ == '__main__':
     args = parse()
@@ -19,7 +19,7 @@ if __name__ == '__main__':
     config.decoder.decoder_path = "datasets/rocstories/3-3decoder-bert-base-cased-80-transformer.pth"
 
     config.training.checkpoints_folder = "checkpoints"
-    config.training.checkpoints_prefix = "actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0"
+    config.training.checkpoints_prefix = "actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0" + checkpoints_prefix_suffix(config)
     config.training.checkpoint_name = "100000" 
 
     config.cond_encoder.cond_encoder_path = \
@@ -49,16 +49,18 @@ if __name__ == '__main__':
 
     if dist.get_rank() == 0:
         print("=" * 60)
-        print("STATISTICAL EVAL — DIFFUSION (classifier guidance)")
+        print("STATISTICAL EVAL — DIFFUSION")
         print("=" * 60)
+        print(f"  Mode: {config.generation_mode} "
+              f"(is_conditional={config.is_conditional}, "
+              f"classifier_guidance={config.classifier_guidance}, "
+              f"scale={config.guidance_scale})")
         print(f"  Checkpoint prefix   : {config.training.checkpoints_prefix}")
         print(f"  Checkpoint name     : {config.training.checkpoint_name or '<latest>'}")
         print(f"  Decoder path        : {config.decoder.decoder_path}")
         print(f"  Cond encoder path   : {config.cond_encoder.cond_encoder_path}")
         print(f"  Scheduler           : {config.dynamic.scheduler}, coef_d: {config.dynamic.coef_d}")
         print(f"  Diffusion N steps   : {config.dynamic.N}")
-        print(f"  is_conditional      : {config.is_conditional}")
-        print(f"  Guidance scale      : {config.validation.classifier_guidance_scale}")
         print(f"  Num gen texts       : {config.validation.num_gen_texts}")
         print(f"  BASE SEED           : {config.seed}")
         print(f"  NUM SEEDS (runs)    : {config.num_seeds}")

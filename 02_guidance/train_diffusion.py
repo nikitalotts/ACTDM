@@ -7,7 +7,7 @@ import torch.distributed as dist
 
 from diffusion_holder import DiffusionRunner
 from utils.util import set_seed, parse
-from create_config import create_config
+from create_config import create_config, checkpoints_prefix_suffix
 
 import time
 
@@ -36,7 +36,7 @@ if __name__ == '__main__':
     config.cond_encoder.cond_encoder_path = '/home/nklotts/tencdm/datasets/rocstories/enc_backup/conditional-encoder-bert-base-cased-80-transformer.pthsptokenscratch'
 
     config.training.checkpoint_name = "last"
-    config.training.checkpoints_prefix = "actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0"
+    config.training.checkpoints_prefix = "actdm-bert-base-cased-512-0.0002-rocstories-cfg=0.0" + checkpoints_prefix_suffix(config)
 
     config.training.batch_size_per_gpu = config.training.batch_size // dist.get_world_size()
     if dist.get_rank() == 0:

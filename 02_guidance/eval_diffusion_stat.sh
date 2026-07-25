@@ -23,11 +23,12 @@ BASE_SEED=0
 NUM_SEEDS=20
 SEED_STEP=1000
 
-CG_SCALE=10.0
+CG_SCALE="${CG_SCALE:-10.0}"
 
-echo "Starting DIFFUSION STATISTICAL evaluation (classifier guidance)"
+source mode_flags.sh
+
+echo "Starting DIFFUSION STATISTICAL evaluation (MODE=${MODE})"
 echo "  base_seed=${BASE_SEED}, num_seeds=${NUM_SEEDS}, seed_step=${SEED_STEP}"
-echo "  classifier_guidance_scale=${CG_SCALE}"
 
 torchrun --master_port=31250 --nproc_per_node=1 eval_diffusion_stat.py \
     --dataset_name rocstories \
@@ -38,11 +39,9 @@ torchrun --master_port=31250 --nproc_per_node=1 eval_diffusion_stat.py \
     --mode transformer \
     --project_name='pgwtd' \
     --eval \
-    --use_conditional_encoder \
-    --is_conditional \
-    --classifier_guidance_scale=${CG_SCALE} \
+    ${MODE_FLAGS} ${DATA_FLAGS} \
     --seed ${BASE_SEED} \
     --num_seeds ${NUM_SEEDS} \
     --seed_step ${SEED_STEP}
 
-echo "Diffusion statistical evaluation (classifier guidance) finished."
+echo "Diffusion statistical evaluation finished."

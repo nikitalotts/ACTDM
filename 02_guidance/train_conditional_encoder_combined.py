@@ -406,6 +406,9 @@ def train(config, encoder, cond_encoder, score_estimator, tokenizer, device):
 
 def main():
     args = parse()
+    # схема негативов задается самим скриптом и попадает в имя чекпоинта
+    # классификатора, чтобы три схемы не писали в один файл
+    args.augmentation_scheme = "combined"
     config = create_config(args)
 
     config.cond_encoder.lr = 1e-4
@@ -427,7 +430,7 @@ def main():
         'conditional-encoder-bert-base-cased-80-transformer.pth'
     )
 
-    if not config.emb:
+    if config.normalize_encodings:
         enc_normalizer = EncNormalizer(
             enc_mean_path=config.data.enc_gen_mean,
             enc_std_path=config.data.enc_gen_std,

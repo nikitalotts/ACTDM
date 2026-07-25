@@ -2,6 +2,8 @@ import ml_collections
 import os
 from transformers import PretrainedConfig, AutoConfig
 
+from utils.schemes import SPLIT_SCHEMES
+
 
 def create_config(args):
     config = ml_collections.ConfigDict()
@@ -39,15 +41,6 @@ def create_config(args):
     validation.texts_path = f"{config.work_dir}/generated_texts"
     validation.cfg_coef = 0.
     validation.classifier_guidance_scale = args.classifier_guidance_scale
-    validation.guidance_coef_type = "ddpm"
-
-    validation.use_semantic_projection = True
-    validation.semantic_pca_rank = 32
-    validation.semantic_temperature = 0.3
-    validation.adaptive_confidence = True
-    validation.confidence_threshold = 0.85
-    validation.min_scale_factor = 0.1
-    validation.gradient_norm_target = 0.5
 
     dynamic = config.dynamic = ml_collections.ConfigDict()
     dynamic.solver = 'euler'
@@ -94,20 +87,70 @@ def create_config(args):
     config.seed = 0
     config.ddp = True
     config.use_self_cond = True
+    # --- режим работы -----------------------------------------------------------
+    # is_conditional        -- условная ли сама диффузия (cross-attention в denoising network)
+    # classifier_guidance   -- применяется ли classifier guidance при генерации
+    #
+    # Ровно три допустимых сочетания:
+    #   (False, False) -- безусловная диффузия
+    #   (True,  False) -- условная диффузия
+    #   (False, True)  -- безусловная диффузия + classifier guidance при генерации
     config.is_conditional = args.is_conditional or (
         False if 'rocstories' in data.datasets.datasets_list or 'wikipedia' in data.datasets.datasets_list else True)
+    config.classifier_guidance = args.classifier_guidance
+    config.guidance_scale = args.classifier_guidance_scale
+
+    if config.is_conditional and config.classifier_guidance:
+        raise Exception(
+            "--is_conditional и --classifier_guidance взаимоисключающие: "
+            "classifier guidance применяется поверх безусловной диффузии"
+        )
+    if config.classifier_guidance and config.guidance_scale <= 0:
+        raise Exception(
+            "--classifier_guidance требует --classifier_guidance_scale > 0"
+        )
+    if not config.classifier_guidance and config.guidance_scale != 0:
+        print(
+            "[CONFIG] WARNING: --classifier_guidance_scale задан без --classifier_guidance, "
+            "guidance не будет применяться, scale сброшен в 0"
+        )
+        config.guidance_scale = 0.
+        validation.classifier_guidance_scale = 0.
+
+    if config.classifier_guidance:
+        config.generation_mode = "classifier_guidance"
+    elif config.is_conditional:
+        config.generation_mode = "conditional"
+    else:
+        config.generation_mode = "unconditional"
+
+    # Нужен ли промпт в пайплайне: в режимах 2 и 3 -- да, в режиме 1 -- нет.
+    # Это НЕ то же самое, что is_conditional: в режиме 3 промпт нужен классификатору,
+    # но в саму диффузию он не подается.
+    config.is_pipeline_conditional = config.is_conditional or config.classifier_guidance
+
     config.emb = args.emb
     config.mode = args.mode
+
+    # Нормализация энкодингов статистиками датасета (EncNormalizer).
+    # По умолчанию включена -- как в исходном подпроекте.
+    # При --emb нормализация идет по статистикам словаря внутри Encoder и этим флагом
+    # не управляется, поэтому здесь она осмысленна только для режима без --emb.
+    config.normalize_encodings = not args.no_normalize_encodings and not config.emb
+    data.split_scheme = args.split_scheme
 
     decoder = config.decoder = create_decoder_config()
     decoder.dataset = data.datasets.datasets_list[0]
     decoder.name = f"decoder-{model.encoder_name_hash}-{config.decoder.max_sequence_len}-transformer"
     decoder.name += decoder.suffix
-    decoder.is_conditional = False 
+    decoder.is_conditional = False
     if decoder.is_conditional:
         decoder.name += "-conditional"
     if config.emb:
         decoder.name += "-emb"
+    # Декодер обязан жить в том же пространстве, что и диффузия, поэтому
+    # ненормализованный вариант хранится отдельным файлом
+    decoder.name += artifact_suffix(config)
     decoder.decoder_path = f"{data.base_path}/{data.datasets.datasets_list[0]}/{decoder.name}.pth"
     if decoder.max_sequence_len < data.max_sequence_len:
         raise Exception("Decoder max_sequence_len is less than required")
@@ -117,32 +160,88 @@ def create_config(args):
     cond_encoder.dataset = data.datasets.datasets_list[0]
     cond_encoder.name = f"conditional-encoder-{model.encoder_name_hash}-{config.cond_encoder.max_sequence_len}-transformer"
     cond_encoder.name += cond_encoder.suffix
-    cond_encoder.cond_encoder_path = f"{data.base_path}/{data.datasets.datasets_list[0]}/{cond_encoder.name}.pth"
     if cond_encoder.max_sequence_len < data.max_sequence_len:
         raise Exception("Conditional Encoder max_sequence_len is less than required")
     cond_encoder.mode = config.mode
     if cond_encoder.empty_trg_prob > 0:
         cond_encoder.name += f'-empty_trg_prob={cond_encoder.empty_trg_prob}'
     cond_encoder.name += f'-epochs-{cond_encoder.epochs}'
-    cond_encoder.use_conditional_encoder = args.use_conditional_encoder or False
+    # Схема негативов входит в имя: иначе три схемы обучения писали бы
+    # классификатор в один и тот же файл и затирали друг друга
+    cond_encoder.augmentation_scheme = args.augmentation_scheme
+    cond_encoder.name += f'-{cond_encoder.augmentation_scheme}'
+    cond_encoder.name += artifact_suffix(config)
+    # путь строится после того, как имя собрано целиком
+    cond_encoder.cond_encoder_path = f"{data.base_path}/{data.datasets.datasets_list[0]}/{cond_encoder.name}.pth"
+    # классификатор нужен только в режиме classifier guidance
+    cond_encoder.use_conditional_encoder = config.classifier_guidance
 
     config.se_config = create_se_config()
     config.se_config.is_conditional = config.is_conditional
-    config.se_config.is_decoder = False 
+    # cross-attention нужен ровно тогда, когда условна сама диффузия.
+    # В режиме classifier_guidance диффузия безусловная, cross-attention выключен.
+    config.se_config.is_decoder = config.is_conditional
     config.se_config.vocab_size = AutoConfig.from_pretrained(model.encoder_link).vocab_size
     config.se_config.use_self_cond = config.use_self_cond
+
+    # Метрики: в безусловном режиме оценивается качество текста как такового,
+    # в условном и в classifier guidance -- соответствие промпту.
+    if config.is_pipeline_conditional:
+        data.datasets.metrics["rocstories"] = {
+            "metrics": ["bleu", "bert-score", "rouge1", "rouge2", "rougeL"],
+            "tracked_metric": "bert-score",
+        }
+    else:
+        data.datasets.metrics["rocstories"] = {
+            "metrics": ["mauve", "div", "ppl"],
+            "tracked_metric": "mauve",
+        }
 
     config.project_name = args.project_name
     config.timesteps = "linear"
     pref = "emb" if config.emb else "actdm"
     training.checkpoints_prefix = f"{pref}-{model.encoder_name_hash}-{training.batch_size}-{optim.lr}-{data.datasets.datasets_list[0]}-cfg={data.swap_cfg_coef}"
+    training.checkpoints_prefix += checkpoints_prefix_suffix(config)
     config.eval = args.eval or False
+
+    print(f"[CONFIG] generation_mode={config.generation_mode}")
+    print(f"[CONFIG] is_conditional={config.is_conditional} "
+          f"(cross-attention: {'ON' if config.se_config.is_decoder else 'OFF'})")
+    print(f"[CONFIG] classifier_guidance={config.classifier_guidance}, scale={config.guidance_scale}")
+    print(f"[CONFIG] normalize_encodings={config.normalize_encodings}, emb={config.emb}")
+    print(f"[CONFIG] split_scheme={data.split_scheme}, augmentation_scheme={cond_encoder.augmentation_scheme}")
 
     config.tracked_dataset = data.datasets.datasets_list[0]
     config.tracked_metric = data.datasets.metrics[config.tracked_dataset]["tracked_metric"]
     config.higher_better = True
     config.save_top_k = 2
     return config
+
+
+def artifact_suffix(config):
+    """Суффикс, общий для декодера, классификатора и чекпоинтов диффузии.
+
+    Все они обязаны жить в одном пространстве латентов и на одной нарезке данных,
+    поэтому несовпадающие варианты не должны попадать в один файл. Значения по
+    умолчанию дают пустой суффикс -- старые имена остаются валидными.
+    """
+    suffix = ""
+    if not config.normalize_encodings and not config.emb:
+        suffix += "-unnorm"
+    if config.data.split_scheme != SPLIT_SCHEMES[0]:
+        suffix += f"-{config.data.split_scheme}"
+    return suffix
+
+
+def checkpoints_prefix_suffix(config):
+    """Суффикс имени чекпоинта диффузии.
+
+    Режимы 1 и 3 используют ОДНУ И ТУ ЖЕ безусловную диффузию (режим 3 -- это
+    та же модель плюс классификатор на генерации), поэтому суффикса у них нет
+    и чекпоинт переиспользуется. У условной диффузии архитектура другая
+    (есть cross-attention), поэтому чекпоинты разделены.
+    """
+    return ("-conditional" if config.is_conditional else "") + artifact_suffix(config)
 
 
 def create_se_config():
@@ -188,16 +287,8 @@ def create_datasets_config(args):
         },
     }
 
-    if args.use_conditional_encoder:
-        config.metrics["rocstories"] = {
-            "metrics": ["bleu", "bert-score", "rouge1", "rouge2", "rougeL"], 
-            "tracked_metric": "bert-score",
-        }
-    else:
-        config.metrics["rocstories"] = {
-            "metrics": ["mauve", "div", "ppl"],
-            "tracked_metric": "mauve"
-        }
+    # набор метрик для rocstories выставляется в create_config,
+    # когда уже известен режим работы (см. config.is_pipeline_conditional)
 
     return config
 

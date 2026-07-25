@@ -52,7 +52,7 @@ class DiffusionRunner:
 
         gen_cfg = config.model.encoder_link
         self.tokenizer = AutoTokenizer.from_pretrained(gen_cfg)
-        if not config.emb:
+        if config.normalize_encodings:
             self.gen_enc_normalizer = EncNormalizer(
                 enc_mean_path=self.config.data.enc_gen_mean,
                 enc_std_path=self.config.data.enc_gen_std,
@@ -88,9 +88,12 @@ class DiffusionRunner:
                 broadcast_buffers=False,
             )
 
+        # classifier guidance -- это режим генерации, а не сила эффекта.
+        # На обучение он не влияет никак: диффузия в этом режиме обучается безусловной.
         self.cond_encoder = None
-        self.guidance_scale = config.validation.classifier_guidance_scale
-        if self.guidance_scale > 0:
+        self.use_guidance = config.classifier_guidance
+        self.guidance_scale = config.guidance_scale if self.use_guidance else 0.
+        if self.use_guidance:
             self._load_cond_encoder(config.cond_encoder.cond_encoder_path)
 
         self.config.params_number = ml_collections.ConfigDict()
@@ -155,18 +158,20 @@ class DiffusionRunner:
             self.step = 0
             
             if self.load_checkpoint():
-                if self.config.is_conditional:
+                if self.config.is_pipeline_conditional:
                     self.estimate("validation")
                 self.estimate("test")
                 self.validate()
 
 
     def _load_cond_encoder(self, path: str) -> None:
+        # Молча отключать guidance нельзя: режим 3 при этом незаметно
+        # превращается в режим 1 и метрики считаются не для того, что запускали.
         if not os.path.exists(path):
-            print(f"WARNING: Cond encoder not found at {path}")
-            print("Classifier guidance will be disabled.")
-            self.guidance_scale = 0
-            return
+            raise FileNotFoundError(
+                f"Режим classifier_guidance требует обученный ConditionalEncoder, "
+                f"но файл не найден: {path}"
+            )
 
         self.cond_encoder = ConditionalEncoder(
             encoder_link=self.config.model.encoder_link,
@@ -199,15 +204,16 @@ class DiffusionRunner:
         )
 
         prob = torch.sigmoid(logits)
-        
+
         grad_f = torch.autograd.grad(
             outputs=logits.sum(),
             inputs=x_t_grad,
             create_graph=False
         )[0]
 
+        # nabla_x log p(y=1|x) = (1 - sigmoid(logits)) * nabla_x logits
         grad = (1 - prob).view(-1, 1, 1) * grad_f
-        
+
         return grad
 
     def restore_parameters(self, device: Optional[torch.device] = None) -> None:
@@ -410,7 +416,8 @@ class DiffusionRunner:
             return_token_type_ids=False,
         )
         
-        if self.config.is_conditional or self.guidance_scale > 0:
+        # промпт нужен и условной диффузии, и классификатору в режиме guidance
+        if self.config.is_pipeline_conditional:
             texts_src = [t["text_src"] for t in batch]
             tok_src = self.tokenizer(
                 texts_src,
@@ -528,7 +535,7 @@ class DiffusionRunner:
 
                     for i in range(min(3, len(batch["text_trg"]))):
                         print(f"\nПример {i + 1}:")
-                        if self.config.is_conditional and "text_src" in batch:
+                        if self.config.is_pipeline_conditional and "text_src" in batch:
                             src_text = batch["text_src"][i]
                             print(f"SOURCE (полный текст):")
                             print(src_text)
@@ -628,9 +635,9 @@ class DiffusionRunner:
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16), torch.no_grad():
             batch = batch.to(f"cuda:{dist.get_rank()}")
 
-            if self.guidance_scale > 0:
-                src_x = None
-            elif self.config.is_conditional:
+            # На обучении условие подается только в режиме условной диффузии.
+            # В режиме classifier guidance диффузия обучается безусловной.
+            if self.config.is_conditional:
                 src_x = self.encoder(**{
                     "input_ids": batch["input_ids_src"],
                     "attention_mask": batch["attention_mask_src"]
@@ -675,9 +682,9 @@ class DiffusionRunner:
 
         for batch in self.valid_loader:
             batch = batch.to(f"cuda:{dist.get_rank()}")
-            if self.guidance_scale > 0:
-                src_x = None
-            elif self.config.is_conditional:
+            # На обучении условие подается только в режиме условной диффузии.
+            # В режиме classifier guidance диффузия обучается безусловной.
+            if self.config.is_conditional:
                 src_x = self.encoder(**{
                     "input_ids": batch["input_ids_src"],
                     "attention_mask": batch["attention_mask_src"]
@@ -711,39 +718,6 @@ class DiffusionRunner:
         self.ddp_score_estimator.train(prev_mode)
         print('#INFO finished VALIDAtiON\n')
 
-    def predict_x_0_unconditional(
-        self,
-        model,
-        x_t, t,
-        attention_mask=None,
-        x_0_self_cond=None
-    ) -> torch.Tensor:
-        texts_src = ["" for _ in range(x_t.shape[0])]
-        tok_src = self.tokenizer(
-            texts_src,
-            add_special_tokens=True,
-            padding=True,
-            truncation=True,
-            max_length=self.config.data.max_context_len,
-            return_tensors="pt",
-            return_attention_mask=True,
-            return_token_type_ids=False,
-        ).to(f"cuda:{dist.get_rank()}")
-        src_x = self.encoder(
-            input_ids=tok_src["input_ids"],
-            attention_mask=tok_src["attention_mask"]
-        )
-
-        x_0 = model(
-            x_t=x_t, 
-            time_t=t, 
-            cond=src_x,
-            attention_mask=attention_mask, 
-            cond_mask=tok_src["attention_mask"],
-            x_0_self_cond=x_0_self_cond
-        )
-        return x_0
-
     def calc_score(
             self,
             model,
@@ -754,67 +728,53 @@ class DiffusionRunner:
             x_0_self_cond=None
     ) -> Dict[str, torch.Tensor]:
         params = self.dynamic.marginal_params(t)
-        
-        use_classifier_guidance = (
-            not model.training and 
-            self.cond_encoder is not None and 
-            self.guidance_scale > 0 and 
-            cond is not None
-        )
-        
-        if use_classifier_guidance or not self.config.is_conditional:
-            x_0 = model(
-                x_t=x_t, time_t=t, cond=None,
-                attention_mask=attention_mask, cond_mask=None,
-                x_0_self_cond=x_0_self_cond
-            )
-        else:
+
+        # Условие подается в denoising network только в режиме условной диффузии.
+        # В режимах 1 и 3 сеть безусловная, и cond до нее не доходит.
+        if self.config.is_conditional:
             x_0 = model(
                 x_t=x_t, time_t=t, cond=cond,
                 attention_mask=attention_mask, cond_mask=cond_mask,
                 x_0_self_cond=x_0_self_cond
             )
+        else:
+            x_0 = model(
+                x_t=x_t, time_t=t, cond=None,
+                attention_mask=attention_mask, cond_mask=None,
+                x_0_self_cond=x_0_self_cond
+            )
 
         eps_theta = (x_t - params["mu"] * x_0) / params["std"]
         score = -eps_theta / params["std"]
-        
+
+        # Classifier guidance применяется только на генерации: обучаться под
+        # guided score нельзя, диффузия должна оставаться безусловной.
+        use_classifier_guidance = self.use_guidance and not model.training
         if use_classifier_guidance:
+            if cond is None:
+                raise Exception("classifier guidance требует cond (энкодинги промпта)")
+
+            # Классификатор обучен на нормализованных латентах (Encoder применяет
+            # enc_normalizer.normalize, а зашумление идет уже поверх), поэтому
+            # x_t и cond подаются как есть, без денормализации.
             with torch.enable_grad():
-                x_t_denorm = self.gen_enc_normalizer.denormalize(x_t) if self.gen_enc_normalizer is not None else x_t
-                cond_denorm = self.gen_enc_normalizer.denormalize(cond) if self.gen_enc_normalizer is not None else cond
                 guidance_grad = self.compute_classifier_guidance(
-                    x_t=x_t_denorm,
-                    cond_x=cond_denorm,
-                    t=t, cond_mask=cond_mask
+                    x_t=x_t, cond_x=cond, t=t, cond_mask=cond_mask
                 )
-            
-            if self.gen_enc_normalizer is not None:
-                guidance_grad = guidance_grad * self.gen_enc_normalizer.enc_std.to(guidance_grad.device)
-            
+
+            # nabla log p(x_t|y) = nabla log p(x_t) + s * nabla log p(y|x_t)
             score = score + self.guidance_scale * guidance_grad
-            
-            sigma_sq = (params["std"] ** 2).view(-1, 1, 1)
-            mu = params["mu"].view(-1, 1, 1)
-            x_0 = (x_t + sigma_sq * score) / mu
-            
+
+            # x_0 пересчитывается из guided score, чтобы солвер и self-conditioning
+            # видели согласованные x_0/score/eps_theta
+            x_0 = (x_t + params["std"] ** 2 * score) / params["mu"]
             eps_theta = (x_t - params["mu"] * x_0) / params["std"]
-            print('used guidance')
-        
+
         return {
             "score": score,
             "x_0": x_0,
             "eps_theta": eps_theta
         }
-
-        
-        
-        
-
-        
-        
-            
-            
-            
         
 
     def calc_loss(
@@ -897,7 +857,7 @@ class DiffusionRunner:
             "GEN": [],
             "TRG": []
         }
-        if self.config.is_conditional:
+        if self.config.is_pipeline_conditional:
             result_dict["SRC"] = []
 
         print('Loader size:', len(loader))
@@ -913,7 +873,7 @@ class DiffusionRunner:
                 torch.cuda.synchronize()
             _t0 = time.time()
 
-            if self.config.is_conditional or self.guidance_scale > 0:
+            if self.config.is_pipeline_conditional:
                 src_x = self.encoder(**{
                     "input_ids": batch["input_ids_src"],
                     "attention_mask": batch["attention_mask_src"]
@@ -938,7 +898,7 @@ class DiffusionRunner:
             if not self.printed_example_estimate and dist.get_rank() == 0:
                 for i in range(10):
                     print(f'EXAMPLE #{i+1}')
-                    if self.config.is_conditional and "text_src" in batch:
+                    if self.config.is_pipeline_conditional and "text_src" in batch:
                         print(f"#DEBUG Source: {batch['text_src'][i]}")
                     print(f"#DEBUG Target : {batch['text_trg'][i]}")
 
@@ -955,7 +915,7 @@ class DiffusionRunner:
                     result_dict["TRG"] += batch["text_trg"]
                 
             result_dict["GEN"] += gen_text
-            if self.config.is_conditional or self.guidance_scale > 0:
+            if self.config.is_pipeline_conditional:
                 result_dict["SRC"] += batch["text_src"]
 
             if len(result_dict["TRG"]) >= (self.config.validation.num_gen_texts // dist.get_world_size()):
@@ -1000,18 +960,19 @@ class DiffusionRunner:
 
     @torch.no_grad()
     def pred_logits(self, pred_embeddings, cond_x=None, cond_mask=None):
-        if not self.config.emb:
+        # Декодер ждет латенты в том же виде, в каком их отдает энкодер.
+        # Денормализация нужна ровно тогда, когда нормализация применялась.
+        if self.gen_enc_normalizer is not None:
             pred_embeddings = self.gen_enc_normalizer.denormalize(pred_embeddings)
             if self.config.decoder.is_conditional and cond_x is not None:
                 cond_x = self.gen_enc_normalizer.denormalize(cond_x)
-        else:
+        if self.config.emb:
             cond_x = None
             cond_mask = None
 
         if self.config.decoder.is_conditional and cond_x is not None:
 
             if isinstance(self.decoder, BertDecoder):
-                print('USING COND DECODER')
                 output = self.decoder(
                     pred_embeddings,
                     encoder_hidden_states=cond_x,
@@ -1419,7 +1380,7 @@ class DiffusionRunner:
             else:
                 batch = batch.to(f"cuda:0")
                 
-            if self.config.is_conditional or self.guidance_scale > 0:
+            if self.config.is_pipeline_conditional:
                 src_x = self.encoder(**{
                     "input_ids": batch["input_ids_src"],
                     "attention_mask": batch["attention_mask_src"]
@@ -1445,7 +1406,7 @@ class DiffusionRunner:
                     "steps": []
                 }
                 
-                if self.config.is_conditional or self.guidance_scale > 0:
+                if self.config.is_pipeline_conditional:
                     example["source"] = batch["text_src"][i]
                 
                 for step_info in extended_results["steps"]:
@@ -1512,7 +1473,7 @@ class DiffusionRunner:
             
             classifier_probs = None
             classifier_logits = None
-            if self.cond_encoder is not None and self.guidance_scale > 0 and cond_x is not None:
+            if self.use_guidance and cond_x is not None:
                 classifier_logits, classifier_probs = self._compute_classifier_outputs(
                     x_t=x,
                     cond_x=cond_x,

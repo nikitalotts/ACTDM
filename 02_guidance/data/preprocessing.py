@@ -43,7 +43,8 @@ def batch_preprocessing(batch, dataset_name, split, config):
         new_batch["text_src"] = [f"Task is {dataset_name}. Prompt: {src}" for src in new_batch["text_src"]]
 
     elif "rocstories" in dataset_name:
-        if config.is_conditional:
+        # промпт нужен и условной диффузии, и классификатору в режиме guidance
+        if config.is_pipeline_conditional:
             new_batch = {
                 "text_src": batch["text_src"],
                 "text_trg": batch["text_trg"],

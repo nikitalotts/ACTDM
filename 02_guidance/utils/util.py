@@ -7,6 +7,11 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 from torch.nn.functional import cross_entropy
 
+from utils.schemes import (
+    SPLIT_SCHEMES, SPLIT_SCHEME_HELP,
+    AUGMENTATION_SCHEMES, AUGMENTATION_SCHEME_HELP,
+)
+
 
 def set_seed(seed: int = 0):
     if seed is not None:
@@ -178,7 +183,28 @@ def parse():
     parser.add_argument("--swap_cfg_coef", type=float, default=0.)
     parser.add_argument("--scheduler", type=str, default='sd')
     parser.add_argument("--coef_d", type=float, default=9)
-    parser.add_argument("--emb", type=bool, default=False)
+    # type=bool здесь работал бы неправильно: argparse вызывает bool("False") -> True,
+    # то есть выключить флаг было невозможно
+    parser.add_argument("--emb", action='store_true',
+                        help="Диффундировать word embeddings вместо выхода энкодера")
+    parser.add_argument(
+        "--no_normalize_encodings", action='store_true',
+        help="Не нормализовать энкодинги статистиками датасета (EncNormalizer). "
+             "По умолчанию нормализация включена. Влияет только на режим без --emb: "
+             "при --emb эмбеддинги всегда нормируются по статистикам словаря",
+    )
+    parser.add_argument(
+        "--split_scheme", type=str, default=SPLIT_SCHEMES[0], choices=SPLIT_SCHEMES,
+        help="Схема разбиения истории rocstories на промпт и продолжение "
+             "(должна совпадать с той, с которой скачивался датасет в data/load.py): "
+             + ", ".join(f"{k} -- {v}" for k, v in SPLIT_SCHEME_HELP.items()),
+    )
+    parser.add_argument(
+        "--augmentation_scheme", type=str, default=AUGMENTATION_SCHEMES[0],
+        choices=AUGMENTATION_SCHEMES,
+        help="Схема генерации негативных примеров для классификатора: "
+             + ", ".join(f"{k} -- {v}" for k, v in AUGMENTATION_SCHEME_HELP.items()),
+    )
     parser.add_argument("--mode", type=str, default="transformer")
     parser.add_argument(
         "--encoder_name", type=str, default='bert-base-cased',
@@ -189,13 +215,30 @@ def parse():
             "bart-base"
         ])
     parser.add_argument('--project_name', type=str, default='test')
-    parser.add_argument("--is_conditional", action='store_true')
-    parser.add_argument("--use_conditional_encoder", action='store_true')
+    # --- режим работы подпроекта -------------------------------------------------
+    # 1) без флагов                    -- безусловная диффузия
+    # 2) --is_conditional              -- условная диффузия (промпт через cross-attention)
+    # 3) --classifier_guidance         -- безусловная диффузия + classifier guidance при генерации
+    # Режимы 2 и 3 взаимоисключающие: в режиме 3 сама диффузия обязана быть безусловной.
+    parser.add_argument(
+        "--is_conditional", action='store_true',
+        help="Условная диффузия: промпт подается в denoising network через cross-attention",
+    )
+    parser.add_argument(
+        "--classifier_guidance", action='store_true',
+        help="Безусловная диффузия + classifier guidance на этапе генерации. "
+             "Требует обученный ConditionalEncoder и --classifier_guidance_scale > 0. "
+             "Несовместим с --is_conditional",
+    )
+    parser.add_argument(
+        "--classifier_guidance_scale", type=float, default=0.0,
+        help="Сила classifier guidance. Имеет смысл только вместе с --classifier_guidance",
+    )
+    parser.add_argument("--use_conditional_encoder", action='store_true',
+                        help="DEPRECATED: не используется, режим определяется флагами выше")
     parser.add_argument("--eval", action='store_true')
     parser.add_argument("--num_diffusion_steps", type=int, default=None)
     parser.add_argument("--num_generated_texts", type=int, default=None)
-    parser.add_argument("--classifier_guidance_scale", type=float, default=0.0)
-    parser.add_argument("--guidance_coef_type", type=str, default='ddpm')
 
     parser.add_argument("--seed", type=int, default=0,
                         help="Базовый random seed для генерации")

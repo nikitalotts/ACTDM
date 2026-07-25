@@ -5,6 +5,8 @@ import nltk
 import os
 from tqdm import tqdm
 
+from utils.schemes import SPLIT_SCHEMES, SPLIT_SCHEME_HELP
+
 
 def download_wikipedia(dataset_path):
 
@@ -140,11 +142,30 @@ def download_squad(dataset_path):
     dt.save_to_disk(dataset_path)
 
 
-def download_rocstory(dataset_path, conditional_formatted=False, conditional_formatted_full_length=False):
+def split_story(sentences, split_scheme):
+    """Разбивает историю из 5 предложений на пары (промпт, продолжение).
+
+    Возвращает список пар -- у sliding их три, у остальных схем одна.
+    Единственное место, где задана нарезка rocstories.
+    """
+    assert len(sentences) == 5, f"Expected 5 sentences, got {len(sentences)}"
+
+    if split_scheme == "last_sentence":
+        return [(" ".join(sentences[:4]), sentences[4])]
+    if split_scheme == "half":
+        return [(" ".join(sentences[:3]), " ".join(sentences[3:5]))]
+    if split_scheme == "sliding":
+        return [
+            (" ".join(sentences[:n]), " ".join(sentences[n:n + 2]))
+            for n in range(1, 4)
+        ]
+    raise Exception(f"Unknown split_scheme: {split_scheme}. Expected one of {SPLIT_SCHEMES}")
+
+
+def download_rocstory(dataset_path, split_scheme=SPLIT_SCHEMES[0]):
 
     print(f"Loading rocstories from HuggingFace...")
-    print(f"Conditional formatted: {conditional_formatted}")
-    print(f"Conditional formatted full length: {conditional_formatted_full_length}")
+    print(f"Split scheme: {split_scheme} -- {SPLIT_SCHEME_HELP[split_scheme]}")
 
     def preprocess_sentences(batch):
         text_src_list = []
@@ -160,9 +181,7 @@ def download_rocstory(dataset_path, conditional_formatted=False, conditional_for
             text_full = " ".join(sentences)
             text_full_list.append(text_full)
 
-            text_src = " ".join(sentences[:4]) 
-            text_trg = sentences[4] 
-
+            text_src, text_trg = split_story(sentences, split_scheme)[0]
             text_src_list.append(text_src)
             text_trg_list.append(text_trg)
 
@@ -219,56 +238,21 @@ def download_rocstory(dataset_path, conditional_formatted=False, conditional_for
     print(f"Validation: {len(dt['validation'])}")
     print(f"Test: {len(dt['test'])}")
 
-    if conditional_formatted_full_length:
-        print("\nCreating conditional generation format (full length)...")
-        print("Format: 1,2,3 → 4,5 (3 sentences src → 2 sentences target)")
+    if split_scheme == "last_sentence":
+        # одна пара на историю, уже собрана в preprocess_sentences
+        dt = dt.remove_columns("sentences")
+    else:
+        print(f"\nApplying split scheme '{split_scheme}'...")
 
         formatted_datasets = {}
-
         for split in ["train", "validation", "test"]:
             print(f"\nProcessing {split} split...")
             split_dt = dt[split]
 
             formatted_examples = []
             for example in tqdm(split_dt, desc=f"Formatting {split}"):
-                sentences = example["sentences"]
                 text_full = example["text_full"]
-                assert len(sentences) == 5, f"Expected 5 sentences, got {len(sentences)}"
-
-                text_src = " ".join(sentences[:3])
-                text_trg = " ".join(sentences[3:5])
-
-                formatted_examples.append({
-                    "text_src": text_src,
-                    "text_trg": text_trg,
-                    "text_full": text_full,
-                })
-
-            formatted_datasets[split] = Dataset.from_list(formatted_examples)
-            print(f"{split.capitalize()} examples: {len(split_dt)} (1 pair per story)")
-
-        dt = DatasetDict(formatted_datasets)
-
-    elif conditional_formatted:
-        print("\nCreating conditional generation format...")
-        print("Pairs: 1→2,3 | 1,2→3,4 | 1,2,3→4,5")
-
-        formatted_datasets = {}
-
-        for split in ["train", "validation", "test"]:
-            print(f"\nProcessing {split} split...")
-            split_dt = dt[split]
-
-            formatted_examples = []
-            for example in tqdm(split_dt, desc=f"Formatting {split}"):
-                sentences = example["sentences"]
-                text_full = example["text_full"]
-                assert len(sentences) == 5, f"Expected 5 sentences, got {len(sentences)}"
-
-                for n_cond in range(1, 4):
-                    text_src = " ".join(sentences[:n_cond])
-                    text_trg = " ".join(sentences[n_cond:n_cond + 2])
-
+                for text_src, text_trg in split_story(example["sentences"], split_scheme):
                     formatted_examples.append({
                         "text_src": text_src,
                         "text_trg": text_trg,
@@ -276,12 +260,9 @@ def download_rocstory(dataset_path, conditional_formatted=False, conditional_for
                     })
 
             formatted_datasets[split] = Dataset.from_list(formatted_examples)
-            print(f"{split.capitalize()} examples: {len(split_dt)} → {len(formatted_datasets[split])} (×3)")
+            print(f"{split.capitalize()}: {len(split_dt)} stories -> {len(formatted_datasets[split])} pairs")
 
         dt = DatasetDict(formatted_datasets)
-    else:
-        print("\nUsing standard format (4 sentences → 1 sentence)...")
-        dt = dt.remove_columns("sentences")
 
     print(f"\nSaving to {dataset_path}...")
     dt.save_to_disk(dataset_path)
@@ -292,55 +273,7 @@ def download_rocstory(dataset_path, conditional_formatted=False, conditional_for
     print(f"Validation examples: {len(dt['validation'])}")
     print(f"Test examples: {len(dt['test'])}")
 
-    if conditional_formatted_full_length:
-        print(f"Format: text_src (3 sentences), text_trg (2 sentences)")
-        print(f"Each story produces 1 training pair")
-    elif conditional_formatted:
-        print(f"Format: text_src, text_trg (conditional generation)")
-        print(f"Each story produces 3 training pairs")
-    else:
-        print(f"Format: text_src (4 sentences), text_trg (1 sentence)")
-    print(f"{'=' * 60}")
-
-    print(f"\n{'=' * 60}")
-    print("EXAMPLES FROM TRAIN SET")
-    print(f"{'=' * 60}\n")
-
-    num_examples = min(10, len(dt['train']))
-
-    if conditional_formatted_full_length:
-        for i in range(num_examples):
-            example = dt['train'][i]
-            print(f"Example {i + 1}:")
-            print(f"  SRC (3 sentences): {example['text_src']}")
-            print(f"  TRG (2 sentences): {example['text_trg']}")
-            print()
-
-    elif conditional_formatted:
-        print("Showing all 3 pairs from the first story:\n")
-        for i in range(3):
-            example = dt['train'][i]
-            print(f"Example {i + 1}:")
-            print(f"  SRC: {example['text_src']}")
-            print(f"  TRG: {example['text_trg']}")
-            print()
-
-        print("\nShowing first pair from next stories:\n")
-        for i in range(3, num_examples):
-            example = dt['train'][i]
-            print(f"Example {i + 1}:")
-            print(f"  SRC: {example['text_src']}")
-            print(f"  TRG: {example['text_trg']}")
-            print()
-    else:
-        for i in range(num_examples):
-            example = dt['train'][i]
-            print(f"Example {i + 1}:")
-            print(f"  SRC (4 sentences): {example['text_src']}")
-            print(f"  TRG (1 sentence): {example['text_trg']}")
-            print()
-
-    print(f"{'=' * 60}\n")
+    print(f"Split scheme: {split_scheme} -- {SPLIT_SCHEME_HELP[split_scheme]}")
 
 
 if __name__ == "__main__":
@@ -359,21 +292,28 @@ if __name__ == "__main__":
         required=False,
     )
     parser.add_argument(
-        "--conditional_generation_formatted", action="store_true",
-        help="Format rocstories for conditional generation (1-3 src sentences → +2 target sentences)"
+        "--split_scheme", type=str, default=SPLIT_SCHEMES[0], choices=SPLIT_SCHEMES,
+        help="Схема разбиения истории на промпт и продолжение: "
+             + ", ".join(f"{k} -- {v}" for k, v in SPLIT_SCHEME_HELP.items()),
     )
-    parser.add_argument(
-        "--conditional_formatted_full_length", action="store_true",
-        help="Format rocstories with fixed split: 3 src sentences → 2 target sentences (1 pair per story)"
-    )
+    # старые флаги оставлены как алиасы, чтобы не ломать существующие команды
+    parser.add_argument("--conditional_generation_formatted", action="store_true",
+                        help="DEPRECATED, эквивалент --split_scheme sliding")
+    parser.add_argument("--conditional_formatted_full_length", action="store_true",
+                        help="DEPRECATED, эквивалент --split_scheme half")
 
     args = parser.parse_args()
+
+    split_scheme = args.split_scheme
+    if args.conditional_formatted_full_length:
+        split_scheme = "half"
+    elif args.conditional_generation_formatted:
+        split_scheme = "sliding"
 
     if args.dataset_name == "rocstories":
         download_rocstory(
             args.dataset_path + args.dataset_name,
-            conditional_formatted=args.conditional_generation_formatted,
-            conditional_formatted_full_length=args.conditional_formatted_full_length
+            split_scheme=split_scheme,
         )
 
     if args.dataset_name == "wikipedia":

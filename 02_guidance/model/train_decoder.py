@@ -89,7 +89,7 @@ def loss_step(batch, tokenizer, encoder, decoder, config, eval=False):
             eps = torch.randn_like(latent) * config.decoder.noise_sigma
             latent = latent + eps
     with torch.no_grad():
-        if not config.emb:
+        if encoder.module.enc_normalizer is not None:
             latent = encoder.module.enc_normalizer.denormalize(latent)
 
     if config.decoder.is_conditional:
@@ -109,7 +109,7 @@ def loss_step(batch, tokenizer, encoder, decoder, config, eval=False):
                 input_ids=src["input_ids"],
                 attention_mask=src["attention_mask"]
             )
-            if not config.emb:
+            if encoder.module.enc_normalizer is not None:
                 src_latent = encoder.module.enc_normalizer.denormalize(src_latent)
         src_mask = src["attention_mask"]
     else:
@@ -220,7 +220,7 @@ def train(config, encoder, decoder, tokenizer):
 def main():
     args = parse()
     config = create_config(args)
-    if not config.emb:
+    if config.normalize_encodings:
         enc_normalizer = EncNormalizer(
             enc_mean_path=config.data.enc_gen_mean,
             enc_std_path=config.data.enc_gen_std,

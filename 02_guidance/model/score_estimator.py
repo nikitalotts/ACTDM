@@ -182,14 +182,10 @@ class ScoreEstimatorEMB(nn.Module):
                 dtype=hidden_state.dtype
             )
         if cond_mask is not None:
-            print('encoder_hidden_states is not none')
             cond_mask = self.get_extended_attention_mask(
                 attention_mask=cond_mask,
                 dtype=hidden_state.dtype
             )
-
-        if cond is not None:
-            print('cond is not none')
 
         output = self.encoder(
             x=hidden_state,
