@@ -658,5 +658,70 @@ def test_guidance_is_off_during_training():
         "в режиме train к score применился guidance")
 
 
+@needs_cuda
+def test_guidance_applies_in_validation_generation_during_training():
+    """Во время обучения диффузия безусловная, но генерация на валидации обязана
+    идти С guidance. calc_score смотрит на training-флаг DDP-ОБЕРТКИ (score_fn
+    собран с model=ddp_score_estimator), а pred_embeddings сам переводит в eval
+    только внутренний score_estimator -- поэтому estimate() обязан делать eval
+    именно обертке, иначе guidance молча выключится при DDP-обучении."""
+    r, cfg, H = _runner("guidance")
+
+    class DDPStub(torch.nn.Module):
+        """Эмулирует DDP: отдельный модуль со СВОИМ training-флагом."""
+        def __init__(self, m):
+            super().__init__()
+            self.module = m
+
+        def forward(self, *a, **kw):
+            return self.module(*a, **kw)
+
+    wrap = DDPStub(r.score_estimator).cuda()
+    r.ddp_score_estimator = wrap
+    r.diff_eq_solver.score_fn = lambda *a, **k: r.calc_score(*a, model=wrap, **k)
+
+    src = torch.randn(B, L_SRC, H, device="cuda")
+    mask = torch.ones(B, L_SRC, dtype=torch.long, device="cuda")
+    cfg.dynamic.N = r.dynamic.N = 3
+
+    def gen_as_estimate():
+        # ровно то, что estimate() делает вокруг generate_text_conditional
+        r.score_estimator.eval()
+        r.ddp_score_estimator.eval()
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+        out = r.pred_embeddings(batch_size=B, cond_x=src, cond_mask=mask,
+                                attention_mask=None)
+        r.ddp_score_estimator.train()
+        r.score_estimator.train()
+        return out
+
+    # сеть в train mode -- как внутри train_epoch перед вызовом estimate()
+    r.ddp_score_estimator.train()
+    guided = gen_as_estimate()
+    assert r.ddp_score_estimator.training, "estimate обязан вернуть train mode"
+
+    r.use_guidance, r.guidance_scale = False, 0.0
+    r.ddp_score_estimator.train()
+    plain = gen_as_estimate()
+    r.use_guidance, r.guidance_scale = True, cfg.guidance_scale
+
+    assert not torch.allclose(guided, plain), (
+        "на валидации во время обучения guidance не применился к генерации")
+
+    # антитеза: если eval получил только внутренний модуль, а обертка осталась
+    # в train (так делает pred_embeddings сам по себе), guidance выключен --
+    # именно поэтому estimate() обязан переводить в eval и обертку
+    r.ddp_score_estimator.train()
+    r.score_estimator.eval()
+    torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    half_eval = r.pred_embeddings(batch_size=B, cond_x=src, cond_mask=mask,
+                                  attention_mask=None)
+    assert torch.allclose(half_eval, plain), (
+        "ожидалось, что с train-флагом на DDP-обертке guidance не применяется; "
+        "если это изменилось -- обновите тест и проверьте guard в calc_score")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
