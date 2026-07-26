@@ -217,6 +217,13 @@ def parse():
         "--classifier_guidance_scale", type=float, default=0.0,
         help="Сила classifier guidance. Имеет смысл только при architecture_type=guidance",
     )
+    parser.add_argument(
+        "--time_scale", type=float, default=1.0,
+        help="Масштаб непрерывного t перед синусоидальным эмбеддингом внутри "
+             "классификатора. При 1.0 (по умолчанию) эмбеддинги соседних t почти "
+             "совпадают и уровень шума слабо информативен; 1000.0 дает разрешение "
+             "как в DDPM с T=1000. Влияет только на architecture_type=guidance",
+    )
     parser.add_argument("--mode", type=str, default="transformer",
                         help="Архитектура декодера")
     # --- параметры декодирования, только для architecture_type=gpt ---------------

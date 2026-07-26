@@ -177,6 +177,11 @@ def create_config(args):
     # классификатор в один и тот же файл и затирали друг друга
     cond_encoder.augmentation_scheme = args.augmentation_scheme
     cond_encoder.name += f'-{cond_encoder.augmentation_scheme}'
+    # масштаб времени не меняет форму весов, но меняет смысл обученной модели,
+    # поэтому варианты должны лежать в разных файлах
+    cond_encoder.time_scale = float(getattr(args, 'time_scale', 1.0))
+    if cond_encoder.time_scale != 1.0:
+        cond_encoder.name += f'-ts{cond_encoder.time_scale:g}'
     cond_encoder.name += artifact_suffix(config)
     cond_encoder.cond_encoder_path = f"{data.base_path}/{data.datasets.datasets_list[0]}/{cond_encoder.name}.pth"
     cond_encoder.use_conditional_encoder = config.classifier_guidance
@@ -198,6 +203,8 @@ def create_config(args):
     print(f"[CONFIG] classifier_guidance={config.classifier_guidance}, scale={config.guidance_scale}")
     print(f"[CONFIG] normalize_encodings={config.normalize_encodings}, emb={config.emb}")
     print(f"[CONFIG] split_scheme={data.split_scheme}, augmentation_scheme={cond_encoder.augmentation_scheme}")
+    if config.classifier_guidance:
+        print(f"[CONFIG] cond_encoder.time_scale={cond_encoder.time_scale}")
 
     config.project_name = args.project_name
     config.timesteps = "linear"
@@ -422,6 +429,9 @@ def create_cond_encoder_config():
     config.T = 1.0
     config.eps = 0.001
     config.empty_trg_prob = 0.0
+    # масштаб непрерывного t перед синусоидальным эмбеддингом;
+    # фактическое значение приходит из --time_scale, см. create_config
+    config.time_scale = 1.0
 
     return config
 

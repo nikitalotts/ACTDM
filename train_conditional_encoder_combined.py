@@ -55,7 +55,10 @@ def save_checkpoint(model, config):
     os.makedirs(os.path.dirname(config.cond_encoder.cond_encoder_path), exist_ok=True)
     model.eval()
     torch.save(
-        {"cond_encoder": model.state_dict()},
+        {
+            "cond_encoder": model.state_dict(),
+            "time_scale": float(config.cond_encoder.time_scale),
+        },
         config.cond_encoder.cond_encoder_path
     )
     print(f"Save model to: {config.cond_encoder.cond_encoder_path}")
@@ -205,9 +208,11 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, score_estimator,
         else:
             return (torch.FloatTensor(n).uniform_() * (current_T - dynamic.eps) + dynamic.eps).to(device)
 
+    # один и тот же t' на всю тройку: иначе позитив и негативы
+    # сравниваются на разных уровнях зашумления
     t_prime_pos = sample_t_prime(batch_size)
-    t_prime_neg1 = sample_t_prime(batch_size)
-    t_prime_neg2 = sample_t_prime(batch_size)
+    t_prime_neg1 = t_prime_pos
+    t_prime_neg2 = t_prime_pos
 
     noisy_pos = dynamic.marginal(trg_latent, t_prime_pos)['x_t']
     noisy_neg1 = dynamic.marginal(trg_latent_neg1, t_prime_neg1)['x_t']
@@ -470,7 +475,10 @@ def main():
     print("Score estimator frozen.")
     print("="*80 + "\n")
 
-    cond_encoder = ConditionalEncoder(config.model.encoder_link, tokenizer).train()
+    cond_encoder = ConditionalEncoder(
+        config.model.encoder_link, tokenizer,
+        time_scale=config.cond_encoder.time_scale,
+    ).train()
     cond_encoder_path = config.cond_encoder.cond_encoder_path
 
     if os.path.exists(cond_encoder_path):

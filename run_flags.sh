@@ -6,6 +6,8 @@
 # ARCH_TYPE=genie          -- условная диффузия, промпт через cross-attention
 # ARCH_TYPE=diffuseq       -- условная диффузия, промпт через latent replacement
 # ARCH_TYPE=guidance       -- безусловная диффузия + classifier guidance на генерации
+#     TIME_SCALE=1|1000    -- масштаб t в эмбеддинге времени классификатора
+#                             (1 -- как было, 1000 -- разрешение как в DDPM)
 # ARCH_TYPE=unconditional  -- безусловная диффузия, промпт не используется
 # ARCH_TYPE=gpt            -- авторегрессионный GPT-2 вместо диффузии
 # Для guidance силу задает CG_SCALE.
@@ -23,6 +25,7 @@
 
 ARCH_TYPE="${ARCH_TYPE:-genie}"
 CG_SCALE="${CG_SCALE:-10.0}"
+TIME_SCALE="${TIME_SCALE:-1.0}"
 DATASET="${DATASET:-rocstories}"
 SPLIT_SCHEME="${SPLIT_SCHEME:-}"
 NORMALIZE="${NORMALIZE:-1}"
@@ -75,4 +78,6 @@ case "${NORMALIZE}" in
 esac
 
 echo "ARCH_TYPE=${ARCH_TYPE}  ARCH_FLAGS='${ARCH_FLAGS}'"
+DATA_FLAGS="${DATA_FLAGS} --time_scale ${TIME_SCALE}"
+
 echo "DATASET=${DATASET}  SPLIT_SCHEME=${SPLIT_SCHEME:-<по умолчанию>}  NORMALIZE=${NORMALIZE}  DATA_FLAGS='${DATA_FLAGS}'"

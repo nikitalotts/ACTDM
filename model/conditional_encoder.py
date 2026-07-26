@@ -6,10 +6,15 @@ from transformers import BertModel
 
 class ConditionalEncoder(nn.Module):
 
-    def __init__(self, encoder_link, tokenizer, hidden_dim=768):
+    def __init__(self, encoder_link, tokenizer, hidden_dim=768, time_scale=1000.0):
         super().__init__()
         self.encoder_link = encoder_link
         self.hidden_dim = hidden_dim
+        # Синусоидальный эмбеддинг рассчитан на номер шага (0..T), а тут t непрерывный
+        # и лежит в [eps, 1]. Без масштабирования аргументы синусов не превышают 1,
+        # эмбеддинги соседних t почти совпадают, и классификатор перестает различать
+        # уровень зашумления. Множитель 1000 возвращает разрешение как в DDPM с T=1000.
+        self.time_scale = time_scale
 
         if "bert" in encoder_link.lower():
             self.bert = BertModel.from_pretrained(encoder_link)
@@ -54,7 +59,7 @@ class ConditionalEncoder(nn.Module):
         seq_len_src = src_embeds.shape[1]
         seq_len_trg = noisy_trg_embeds.shape[1]
 
-        t_emb = self.timestep_embedding(t, self.hidden_dim).to(device)
+        t_emb = self.timestep_embedding(t * self.time_scale, self.hidden_dim).to(device)
         t_embed = self.time_mlp(t_emb) 
 
         cls_token = self.cls_embedding.unsqueeze(0).expand(batch_size, 1, -1)

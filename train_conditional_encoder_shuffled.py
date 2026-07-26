@@ -55,6 +55,7 @@ def save_checkpoint(model, config):
     torch.save(
         {
             "cond_encoder": model.state_dict(),
+            "time_scale": float(config.cond_encoder.time_scale),
         },
         config.cond_encoder.cond_encoder_path
     )
@@ -166,8 +167,8 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
         target_T = config.cond_encoder.T
         warmup_epochs = 10
 
-        if epoch < warmup_epochs:
-            progress = epoch / warmup_epochs
+        if (epoch + 1) < warmup_epochs:
+            progress = (epoch + 1) / warmup_epochs
             current_T = config.cond_encoder.eps + (target_T - config.cond_encoder.eps) * progress
         else:
             current_T = target_T
@@ -402,7 +403,10 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(encoder.encoder_link)
 
-    cond_encoder = ConditionalEncoder(config.model.encoder_link, tokenizer).train()
+    cond_encoder = ConditionalEncoder(
+        config.model.encoder_link, tokenizer,
+        time_scale=config.cond_encoder.time_scale,
+    ).train()
 
     cond_encoder_path = config.cond_encoder.cond_encoder_path
     if os.path.exists(cond_encoder_path):

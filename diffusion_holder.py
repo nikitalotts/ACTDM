@@ -163,12 +163,24 @@ class DiffusionRunner:
                 f"но файл не найден: {path}"
             )
 
+        checkpoint = torch.load(path, map_location="cpu")
+
+        # time_scale не меняет форму весов, поэтому несовпадение прошло бы молча
+        # и классификатор применялся бы не в том масштабе времени, в каком обучался
+        expected = float(self.config.cond_encoder.time_scale)
+        saved = float(checkpoint.get("time_scale", 1.0))
+        if saved != expected:
+            raise Exception(
+                f"Классификатор обучен с time_scale={saved}, а конфиг требует "
+                f"{expected}. Переобучите классификатор или выставьте "
+                f"config.cond_encoder.time_scale={saved}"
+            )
+
         self.cond_encoder = ConditionalEncoder(
             encoder_link=self.config.model.encoder_link,
-            tokenizer=self.tokenizer
+            tokenizer=self.tokenizer,
+            time_scale=expected,
         ).cuda().eval()
-
-        checkpoint = torch.load(path, map_location="cpu")
         self.cond_encoder.load_state_dict(checkpoint["cond_encoder"])
 
         for param in self.cond_encoder.parameters():
@@ -763,7 +775,7 @@ class DiffusionRunner:
             "eps_theta": eps_theta
         }
 
-    def build_score_estimator_input(self, x_t, cond_x, attention_mask, cond_mask, trg_mask):
+    def build_score_estimator_input(self, x_t, cond_x, attention_mask, cond_mask):
         """Собирает вход denoising network в зависимости от config.architecture_type.
 
         genie    -- условие подается в каждый блок сети через cross-attention,
@@ -778,12 +790,14 @@ class DiffusionRunner:
             src_len = cond_x.shape[1]
             z_t = torch.cat([cond_x, x_t], dim=1)
             if cond_mask is not None:
-                if trg_mask is None:
-                    trg_mask = torch.ones(
-                        x_t.shape[0], x_t.shape[1],
-                        device=cond_mask.device, dtype=cond_mask.dtype,
-                    )
-                combined_mask = torch.cat([cond_mask, trg_mask], dim=1)
+                # Таргет всегда виден целиком. На генерации его длина неизвестна,
+                # маска там единичная -- значит и при обучении она должна быть
+                # единичной, иначе внимание на обучении и на инференсе разное.
+                trg_ones = torch.ones(
+                    x_t.shape[0], x_t.shape[1],
+                    device=cond_mask.device, dtype=cond_mask.dtype,
+                )
+                combined_mask = torch.cat([cond_mask, trg_ones], dim=1)
             else:
                 combined_mask = None
             return src_len, z_t, combined_mask, None, None
@@ -810,7 +824,6 @@ class DiffusionRunner:
             cond_x=cond_x,
             attention_mask=mask,
             cond_mask=batch.get("attention_mask_src"),
-            trg_mask=batch.get("attention_mask_trg"),
         )
 
         x_0_self_cond = torch.zeros_like(z_t, dtype=z_t.dtype)
@@ -1016,7 +1029,6 @@ class DiffusionRunner:
                 cond_x=cond_x,
                 attention_mask=attention_mask,
                 cond_mask=cond_mask,
-                trg_mask=None,
             )
 
             x_0_self_cond = torch.zeros_like(z, dtype=z.dtype)
