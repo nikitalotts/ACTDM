@@ -165,10 +165,12 @@ def create_config(args):
 
     cond_encoder = config.cond_encoder = create_cond_encoder_config()
     cond_encoder.dataset = data.datasets.datasets_list[0]
-    cond_encoder.name = f"conditional-encoder-{model.encoder_name_hash}-{cond_encoder.max_sequence_len}-transformer"
+    # Классификатор токенизирует src/trg длинами данных (max_context_len /
+    # max_sequence_len) -- ровно та геометрия, что на guidance-инференсе.
+    # Длины входят в имя: классификатор, обученный старым кодом с фиксированной
+    # шириной 80, не должен молча переиспользоваться
+    cond_encoder.name = f"conditional-encoder-{model.encoder_name_hash}-{data.max_context_len}x{data.max_sequence_len}-transformer"
     cond_encoder.name += cond_encoder.suffix
-    if cond_encoder.max_sequence_len < data.max_sequence_len:
-        raise Exception("Conditional Encoder max_sequence_len is less than required")
     cond_encoder.mode = config.mode
     if cond_encoder.empty_trg_prob > 0:
         cond_encoder.name += f'-empty_trg_prob={cond_encoder.empty_trg_prob}'

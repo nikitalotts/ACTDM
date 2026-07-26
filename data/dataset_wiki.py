@@ -104,11 +104,24 @@ class WikipediaDatasetDDP:
                 f"Ожидается prefix_lm или random_prefix"
             )
 
+        pos = self._snap_to_word_start(input_ids, pos)
         src_ids = input_ids[:pos]
         trg_ids = input_ids[pos:self.max_sequence_len + pos]
         if not trg_ids:
             src_ids, trg_ids = trg_ids, src_ids
         return src_ids, trg_ids
+
+    def _snap_to_word_start(self, input_ids, pos):
+        # Граница не должна попадать в середину wordpiece-слова: продолжение
+        # тогда начинается с "##..."-куска, decode оставляет литеральные "##"
+        # в тексте, и после повторной токенизации в collate каждый такой таргет
+        # получает мусорные токены '#','#' в начале. Сдвигаем границу влево до
+        # начала слова (маркер "##" -- специфика BERT wordpiece; у BPE-словарей
+        # таких токенов нет, и цикл не срабатывает).
+        while 0 < pos < len(input_ids) and \
+                self.tokenizer.convert_ids_to_tokens(input_ids[pos]).startswith("##"):
+            pos -= 1
+        return pos
 
     def batch_preprocessing_cond(self, batch):
         """Режет текст на промпт и продолжение по токенам.

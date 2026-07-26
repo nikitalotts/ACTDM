@@ -166,7 +166,8 @@ def test_wikipedia_prefix_lm_is_deterministic_half():
 
 def test_wikipedia_split_ids_boundaries():
     """Договоренность с научником: 128 токенов, граница детерминированно на 64-м."""
-    o = _wiki_obj()
+    # ids 0..299 в bert-base-cased не являются '##'-кусками, снап границы не срабатывает
+    o = _wiki_obj(with_tokenizer=True)
     src, trg = o._split_ids(list(range(300)), "prefix_lm")
     assert src == list(range(64))
     assert trg == list(range(64, 128))
@@ -176,6 +177,31 @@ def test_wikipedia_split_ids_boundaries():
     # продолжение не бывает пустым, пока есть хоть один токен
     src, trg = o._split_ids([7], "prefix_lm")
     assert trg == [7] and src == []
+
+
+def test_wikipedia_split_never_starts_target_mid_word():
+    """Если граница попадает в середину wordpiece-слова, продолжение начинается
+    с '##'-куска: decode оставляет литеральные '##' в тексте, а повторная
+    токенизация в collate дает мусорные токены '#','#' в начале каждого такого
+    таргета. Граница обязана сдвигаться влево к началу слова."""
+    o = _wiki_obj(with_tokenizer=True)
+    # 'The' + повторы двухкускового 'unbelievable' (['un', '##believable'])
+    # ставят на позицию 64 именно '##'-кусок
+    text = "The " + " ".join(["unbelievable"] * 80)
+    ids = o.tokenizer(text, add_special_tokens=False)["input_ids"]
+    assert o.tokenizer.convert_ids_to_tokens(ids[64]).startswith("##"), (
+        "предпосылка теста сломалась: на 64-й позиции должен быть '##'-кусок")
+
+    src_ids, trg_ids = o._split_ids(ids, "prefix_lm")
+    first_tok = o.tokenizer.convert_ids_to_tokens(trg_ids[0])
+    assert not first_tok.startswith("##"), f"таргет начался с куска слова: {first_tok}"
+    # сдвиг не дальше начала одного слова
+    assert len(src_ids) >= 64 - 8, len(src_ids)
+    # src оканчивается целым словом: decode/encode дает те же токены
+    src_text = o.tokenizer.decode(src_ids)
+    assert o.tokenizer(src_text, add_special_tokens=False)["input_ids"] == src_ids
+    # в декодированном таргете нет литеральных '##'
+    assert not o.tokenizer.decode(trg_ids).startswith("#")
 
 
 def test_wikipedia_uncond_trains_on_continuation():
@@ -364,6 +390,29 @@ def test_time_scale_variants_do_not_share_file():
     assert a != b
     assert "-ts" not in a, "дефолтный вариант не должен получать суффикс"
     assert "-ts1000" in b
+
+
+def test_classifier_tokenizes_with_pipeline_lengths():
+    """На обучении классификатор обязан видеть ту же геометрию входа, что и на
+    guidance-инференсе: src шириной data.max_context_len (как в collate
+    диффузии), таргет шириной data.max_sequence_len (как x_t). Прежняя
+    токенизация до фиксированных 80 давала лишние зашумленные PAD-латенты
+    и другие BERT-позиции в блоке таргета."""
+    for scheme, fn in SCHEME_FILES.items():
+        src = open(fn, encoding="utf-8").read()
+        assert "max_length=config.data.max_context_len" in src, scheme
+        assert "max_length=config.data.max_sequence_len" in src, scheme
+        assert "max_length=config.cond_encoder.max_sequence_len" not in src, (
+            f"{scheme}: токенизация вернулась к фиксированной ширине 80")
+
+
+def test_classifier_name_encodes_input_geometry():
+    """Геометрия входа входит в имя чекпоинта: классификатор, обученный старым
+    кодом с шириной 80, не должен молча переиспользоваться новым."""
+    w = create_config(make_args("guidance", dataset_name="wikipedia"))
+    assert "-64x64-" in w.cond_encoder.name, w.cond_encoder.name
+    r = create_config(make_args("guidance"))
+    assert "-45x35-" in r.cond_encoder.name, r.cond_encoder.name
 
 
 def test_classifier_name_matches_configured_epochs():

@@ -100,12 +100,17 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, score_estimator,
         print(f"text_trg[0]: '{batch['text_trg'][0]}'", file=sys.stderr, flush=True)
         print(f"Are texts identical? {batch['text_src'][0] == batch['text_trg'][0]}", file=sys.stderr, flush=True)
 
+    # Длины обязаны совпадать с тем, что классификатор увидит на guidance-
+    # инференсе: там src приходит из collate диффузии (max_context_len), а
+    # noisy_trg -- это x_t ширины max_sequence_len. Прежняя токенизация до
+    # cond_encoder.max_sequence_len=80 давала другую геометрию входа (лишние
+    # зашумленные PAD-латенты и другие позиции BERT в блоке таргета).
     src = tokenizer(
         batch['text_src'],
         add_special_tokens=True,
         padding='max_length',
         truncation=True,
-        max_length=config.cond_encoder.max_sequence_len,
+        max_length=config.data.max_context_len,
         return_tensors="pt",
         return_special_tokens_mask=True,
         return_token_type_ids=False
@@ -116,7 +121,7 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, score_estimator,
         add_special_tokens=True,
         padding='max_length',
         truncation=True,
-        max_length=config.cond_encoder.max_sequence_len,
+        max_length=config.data.max_sequence_len,
         return_tensors="pt",
         return_special_tokens_mask=True,
         return_token_type_ids=False
