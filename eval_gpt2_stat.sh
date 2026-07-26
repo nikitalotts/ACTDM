@@ -35,7 +35,6 @@ echo "  decoding=${DECODING}"
 echo "  base_seed=${BASE_SEED}, num_seeds=${NUM_SEEDS}, seed_step=${SEED_STEP}"
 
 torchrun --master_port=31251 --nproc_per_node=1 eval_gpt2_stat.py \
-    --dataset_name rocstories \
     --project_name actdm \
     ${ARCH_FLAGS} ${DATA_FLAGS} \
     --decoding ${DECODING} \

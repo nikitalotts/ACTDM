@@ -11,16 +11,20 @@
 # Для guidance силу задает CG_SCALE.
 #
 # --- данные и пространство латентов (DATA_FLAGS) ---
-# SPLIT_SCHEME=half|last_sentence|sliding  -- нарезка истории rocstories на промпт/продолжение.
-#                                             Должна совпадать с той, с которой скачан датасет.
-# NORMALIZE=1|0                            -- нормализовать ли энкодинги статистиками датасета.
+# DATASET=rocstories|wikipedia   -- на чем учимся.
+# SPLIT_SCHEME=<схема>           -- нарезка текста на промпт/продолжение.
+#     rocstories: half (по умолчанию) | last_sentence | sliding -- по предложениям;
+#     wikipedia:  prefix_lm (по умолчанию) | random_prefix      -- по токенам.
+#     Если не задана, берется схема по умолчанию для датасета.
+# NORMALIZE=1|0                  -- нормализовать ли энкодинги статистиками датасета.
 #
 # DATA_FLAGS обязаны совпадать у декодера, диффузии и классификатора: они задают
 # и нарезку данных, и пространство латентов. Имена артефактов это учитывают.
 
 ARCH_TYPE="${ARCH_TYPE:-genie}"
 CG_SCALE="${CG_SCALE:-10.0}"
-SPLIT_SCHEME="${SPLIT_SCHEME:-half}"
+DATASET="${DATASET:-rocstories}"
+SPLIT_SCHEME="${SPLIT_SCHEME:-}"
 NORMALIZE="${NORMALIZE:-1}"
 
 case "${ARCH_TYPE}" in
@@ -36,12 +40,27 @@ case "${ARCH_TYPE}" in
         ;;
 esac
 
-case "${SPLIT_SCHEME}" in
-    half|last_sentence|sliding)
-        DATA_FLAGS="--split_scheme ${SPLIT_SCHEME}"
+case "${DATASET}" in
+    rocstories|wikipedia)
+        DATA_FLAGS="--dataset_name ${DATASET}"
         ;;
     *)
-        echo "Unknown SPLIT_SCHEME='${SPLIT_SCHEME}'. Expected: half | last_sentence | sliding" >&2
+        echo "Unknown DATASET='${DATASET}'. Expected: rocstories | wikipedia" >&2
+        exit 1
+        ;;
+esac
+
+# схему передаем только если она задана явно -- иначе конфиг возьмет
+# значение по умолчанию для выбранного датасета
+case "${SPLIT_SCHEME}" in
+    "")
+        ;;
+    half|last_sentence|sliding|prefix_lm|random_prefix)
+        DATA_FLAGS="${DATA_FLAGS} --split_scheme ${SPLIT_SCHEME}"
+        ;;
+    *)
+        echo "Unknown SPLIT_SCHEME='${SPLIT_SCHEME}'. Expected: half | last_sentence |" \
+             "sliding | prefix_lm | random_prefix" >&2
         exit 1
         ;;
 esac
@@ -56,4 +75,4 @@ case "${NORMALIZE}" in
 esac
 
 echo "ARCH_TYPE=${ARCH_TYPE}  ARCH_FLAGS='${ARCH_FLAGS}'"
-echo "SPLIT_SCHEME=${SPLIT_SCHEME}  NORMALIZE=${NORMALIZE}  DATA_FLAGS='${DATA_FLAGS}'"
+echo "DATASET=${DATASET}  SPLIT_SCHEME=${SPLIT_SCHEME:-<по умолчанию>}  NORMALIZE=${NORMALIZE}  DATA_FLAGS='${DATA_FLAGS}'"

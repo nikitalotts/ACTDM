@@ -17,8 +17,10 @@ module load Python
 conda deactivate 
 conda activate pgwtd
 
+source run_flags.sh
+
 echo "Starting script..."
 
-python3 -m data.make_statistics --dataset_name='rocstories' --encoder_name='bert-base-cased'
+python3 -m data.make_statistics --encoder_name='bert-base-cased' ${DATA_FLAGS}
 
 echo "Script finished"

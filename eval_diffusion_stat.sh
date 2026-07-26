@@ -27,7 +27,6 @@ echo "Starting DIFFUSION STATISTICAL evaluation"
 echo "  base_seed=${BASE_SEED}, num_seeds=${NUM_SEEDS}, seed_step=${SEED_STEP}"
 
 torchrun --master_port=31252 --nproc_per_node=1 eval_diffusion_stat.py \
-    --dataset_name rocstories \
     --scheduler sd \
     --encoder_name bert-base-cased \
     --swap_cfg_coef 0.0 \

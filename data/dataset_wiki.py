@@ -66,7 +66,9 @@ class WikipediaDatasetDDP:
         return self.dt
     
     def batch_preprocessing(self, batch):
-        if self.config.is_conditional:
+        # промпт нужен и условной диффузии, и классификатору в режиме guidance,
+        # и авторегрессионному бейзлайну -- то есть всем режимам кроме unconditional
+        if self.config.is_pipeline_conditional:
             return self.batch_preprocessing_cond(batch)
         else:
             return self.batch_preprocessing_uncond(batch)
@@ -78,30 +80,59 @@ class WikipediaDatasetDDP:
             return {"text_trg": batch["target"]}
 
     def batch_preprocessing_cond(self, batch):
+        """Режет текст на промпт и продолжение по токенам.
+
+        prefix_lm (схема prefix LM из TESS-2, по умолчанию):
+            текст обрезается до max_context_len + max_sequence_len токенов
+            и делится ровно пополам. Граница всегда на одной и той же позиции,
+            поэтому позиционная статистика таргета не размазывается, а у diffuseq
+            стык промпта и продолжения в конкатенированной последовательности
+            стоит на фиксированном месте.
+
+        random_prefix (прежнее поведение):
+            длина промпта случайна в пределах max_context_len. Оставлено, чтобы
+            можно было воспроизвести сравнение схем.
+        """
+        scheme = self.config.data.split_scheme
+        total_len = self.max_context_len + self.max_sequence_len
+
         if self.split == 'train':
             blank_cond_rate = self.config.data.swap_cfg_coef
         else:
             blank_cond_rate = 0
-        batch_size = len(batch["text"])
-        delimeter_poses = (np.random.rand(batch_size) * (self.max_context_len - 1)).astype(int)
+
+        batch_input_ids = self.tokenizer(batch["text"], add_special_tokens=False)["input_ids"]
+        batch_size = len(batch_input_ids)
+
+        if scheme == "prefix_lm":
+            # ровно 50% доступных токенов в промпт: для текстов длиннее total_len
+            # это ровно max_context_len, для более коротких -- их собственная середина
+            delimeter_poses = [min(len(ids), total_len) // 2 for ids in batch_input_ids]
+        elif scheme == "random_prefix":
+            delimeter_poses = (np.random.rand(batch_size) * (self.max_context_len - 1)).astype(int)
+        else:
+            raise Exception(
+                f"split_scheme={scheme} не применим к wikipedia. "
+                f"Ожидается prefix_lm или random_prefix"
+            )
 
         trg_ids_list = []
         src_ids_list = []
-        
-        batch_input_ids = self.tokenizer(batch["text"], add_special_tokens=False)["input_ids"]
+
         for i, input_ids in enumerate(batch_input_ids):
             if random() < blank_cond_rate:
                 delimeter_poses[i] = 0
-            src_ids = input_ids[:delimeter_poses[i]]
-            trg_ids = input_ids[delimeter_poses[i]:self.max_sequence_len + delimeter_poses[i]]
+            pos = delimeter_poses[i]
+            src_ids = input_ids[:pos]
+            trg_ids = input_ids[pos:self.max_sequence_len + pos]
             if not trg_ids:
                 src_ids, trg_ids = trg_ids, src_ids
             src_ids_list.append(src_ids)
             trg_ids_list.append(trg_ids)
-              
+
         texts_src = self.tokenizer.batch_decode(src_ids_list)
         texts_trg = self.tokenizer.batch_decode(trg_ids_list)
-        
+
         output = {
             "text_src": texts_src,
             "text_trg": texts_trg,

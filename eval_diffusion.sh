@@ -22,7 +22,6 @@ source run_flags.sh
 echo "Starting diffusion evaluation (single run)..."
 
 torchrun --master_port=31250 --nproc_per_node=1 eval_diffusion.py \
-    --dataset_name rocstories \
     --scheduler sd \
     --encoder_name bert-base-cased \
     --swap_cfg_coef 0.0 \

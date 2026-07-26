@@ -201,9 +201,9 @@ def parse():
              "при --emb эмбеддинги всегда нормируются по статистикам словаря",
     )
     parser.add_argument(
-        "--split_scheme", type=str, default=SPLIT_SCHEMES[0], choices=SPLIT_SCHEMES,
-        help="Схема разбиения истории rocstories на промпт и продолжение "
-             "(должна совпадать с той, с которой скачивался датасет в data/load.py): "
+        "--split_scheme", type=str, default=None, choices=SPLIT_SCHEMES,
+        help="Схема разбиения текста на промпт и продолжение. По умолчанию "
+             "выбирается по датасету (rocstories -- half, wikipedia -- prefix_lm): "
              + ", ".join(f"{k} -- {v}" for k, v in SPLIT_SCHEME_HELP.items()),
     )
     parser.add_argument(

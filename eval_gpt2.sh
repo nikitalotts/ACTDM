@@ -29,7 +29,6 @@ TOP_K=0
 echo "Starting GPT-2 evaluation (decoding=${DECODING})..."
 
 torchrun --nproc_per_node=1 eval_gpt2.py \
-    --dataset_name rocstories \
     --project_name actdm \
     ${ARCH_FLAGS} ${DATA_FLAGS} \
     --decoding ${DECODING} \

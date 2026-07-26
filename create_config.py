@@ -2,7 +2,9 @@ import ml_collections
 import os
 from transformers import PretrainedConfig, AutoConfig
 
-from utils.schemes import ARCHITECTURE_TYPES, SPLIT_SCHEMES
+from utils.schemes import (
+    ARCHITECTURE_TYPES, SPLIT_SCHEMES, check_split_scheme, default_split_scheme,
+)
 
 
 def create_config(args):
@@ -138,17 +140,13 @@ def create_config(args):
         config.guidance_scale = 0.
         validation.classifier_guidance_scale = 0.
 
-    if 'wikipedia' in data.datasets.datasets_list and config.is_pipeline_conditional:
-        raise Exception(
-            "wikipedia -- безусловный датасет, для него доступен только "
-            "architecture_type=unconditional"
-        )
-
     # Нормализация энкодингов статистиками датасета (EncNormalizer).
     # По умолчанию включена. При --emb нормализация идет по статистикам словаря
     # внутри Encoder и этим флагом не управляется.
     config.normalize_encodings = not args.no_normalize_encodings and not config.emb
-    data.split_scheme = args.split_scheme
+    dataset_name = data.datasets.datasets_list[0]
+    data.split_scheme = args.split_scheme or default_split_scheme(dataset_name)
+    check_split_scheme(dataset_name, data.split_scheme)
 
     decoder = config.decoder = create_decoder_config()
     decoder.dataset = data.datasets.datasets_list[0]
@@ -191,16 +189,7 @@ def create_config(args):
 
     # Метрики: в безусловном режиме оценивается качество текста как такового,
     # в условных и в guidance -- соответствие промпту.
-    if config.is_pipeline_conditional:
-        data.datasets.metrics["rocstories"] = {
-            "metrics": ["bleu", "bert-score", "rouge1", "rouge2", "rougeL"],
-            "tracked_metric": "bert-score",
-        }
-    else:
-        data.datasets.metrics["rocstories"] = {
-            "metrics": ["mauve", "div", "ppl"],
-            "tracked_metric": "mauve",
-        }
+    data.datasets.metrics[dataset_name] = metrics_for_mode(config.is_pipeline_conditional)
 
     print(f"[CONFIG] architecture_type={config.architecture_type}")
     print(f"[CONFIG] is_conditional={config.is_conditional} "
@@ -272,7 +261,9 @@ def create_gpt_config(args):
     data.max_context_len = get_context_len(data.datasets.datasets_list[0])
     data.path = ""
     data.swap_cfg_coef = 0.0
-    data.split_scheme = args.split_scheme
+    dataset_name = data.datasets.datasets_list[0]
+    data.split_scheme = args.split_scheme or default_split_scheme(dataset_name)
+    check_split_scheme(dataset_name, data.split_scheme)
 
     config.architecture_type = "gpt"
     config.finetuning = False
@@ -291,16 +282,7 @@ def create_gpt_config(args):
     config.is_pipeline_conditional = True
     config.normalize_encodings = False
 
-    if 'wikipedia' in data.datasets.datasets_list:
-        raise Exception(
-            "wikipedia -- безусловный датасет, architecture_type=gpt требует пары "
-            "промпт/продолжение"
-        )
-
-    data.datasets.metrics["rocstories"] = {
-        "metrics": ["bleu", "bert-score", "rouge1", "rouge2", "rougeL"],
-        "tracked_metric": "bert-score",
-    }
+    data.datasets.metrics[dataset_name] = metrics_for_mode(True)
 
     config.project_name = args.project_name
     training.checkpoints_prefix = f"gpt2-medium-512-{optim.lr}-{data.datasets.datasets_list[0]}"
@@ -321,6 +303,19 @@ def create_gpt_config(args):
     return config
 
 
+def metrics_for_mode(is_pipeline_conditional):
+    """В условных режимах меряем соответствие промпту, в безусловном -- качество текста."""
+    if is_pipeline_conditional:
+        return {
+            "metrics": ["bleu", "bert-score", "rouge1", "rouge2", "rougeL"],
+            "tracked_metric": "bert-score",
+        }
+    return {
+        "metrics": ["mauve", "div", "ppl"],
+        "tracked_metric": "mauve",
+    }
+
+
 def artifact_suffix(config):
     """Суффикс, общий для декодера, классификатора и чекпоинтов диффузии.
 
@@ -332,7 +327,8 @@ def artifact_suffix(config):
     # у gpt нет латентного пространства, нормализация к нему неприменима
     if config.architecture_type != "gpt" and not config.normalize_encodings and not config.emb:
         suffix += "-unnorm"
-    if config.data.split_scheme != SPLIT_SCHEMES[0]:
+    dataset_name = config.data.datasets.datasets_list[0]
+    if config.data.split_scheme != default_split_scheme(dataset_name):
         suffix += f"-{config.data.split_scheme}"
     return suffix
 
@@ -431,8 +427,10 @@ def create_cond_encoder_config():
 
 
 def get_sequence_len(dataset_name):
+    # для wikipedia схема prefix LM: 128 токенов суммарно, поровну на промпт
+    # и продолжение, то есть 64 + 64
     data = {
-        "wikipedia": 128,
+        "wikipedia": 64,
         "rocstories": 35, 
         "qqp": 50,
         "xsum": 64,
@@ -443,7 +441,7 @@ def get_sequence_len(dataset_name):
 
 def get_context_len(dataset_name):
     data = {
-        "wikipedia": 128,
+        "wikipedia": 64,
         "rocstories": 45, 
         "qqp": 50,
         "xsum": 512,

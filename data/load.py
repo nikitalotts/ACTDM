@@ -5,77 +5,79 @@ import nltk
 import os
 from tqdm import tqdm
 
-from utils.schemes import SPLIT_SCHEMES, SPLIT_SCHEME_HELP
+from utils.schemes import (
+    SPLIT_SCHEMES, SPLIT_SCHEME_HELP, check_split_scheme, default_split_scheme,
+)
 
 
-def download_wikipedia(dataset_path):
+def download_wikipedia(dataset_path, min_tokens=128, num_texts=None,
+                       validation_size=3000, test_size=7000, seed=0):
+    """Скачивает стандартный английский дамп Википедии и режет его на абзацы.
 
-    dt = load_dataset("bigscience-data/roots_en_wikipedia")
-    dt = dt["train"]
-    dt = dt.remove_columns("meta")
+    Берется wikimedia/wikipedia 20231101.en -- это тот датасет, который научрук
+    назвал стандартным (в отличие от bigscience-data/roots_en_wikipedia,
+    использованного в TEncDM).
 
-    def split(batch):
+    На диск кладутся сырые абзацы в колонке "text". Разбиение на промпт и
+    продолжение здесь НЕ делается: оно происходит на лету в
+    data/dataset_wiki.py по config.data.split_scheme, потому что зависит от
+    токенизатора энкодера и от max_context_len / max_sequence_len.
+
+    min_tokens -- нижняя граница длины абзаца в словах. Абзацы короче
+    отбрасываются: на них 50/50 разбиение дало бы слишком короткое продолжение.
+    num_texts -- ограничение на число абзацев (для пробных прогонов).
+    """
+    print("Loading wikimedia/wikipedia 20231101.en ...")
+    print(f"  min_tokens={min_tokens}, num_texts={num_texts or 'все'}")
+
+    dt = load_dataset("wikimedia/wikipedia", "20231101.en", split="train")
+
+    def to_paragraphs(batch):
         result = []
         for text in batch["text"]:
-            texts = text.split("\n\n")
-            result.append(texts)
-        result = list(chain(*result))
+            result.extend(p.strip() for p in text.split("\n\n"))
         return {"text": result}
 
     dt = dt.map(
-        split,
+        to_paragraphs,
         batched=True,
         num_proc=30,
-        desc="Dataset split",
+        desc="Splitting articles into paragraphs",
         batch_size=1000,
+        remove_columns=dt.column_names,
     )
 
-    min_symbols = 600
-    dt = dt.filter(lambda b: len(b["text"]) >= min_symbols, num_proc=30)
+    # длина в словах -- дешевая оценка сверху для длины в токенах:
+    # у BERT-токенизатора токенов всегда не меньше, чем слов
+    dt = dt.filter(lambda b: len(b["text"].split()) >= min_tokens,
+                   num_proc=30, desc="Filtering short paragraphs")
 
-    tokenizer = nltk.data.load('tokenizers/punkt/english.pickle')
+    print(f"Paragraphs after filtering: {len(dt)}")
 
-    def split_into_sents(batch):
-        result = []
-        for text in batch["text"]:
-            texts = tokenizer.tokenize(text)
-            result.append(texts)
-        result = list(chain(*result))
-        return {"text": result}
+    if num_texts is not None and num_texts < len(dt):
+        dt = dt.shuffle(seed=seed).select(range(num_texts))
+        print(f"Limited to {len(dt)} paragraphs")
 
-    sent_dt = dt.map(
-        split_into_sents,
-        batched=True,
-        num_proc=30,
-        desc="Dataset split",
-        batch_size=1000,
-    )
+    holdout = validation_size + test_size
+    if len(dt) <= holdout:
+        raise Exception(
+            f"Абзацев ({len(dt)}) не хватает на valid+test ({holdout}). "
+            f"Уменьшите --min_tokens или увеличьте --num_texts"
+        )
 
-    def join_sents(batch):
-        result = []
-        cur_text = ''
-        for text in batch["text"]:
-            if len(cur_text.split()) + len(text.split()) < 128 / 2:
-                cur_text += ' ' + text
-            else:
-                result.append(cur_text)
-                cur_text = text
+    tmp = dt.train_test_split(test_size=holdout, seed=seed, shuffle=True)
+    val_test = tmp["test"].train_test_split(test_size=test_size, seed=seed, shuffle=True)
+    dt = DatasetDict({
+        "train": tmp["train"],
+        "validation": val_test["train"],
+        "test": val_test["test"],
+    })
 
-        return {"text": result}
+    print(f"Train: {len(dt['train'])}, validation: {len(dt['validation'])}, test: {len(dt['test'])}")
+    print(f"Saving to {dataset_path} ...")
+    dt.save_to_disk(dataset_path)
+    print("Done. Разбиение на промпт/продолжение делается на лету по --split_scheme")
 
-    joined_dt = sent_dt.map(
-        join_sents,
-        batched=True,
-        num_proc=30,
-        desc="Dataset join",
-        batch_size=100000,
-    )
-
-    dt = joined_dt.train_test_split(test_size=0.002, seed=0)
-    dt.save_to_disk(
-        dataset_path,
-        num_shards={'train': 20, 'test': 1}
-    )
 
 
 def download_qqp(dataset_path):
@@ -292,10 +294,17 @@ if __name__ == "__main__":
         required=False,
     )
     parser.add_argument(
-        "--split_scheme", type=str, default=SPLIT_SCHEMES[0], choices=SPLIT_SCHEMES,
+        "--split_scheme", type=str, default=None, choices=SPLIT_SCHEMES,
         help="Схема разбиения истории на промпт и продолжение: "
              + ", ".join(f"{k} -- {v}" for k, v in SPLIT_SCHEME_HELP.items()),
     )
+    # --- только для wikipedia ---------------------------------------------------
+    # разбиение на промпт/продолжение там делается на лету загрузчиком,
+    # поэтому здесь задается лишь то, какие абзацы попадут в датасет
+    parser.add_argument("--min_tokens", type=int, default=128,
+                        help="wikipedia: минимальная длина абзаца в словах")
+    parser.add_argument("--num_texts", type=int, default=None,
+                        help="wikipedia: ограничить число абзацев (для пробных прогонов)")
     # старые флаги оставлены как алиасы, чтобы не ломать существующие команды
     parser.add_argument("--conditional_generation_formatted", action="store_true",
                         help="DEPRECATED, эквивалент --split_scheme sliding")
@@ -304,11 +313,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    split_scheme = args.split_scheme
+    split_scheme = args.split_scheme or default_split_scheme(args.dataset_name)
     if args.conditional_formatted_full_length:
         split_scheme = "half"
     elif args.conditional_generation_formatted:
         split_scheme = "sliding"
+
+    check_split_scheme(args.dataset_name, split_scheme)
 
     if args.dataset_name == "rocstories":
         download_rocstory(
@@ -317,7 +328,11 @@ if __name__ == "__main__":
         )
 
     if args.dataset_name == "wikipedia":
-        download_wikipedia(args.dataset_path + args.dataset_name)
+        download_wikipedia(
+            args.dataset_path + args.dataset_name,
+            min_tokens=args.min_tokens,
+            num_texts=args.num_texts,
+        )
     if args.dataset_name == "qqp":
         download_qqp(args.dataset_path + args.dataset_name)
     if args.dataset_name == "xsum":

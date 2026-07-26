@@ -20,6 +20,6 @@ source run_flags.sh
 
 echo "Starting script..."
 
-python -m model.train_decoder --dataset_name='rocstories' --encoder_name='bert-base-cased' --project_name='pgwtd' ${ARCH_FLAGS} ${DATA_FLAGS}
+python -m model.train_decoder --encoder_name='bert-base-cased' --project_name='pgwtd' ${ARCH_FLAGS} ${DATA_FLAGS}
  
 echo "Script finished."

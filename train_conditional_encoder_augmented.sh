@@ -21,6 +21,6 @@ source run_flags.sh
 
 echo "Starting script..."
 
-python -m train_conditional_encoder_augmented --dataset_name='rocstories' --encoder_name='bert-base-cased' --project_name='actdm' ${DATA_FLAGS}
+python -m train_conditional_encoder_augmented --encoder_name='bert-base-cased' --project_name='actdm' ${DATA_FLAGS}
  
 echo "Script finished."
