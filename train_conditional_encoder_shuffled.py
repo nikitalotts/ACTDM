@@ -18,12 +18,16 @@ from utils.util import parse
 from model.conditional_encoder import ConditionalEncoder
 
 def get_loaders(train_dataset, valid_dataset, batch_size):
+    # drop_last обязателен: negative-ы строятся перестановкой внутри батча,
+    # и на хвостовом батче из 1 примера подбор перестановки без неподвижных
+    # точек зацикливается навсегда
     train_loader = DataLoader(
         next(train_dataset),
         batch_size=batch_size,
         shuffle=True,
         num_workers=0,
         pin_memory=False,
+        drop_last=True
     )
 
     valid_loader = DataLoader(
@@ -31,6 +35,7 @@ def get_loaders(train_dataset, valid_dataset, batch_size):
         batch_size=batch_size,
         num_workers=0,
         pin_memory=False,
+        drop_last=True
     )
 
     return train_loader, valid_loader

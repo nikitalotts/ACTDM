@@ -73,11 +73,42 @@ class WikipediaDatasetDDP:
         else:
             return self.batch_preprocessing_uncond(batch)
 
-    def batch_preprocessing_uncond(self, batch): 
-        if "text" in batch:
-            return {"text_trg": batch["text"]}
-        elif "target" in batch:
+    def batch_preprocessing_uncond(self, batch):
+        # Безусловная диффузия обязана моделировать то же распределение,
+        # что таргет условных режимов -- ПРОДОЛЖЕНИЕ (вторую половину текста):
+        # guidance переиспользует ее чекпоинт как p(x) для продолжений, и на нем
+        # же обучаются decoder и классификатор. Если вернуть весь текст, collate
+        # обрежет его до первых 64 токенов, и модель выучит распределение
+        # НАЧАЛ абзацев -- не то, что генерируется при guidance.
+        if "text" not in batch:
             return {"text_trg": batch["target"]}
+
+        scheme = self.config.data.split_scheme
+        batch_input_ids = self.tokenizer(batch["text"], add_special_tokens=False)["input_ids"]
+        trg_ids_list = [self._split_ids(ids, scheme)[1] for ids in batch_input_ids]
+        return {"text_trg": self.tokenizer.batch_decode(trg_ids_list)}
+
+    def _split_ids(self, input_ids, scheme):
+        """Делит токены одного текста на (промпт, продолжение) по схеме."""
+        total_len = self.max_context_len + self.max_sequence_len
+
+        if scheme == "prefix_lm":
+            # ровно 50% доступных токенов в промпт: для текстов длиннее total_len
+            # это ровно max_context_len, для более коротких -- их собственная середина
+            pos = min(len(input_ids), total_len) // 2
+        elif scheme == "random_prefix":
+            pos = int(random() * (self.max_context_len - 1))
+        else:
+            raise Exception(
+                f"split_scheme={scheme} не применим к wikipedia. "
+                f"Ожидается prefix_lm или random_prefix"
+            )
+
+        src_ids = input_ids[:pos]
+        trg_ids = input_ids[pos:self.max_sequence_len + pos]
+        if not trg_ids:
+            src_ids, trg_ids = trg_ids, src_ids
+        return src_ids, trg_ids
 
     def batch_preprocessing_cond(self, batch):
         """Режет текст на промпт и продолжение по токенам.
@@ -94,7 +125,6 @@ class WikipediaDatasetDDP:
             можно было воспроизвести сравнение схем.
         """
         scheme = self.config.data.split_scheme
-        total_len = self.max_context_len + self.max_sequence_len
 
         if self.split == 'train':
             blank_cond_rate = self.config.data.swap_cfg_coef
@@ -102,31 +132,18 @@ class WikipediaDatasetDDP:
             blank_cond_rate = 0
 
         batch_input_ids = self.tokenizer(batch["text"], add_special_tokens=False)["input_ids"]
-        batch_size = len(batch_input_ids)
-
-        if scheme == "prefix_lm":
-            # ровно 50% доступных токенов в промпт: для текстов длиннее total_len
-            # это ровно max_context_len, для более коротких -- их собственная середина
-            delimeter_poses = [min(len(ids), total_len) // 2 for ids in batch_input_ids]
-        elif scheme == "random_prefix":
-            delimeter_poses = (np.random.rand(batch_size) * (self.max_context_len - 1)).astype(int)
-        else:
-            raise Exception(
-                f"split_scheme={scheme} не применим к wikipedia. "
-                f"Ожидается prefix_lm или random_prefix"
-            )
 
         trg_ids_list = []
         src_ids_list = []
 
-        for i, input_ids in enumerate(batch_input_ids):
+        for input_ids in batch_input_ids:
+            src_ids, trg_ids = self._split_ids(input_ids, scheme)
+            # classifier-free guidance: промпт скрывается, но продолжение остается
+            # ТЕМ ЖЕ -- как у rocstories в preprocessing.py. Сдвигать границу в 0
+            # нельзя: таргетом стала бы первая половина текста, и безусловная
+            # ветка модели училась бы на другом распределении
             if random() < blank_cond_rate:
-                delimeter_poses[i] = 0
-            pos = delimeter_poses[i]
-            src_ids = input_ids[:pos]
-            trg_ids = input_ids[pos:self.max_sequence_len + pos]
-            if not trg_ids:
-                src_ids, trg_ids = trg_ids, src_ids
+                src_ids = []
             src_ids_list.append(src_ids)
             trg_ids_list.append(trg_ids)
 

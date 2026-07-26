@@ -141,11 +141,20 @@ class GPT2Runner:
             all_attention_mask.append(attn)
             all_labels.append(labels)
 
+        attention_mask = torch.tensor(all_attention_mask, dtype=torch.long)
+        # При left padding GPT2 без явных position_ids нумерует позиции с нуля
+        # от края батча, то есть реальные токены получают позиции со сдвигом на
+        # длину паддинга. generate() же строит позиции из attention_mask
+        # (cumsum - 1), где первый реальный токен получает позицию 0.
+        # Считаем на обучении так же, иначе позиции train/inference расходятся.
+        position_ids = (attention_mask.cumsum(dim=-1) - 1).clamp(min=0)
+
         new_batch = BatchEncoding({
             "text_src": texts_src,
             "text_trg": texts_trg,
             "input_ids": torch.tensor(all_input_ids, dtype=torch.long),
-            "attention_mask": torch.tensor(all_attention_mask, dtype=torch.long),
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
             "labels": torch.tensor(all_labels, dtype=torch.long),
         })
         return new_batch
@@ -299,6 +308,7 @@ class GPT2Runner:
             outputs = self.ddp_model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
+                position_ids=batch["position_ids"],
                 labels=batch["labels"],
             )
             raw_loss = outputs.loss
@@ -343,6 +353,7 @@ class GPT2Runner:
                 outputs = self.ddp_model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
+                    position_ids=batch["position_ids"],
                     labels=batch["labels"],
                 )
                 loss = outputs.loss

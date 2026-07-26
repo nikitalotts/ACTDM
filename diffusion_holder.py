@@ -273,6 +273,11 @@ class DiffusionRunner:
 
         save_path = os.path.join(prefix_folder, prefix + ".pth")
 
+        # 'last' не участвует в top-k, и на шаге без прошедшего eval метрики нет
+        if last or self.step not in self.tracked_test_metric:
+            self.__save_checkpoint(save_path)
+            return
+
         if self.config.higher_better:
             item = (self.tracked_test_metric[self.step], save_path)
         else:
@@ -998,9 +1003,11 @@ class DiffusionRunner:
         # Денормализация нужна ровно тогда, когда нормализация применялась.
         if self.gen_enc_normalizer is not None:
             pred_embeddings = self.gen_enc_normalizer.denormalize(pred_embeddings)
-            if self.config.decoder.is_conditional and cond_x is not None:
+            if cond_x is not None:
                 cond_x = self.gen_enc_normalizer.denormalize(cond_x)
-        else:
+        # условие декодеру нужно только когда он обучался условным (genie);
+        # отключение нормализации не повод молча отбрасывать условие
+        if not self.config.decoder.is_conditional:
             cond_x = None
             cond_mask = None
         output = self.decoder(pred_embeddings, cond_x=cond_x, cond_mask=cond_mask)

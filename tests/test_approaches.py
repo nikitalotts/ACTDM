@@ -129,21 +129,31 @@ def test_rocstories_split_schemes():
         split_story(s[:4], "half")
 
 
+def _wiki_obj(at="genie", scheme=None, split="test", swap=0.0, with_tokenizer=False):
+    """WikipediaDatasetDDP без чтения файлов с диска -- только препроцессинг."""
+    from data.dataset_wiki import WikipediaDatasetDDP
+
+    cfg = create_config(make_args(at, dataset_name="wikipedia",
+                                  split_scheme=scheme, swap_cfg_coef=swap))
+    o = WikipediaDatasetDDP.__new__(WikipediaDatasetDDP)
+    o.config, o.split = cfg, split
+    o.max_context_len = cfg.data.max_context_len
+    o.max_sequence_len = cfg.data.max_sequence_len
+    if with_tokenizer:
+        from transformers import AutoTokenizer
+        o.tokenizer = AutoTokenizer.from_pretrained(cfg.model.encoder_link)
+    return o
+
+
+WIKI_TEXT = " ".join(f"word{i}" for i in range(300))
+
+
 def test_wikipedia_prefix_lm_is_deterministic_half():
     """prefix_lm режет ровно пополам, random_prefix -- нет."""
-    from data.dataset_wiki import WikipediaDatasetDDP
-    from transformers import AutoTokenizer
-
-    long_text = " ".join(f"word{i}" for i in range(300))
 
     def run(scheme):
-        cfg = create_config(make_args("genie", dataset_name="wikipedia", split_scheme=scheme))
-        o = WikipediaDatasetDDP.__new__(WikipediaDatasetDDP)
-        o.config, o.split = cfg, "test"
-        o.max_context_len = cfg.data.max_context_len
-        o.max_sequence_len = cfg.data.max_sequence_len
-        o.tokenizer = AutoTokenizer.from_pretrained(cfg.model.encoder_link)
-        out = o.batch_preprocessing_cond({"text": [long_text] * 6})
+        o = _wiki_obj(scheme=scheme, with_tokenizer=True)
+        out = o.batch_preprocessing_cond({"text": [WIKI_TEXT] * 6})
         n = lambda ts: [len(o.tokenizer(t, add_special_tokens=False)["input_ids"]) for t in ts]
         return n(out["text_src"]), n(out["text_trg"])
 
@@ -152,6 +162,54 @@ def test_wikipedia_prefix_lm_is_deterministic_half():
 
     src_r, _ = run("random_prefix")
     assert len(set(src_r)) > 1, "random_prefix обязан давать плавающую границу"
+
+
+def test_wikipedia_split_ids_boundaries():
+    """Договоренность с научником: 128 токенов, граница детерминированно на 64-м."""
+    o = _wiki_obj()
+    src, trg = o._split_ids(list(range(300)), "prefix_lm")
+    assert src == list(range(64))
+    assert trg == list(range(64, 128))
+    # текст короче 128 токенов делится в собственной середине
+    src, trg = o._split_ids(list(range(100)), "prefix_lm")
+    assert src == list(range(50)) and trg == list(range(50, 100))
+    # продолжение не бывает пустым, пока есть хоть один токен
+    src, trg = o._split_ids([7], "prefix_lm")
+    assert trg == [7] and src == []
+
+
+def test_wikipedia_uncond_trains_on_continuation():
+    """Безусловная диффузия делит чекпоинт с guidance, поэтому обязана обучаться
+    на том же спане, что таргет условных режимов -- на продолжении, а не на
+    начале текста."""
+    cond = _wiki_obj(at="genie", with_tokenizer=True) \
+        .batch_preprocessing_cond({"text": [WIKI_TEXT]})
+    unc = _wiki_obj(at="unconditional", with_tokenizer=True) \
+        .batch_preprocessing_uncond({"text": [WIKI_TEXT]})
+    assert unc["text_trg"] == cond["text_trg"]
+    # это именно продолжение, а не начало текста
+    assert not unc["text_trg"][0].startswith("word0 "), (
+        "uncond-таргет должен быть второй половиной текста, а не ее началом")
+
+
+def test_wikipedia_blank_cond_keeps_target_span():
+    """CFG-бланк: промпт пустеет, а продолжение остается ТЕМ ЖЕ
+    (как у rocstories в data/preprocessing.py)."""
+    blank = _wiki_obj(split="train", swap=1.0, with_tokenizer=True) \
+        .batch_preprocessing_cond({"text": [WIKI_TEXT] * 4})
+    plain = _wiki_obj(split="train", swap=0.0, with_tokenizer=True) \
+        .batch_preprocessing_cond({"text": [WIKI_TEXT] * 4})
+    assert all(s == "" for s in blank["text_src"])
+    assert blank["text_trg"] == plain["text_trg"], (
+        "бланк условия не должен сдвигать границу таргета")
+
+
+def test_gpt_splits_wikipedia_with_same_tokenizer_as_diffusion():
+    """Пары (промпт, продолжение) на wikipedia обязаны совпадать во всех
+    подходах, поэтому gpt-конфиг обязан резать текст тем же токенизатором."""
+    g = create_config(make_args("gpt", dataset_name="wikipedia"))
+    d = create_config(make_args("genie", dataset_name="wikipedia"))
+    assert g.model.encoder_link == d.model.encoder_link
 
 
 # =====================================================================
@@ -194,6 +252,15 @@ def test_curriculum_reaches_full_range_at_tenth_epoch():
     assert current_T(8) == pytest.approx(0.9001, abs=1e-3)
     assert current_T(9) == T, "полный диапазон обязан наступать на 10-й эпохе"
     assert current_T(12) == T
+
+
+def test_classifier_loaders_drop_last():
+    """Негативы строятся перестановкой внутри батча; на хвостовом батче из
+    одного примера подбор перестановки без неподвижных точек зацикливается,
+    поэтому хвост обязан отбрасываться во всех трех схемах."""
+    for scheme, fn in SCHEME_FILES.items():
+        src = open(fn, encoding="utf-8").read()
+        assert "drop_last=True" in src, scheme
 
 
 def test_combined_uses_single_t_prime_for_triple():
@@ -337,6 +404,35 @@ def test_gpt_masks_prompt_in_loss():
     # префикс до первого незамаскированного токена -- это промпт, он вне лосса
     first = int(kept.nonzero()[0])
     assert (labels[:first] == -100).all()
+
+
+@needs_cuda
+def test_gpt_position_ids_match_generate_convention():
+    """generate() при left padding строит позиции из attention_mask (cumsum - 1),
+    так что первый реальный токен получает позицию 0. На обучении позиции
+    обязаны считаться так же, иначе train и inference расходятся."""
+    from gpt2_holder import GPT2Runner
+    from transformers import GPT2Tokenizer
+
+    cfg = create_config(make_args("gpt"))
+    r = GPT2Runner.__new__(GPT2Runner)
+    r.config = cfg
+    r.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    r.tokenizer.pad_token = r.tokenizer.eos_token
+
+    # разные длины -> разный левый паддинг внутри батча
+    batch = [{"text_src": "A short prompt.", "text_trg": "Tail."},
+             {"text_src": "A much much much longer prompt with many words.",
+              "text_trg": "And a noticeably longer continuation here."}]
+    out = r.collate_fn(batch)
+    attn, pos = out["attention_mask"], out["position_ids"]
+
+    assert torch.equal(pos, (attn.cumsum(dim=-1) - 1).clamp(min=0))
+    for i in range(len(batch)):
+        start = int(attn[i].nonzero()[0])
+        real_pos = pos[i, start:]
+        assert real_pos[0] == 0, "первый реальный токен обязан иметь позицию 0"
+        assert torch.equal(real_pos, torch.arange(len(real_pos)))
 
 
 # =====================================================================

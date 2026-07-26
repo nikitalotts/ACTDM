@@ -260,6 +260,10 @@ def create_gpt_config(args):
     model = config.model = ml_collections.ConfigDict()
     model.ema_rate = 0.9999
     model.encoder_name = "gpt2-medium"
+    # Этим токенизатором dataset_wiki режет текст на промпт/продолжение.
+    # Берется тот же BERT, что у диффузии: граница разбиения обязана совпадать
+    # во всех подходах, иначе gpt сравнивается на других парах
+    model.encoder_link = 'google-bert/bert-base-cased'
 
     data = config.data = ml_collections.ConfigDict()
     data.datasets = create_datasets_config(args)
