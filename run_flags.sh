@@ -8,6 +8,8 @@
 # ARCH_TYPE=guidance       -- безусловная диффузия + classifier guidance на генерации
 #     TIME_SCALE=1|1000    -- масштаб t в эмбеддинге времени классификатора
 #                             (1 -- как было, 1000 -- разрешение как в DDPM)
+#     AUG_SCHEME=shuffled|augmented|combined -- какой классификатор брать на
+#                             генерации (схема его обучения входит в имя файла)
 # ARCH_TYPE=unconditional  -- безусловная диффузия, промпт не используется
 # ARCH_TYPE=gpt            -- авторегрессионный GPT-2 вместо диффузии
 # Для guidance силу задает CG_SCALE.
@@ -35,7 +37,14 @@ case "${ARCH_TYPE}" in
         ARCH_FLAGS="--architecture_type ${ARCH_TYPE}"
         ;;
     guidance)
-        ARCH_FLAGS="--architecture_type guidance --classifier_guidance_scale=${CG_SCALE}"
+        case "${AUG_SCHEME:-shuffled}" in
+            shuffled|augmented|combined) ;;
+            *)
+                echo "Unknown AUG_SCHEME='${AUG_SCHEME}'. Expected: shuffled | augmented | combined" >&2
+                exit 1
+                ;;
+        esac
+        ARCH_FLAGS="--architecture_type guidance --classifier_guidance_scale=${CG_SCALE} --augmentation_scheme ${AUG_SCHEME:-shuffled}"
         ;;
     *)
         echo "Unknown ARCH_TYPE='${ARCH_TYPE}'. Expected: genie | diffuseq | guidance | unconditional | gpt" >&2

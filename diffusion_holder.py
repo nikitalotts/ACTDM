@@ -1177,6 +1177,14 @@ class DiffusionRunner:
 
             file_name = (f"{self.step}-N={self.config.dynamic.N}-seed={self.config.seed}"
                          f"-len={len(result_list)}-gs={self.guidance_scale}.json")
+            # у guidance и unconditional общий checkpoints_prefix, поэтому схема
+            # классификатора и time_scale обязаны входить в имя -- иначе прогоны
+            # с разными классификаторами перезаписывают друг друга
+            if self.use_guidance:
+                file_name = file_name.replace(
+                    ".json",
+                    f"-{self.config.cond_encoder.augmentation_scheme}"
+                    f"-ts{self.config.cond_encoder.time_scale:g}.json")
             save_path = os.path.join(prefix_folder, file_name)
             json.dump(result_list, open(save_path, "w"), indent=4)
             print(f"Texts are saved in {save_path}")
@@ -1383,6 +1391,14 @@ class DiffusionRunner:
         }
         file_name = (f"statistical_eval-{split}-num_seeds={num_seeds}"
                      f"-base_seed={base_seed}-step={self.step}-N={self.config.dynamic.N}.json")
+        # общий checkpoints_prefix с unconditional: guidance-прогон не должен
+        # перезаписывать безусловный (и прогоны разных классификаторов -- друг друга)
+        if self.use_guidance:
+            file_name = file_name.replace(
+                ".json",
+                f"-gs={self.guidance_scale}"
+                f"-{self.config.cond_encoder.augmentation_scheme}"
+                f"-ts{self.config.cond_encoder.time_scale:g}.json")
         save_path = os.path.join(prefix_folder, file_name)
         with open(save_path, "w") as f:
             json.dump(payload, f, indent=4)
