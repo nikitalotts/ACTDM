@@ -25,6 +25,9 @@
 # DATA_FLAGS обязаны совпадать у декодера, диффузии и классификатора: они задают
 # и нарезку данных, и пространство латентов. Имена артефактов это учитывают.
 
+# кэш HuggingFace -- единая настройка для всех заданий
+source "$(dirname "${BASH_SOURCE[0]}")/hf_env.sh"
+
 ARCH_TYPE="${ARCH_TYPE:-genie}"
 CG_SCALE="${CG_SCALE:-10.0}"
 TIME_SCALE="${TIME_SCALE:-1.0}"

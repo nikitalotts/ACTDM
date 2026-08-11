@@ -26,6 +26,10 @@
 set -e
 export DATASET=wikipedia
 
+# кэш HuggingFace: стадия data качает датасет напрямую отсюда (не через
+# sbatch), поэтому настройка кэша нужна и здесь, а не только в run_flags.sh
+source "$(dirname "$0")/hf_env.sh"
+
 # сила guidance и масштаб времени классификатора на финальной оценке
 CG_SCALE="${CG_SCALE:-10.0}"
 TIME_SCALE="${TIME_SCALE:-1.0}"

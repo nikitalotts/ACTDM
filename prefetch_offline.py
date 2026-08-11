@@ -22,6 +22,14 @@ gpt2-large ~3GB для mauve, deberta-xlarge-mnli ~3GB для bert-score).
 """
 import os
 
+# Тот же дефолт, что в hf_env.sh: на Харизме кэш живет на scratch. Задается
+# ДО импорта transformers/evaluate (они читают HF_HOME при импорте), поэтому
+# прогрев и чтение из заданий гарантированно смотрят в один каталог.
+if "HF_HOME" not in os.environ:
+    _scratch = f"/scratch/{os.environ.get('USER', '')}"
+    if os.environ.get("USER") and os.path.isdir(_scratch):
+        os.environ["HF_HOME"] = os.path.join(_scratch, "hf_cache")
+
 STEPS = []
 
 
