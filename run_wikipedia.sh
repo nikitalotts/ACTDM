@@ -34,9 +34,13 @@ export CG_SCALE TIME_SCALE
 case "$1" in
     data)
         # нарезка на абзацы >=128 слов и train/valid/test 3000/7000;
-        # разбиение на промпт/продолжение делается на лету при обучении
+        # разбиение на промпт/продолжение делается на лету при обучении.
+        # Запускать на ноде с интернетом; перед первым запуском прогреть кэши
+        # моделей: python prefetch_offline.py
         python -m data.load --dataset_name wikipedia \
             ${NUM_TEXTS:+--num_texts ${NUM_TEXTS}}
+        echo "==> обучение читает только datasets/wikipedia; сырой кэш можно удалить:"
+        echo "==>   rm -rf ~/.cache/huggingface/datasets/wikimedia___wikipedia*"
         echo "==> дальше: ./run_wikipedia.sh stats   (и параллельно gpt)"
         ;;
     stats)

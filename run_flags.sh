@@ -90,3 +90,17 @@ echo "ARCH_TYPE=${ARCH_TYPE}  ARCH_FLAGS='${ARCH_FLAGS}'"
 DATA_FLAGS="${DATA_FLAGS} --time_scale ${TIME_SCALE}"
 
 echo "DATASET=${DATASET}  SPLIT_SCHEME=${SPLIT_SCHEME:-<по умолчанию>}  NORMALIZE=${NORMALIZE}  DATA_FLAGS='${DATA_FLAGS}'"
+
+# --- офлайн-режим HuggingFace ---------------------------------------------------
+# На compute-нодах кластера нет интернета: модели, токенизаторы и скрипты метрик
+# берутся из кэша, прогретого заранее (python prefetch_offline.py на ноде с
+# интернетом). Явный офлайн-режим вдобавок убирает сетевые таймауты на каждом
+# from_pretrained. Отключение: HF_OFFLINE=0 (запуск на машине с интернетом
+# и холодным кэшем).
+HF_OFFLINE="${HF_OFFLINE:-1}"
+if [ "${HF_OFFLINE}" = "1" ]; then
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
+    export HF_DATASETS_OFFLINE=1
+    export HF_EVALUATE_OFFLINE=1
+fi
