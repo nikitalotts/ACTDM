@@ -14,7 +14,7 @@ mauve/ppl/bert-score -- уже после дней обучения.
     ./run_wikipedia.sh data
 
 сама скачивает и нарезает его в datasets/wikipedia, после чего сырой кэш
-~/.cache/huggingface/datasets/wikimedia___wikipedia* можно удалить --
+$HF_DATASETS_CACHE/wikimedia___wikipedia* можно удалить --
 обучение читает только datasets/wikipedia.
 
 Суммарный объем кэша моделей: ~12-13 GB (основное: gpt-neo-1.3B ~5GB для ppl,
@@ -22,13 +22,14 @@ gpt2-large ~3GB для mauve, deberta-xlarge-mnli ~3GB для bert-score).
 """
 import os
 
-# Тот же дефолт, что в hf_env.sh: на Харизме кэш живет на scratch. Задается
+# Тот же дефолт, что в hf_env.sh: на Харизме модели живут в home
+# (переживают чистки scratch), сырой кэш датасетов -- на scratch. Задается
 # ДО импорта transformers/evaluate (они читают HF_HOME при импорте), поэтому
 # прогрев и чтение из заданий гарантированно смотрят в один каталог.
-if "HF_HOME" not in os.environ:
-    _scratch = f"/scratch/{os.environ.get('USER', '')}"
-    if os.environ.get("USER") and os.path.isdir(_scratch):
-        os.environ["HF_HOME"] = os.path.join(_scratch, "hf_cache")
+_scratch = f"/scratch/{os.environ.get('USER', '')}"
+if os.environ.get("USER") and os.path.isdir(_scratch):
+    os.environ.setdefault("HF_HOME", os.path.expanduser("~/hf_cache"))
+    os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(_scratch, "hf_datasets"))
 
 STEPS = []
 
@@ -125,9 +126,11 @@ def main():
         for d in failed:
             print("  -", d)
         raise SystemExit(1)
+    cache = os.environ.get("HF_DATASETS_CACHE") or os.path.join(
+        os.environ.get("HF_HOME", "~/.cache/huggingface"), "datasets")
     print("Все кэши прогреты. Дальше: ./run_wikipedia.sh data")
     print("После стадии data сырой кэш датасета можно удалить:")
-    print("  rm -rf ~/.cache/huggingface/datasets/wikimedia___wikipedia*")
+    print(f"  rm -rf {cache}/wikimedia___wikipedia*")
 
 
 if __name__ == "__main__":
