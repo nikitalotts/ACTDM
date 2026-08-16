@@ -2,10 +2,10 @@
 #SBATCH --job-name=make_statistics
 #SBATCH --output=slurm_logs/%j-%x.log
 #SBATCH --error=slurm_logs/%j-%x.log
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=20
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1
-#SBATCH --time=1:00:00
+#SBATCH --time=8:00:00
 
 source ~/.bashrc
 eval "$(conda shell.bash hook)"
