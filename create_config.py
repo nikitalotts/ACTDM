@@ -344,13 +344,19 @@ def apply_smoke_overrides(config):
 
     config.training.checkpoints_prefix += "-smoke"
 
+    artifacts_dir = f"{config.data.base_path}/{config.data.datasets.datasets_list[0]}"
+
     if "decoder" in config:
         config.decoder.max_train_steps = 200
         config.decoder.name += "-smoke"
-        config.decoder.decoder_path = (
-            f"{config.data.base_path}/{config.data.datasets.datasets_list[0]}"
-            f"/{config.decoder.name}.pth"
-        )
+        config.decoder.decoder_path = f"{artifacts_dir}/{config.decoder.name}.pth"
+
+    # классификатор guidance переименовываем тоже: иначе короткий прогон
+    # затер бы боевой чекпоинт классификатора недоученными весами
+    if "cond_encoder" in config:
+        config.cond_encoder.epochs = 1
+        config.cond_encoder.name += "-smoke"
+        config.cond_encoder.cond_encoder_path = f"{artifacts_dir}/{config.cond_encoder.name}.pth"
 
     print(f"[CONFIG] SMOKE=1: training_iters={config.training.training_iters}, "
           f"eval_freq={config.training.eval_freq}, "

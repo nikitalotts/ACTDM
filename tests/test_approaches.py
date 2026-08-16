@@ -785,5 +785,90 @@ def test_guidance_applies_in_validation_generation_during_training():
         "если это изменилось -- обновите тест и проверьте guard в calc_score")
 
 
+# =====================================================================
+# Короткий проверочный прогон (SMOKE=1) не должен задевать боевой
+# =====================================================================
+
+def _artifact_paths(at):
+    """Все пути и параметры, которые smoke-прогон обязан развести с боевым."""
+    c = create_config(make_args(at))
+    out = {
+        "prefix": c.training.checkpoints_prefix,
+        "iters": c.training.training_iters,
+        "num_gen_texts": c.validation.num_gen_texts,
+    }
+    if "decoder" in c:
+        out["decoder"] = c.decoder.decoder_path
+        out["decoder_steps"] = c.decoder.max_train_steps
+    if "cond_encoder" in c:
+        out["cond_encoder"] = c.cond_encoder.cond_encoder_path
+    return out
+
+
+@pytest.mark.parametrize("at", ["genie", "diffuseq", "guidance", "unconditional", "gpt"])
+def test_smoke_env_absent_leaves_config_untouched(at, monkeypatch):
+    """Без SMOKE=1 в окружении конфиг обязан быть в точности боевым: режим
+    включается только переменной окружения, никаких следов по умолчанию."""
+    monkeypatch.delenv("SMOKE", raising=False)
+    real = _artifact_paths(at)
+
+    assert real["iters"] >= 50_000, "боевой прогон не должен быть коротким"
+    assert real["num_gen_texts"] == 5000
+    for key, value in real.items():
+        assert "smoke" not in str(value), f"{key} несет след smoke-режима: {value}"
+    if "decoder_steps" in real:
+        assert real["decoder_steps"] is None, "боевой декодер учится полную эпоху"
+
+    # значение, отличное от "1", тоже не включает режим (fail-safe)
+    monkeypatch.setenv("SMOKE", "0")
+    assert _artifact_paths(at) == real
+    monkeypatch.setenv("SMOKE", "true")
+    assert _artifact_paths(at) == real
+
+
+@pytest.mark.parametrize("at", ["genie", "diffuseq", "guidance", "unconditional", "gpt"])
+def test_smoke_run_never_shares_artifact_with_real_run(at, monkeypatch):
+    """SMOKE=1 обязан развести ВСЕ артефакты с боевыми. Пересечение хотя бы по
+    одному файлу означает, что короткий прогон затрет боевые веса, а боевой
+    запуск потом молча продолжит обучение с недоученного чекпоинта."""
+    monkeypatch.delenv("SMOKE", raising=False)
+    real = _artifact_paths(at)
+    monkeypatch.setenv("SMOKE", "1")
+    smoke = _artifact_paths(at)
+
+    for key in ("prefix", "decoder", "cond_encoder"):
+        if key in real:
+            assert smoke[key] != real[key], f"smoke и боевой прогон делят {key}: {real[key]}"
+            assert smoke[key].endswith("-smoke") or "-smoke." in smoke[key]
+
+    assert smoke["iters"] < real["iters"]
+    assert smoke["num_gen_texts"] < real["num_gen_texts"]
+    if "decoder_steps" in smoke:
+        assert smoke["decoder_steps"] == 200
+
+
+@pytest.mark.parametrize("at", ["diffuseq", "gpt"])
+def test_smoke_shrinks_warmup_below_training_length(at, monkeypatch):
+    """Прогрев длиннее самого прогона оставил бы lr около нуля, а eval_freq
+    больше числа шагов -- ни одной генерации за прогон. Проверяем, что все три
+    величины урезаны согласованно, иначе smoke не проверяет то, ради чего он."""
+    monkeypatch.setenv("SMOKE", "1")
+    c = create_config(make_args(at))
+    assert c.optim.linear_warmup < c.training.training_iters
+    assert c.training.eval_freq <= c.training.training_iters
+    assert c.training.checkpoint_freq <= c.training.training_iters
+
+
+def test_real_pipeline_scripts_disable_smoke():
+    """run_wikipedia.sh гасит SMOKE явно: sbatch наследует окружение целиком,
+    и переменная, оставшаяся в шелле, иначе урезала бы боевое обучение."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "run_wikipedia.sh"), encoding="utf-8") as f:
+        assert re.search(r"^export SMOKE=0", f.read(), re.M), \
+            "run_wikipedia.sh обязан явно выставлять SMOKE=0"
+    with open(os.path.join(root, "smoke_test.sh"), encoding="utf-8") as f:
+        assert re.search(r"^export SMOKE=1", f.read(), re.M)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
