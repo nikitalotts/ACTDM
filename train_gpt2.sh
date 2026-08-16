@@ -19,5 +19,6 @@ ARCH_TYPE="${ARCH_TYPE:-gpt}"
 source run_flags.sh
 
 echo "Starting GPT2 training..."
-torchrun --nproc_per_node=4 train_gpt2.py --project_name='actdm' ${ARCH_FLAGS} ${DATA_FLAGS}
+# порт из номера задания: иначе коллизия с train_diffusion на общей ноде (оба брали бы 29500)
+torchrun --master_port=$((20000 + SLURM_JOB_ID % 10000)) --nproc_per_node=4 train_gpt2.py --project_name='actdm' ${ARCH_FLAGS} ${DATA_FLAGS}
 echo "GPT2 training finished."

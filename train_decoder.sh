@@ -13,8 +13,11 @@ eval "$(conda shell.bash hook)"
 module purge
 module load Python
 
-conda deactivate 
+conda deactivate
 conda activate pgwtd
+
+# на compute-нодах нет интернета: без offline wandb.init виснет на ретраях
+export WANDB_MODE=offline
 
 source run_flags.sh
 

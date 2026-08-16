@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1
-#SBATCH --time=0:15:00
+#SBATCH --time=1:00:00
 #SBATCH --account=proj_1743
 
 source ~/.bashrc

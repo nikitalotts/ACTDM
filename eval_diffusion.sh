@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --time=01:00:00
+#SBATCH --time=04:00:00
 
 source ~/.bashrc
 eval "$(conda shell.bash hook)"
@@ -21,7 +21,9 @@ source run_flags.sh
 
 echo "Starting diffusion evaluation (single run)..."
 
-torchrun --master_port=31250 --nproc_per_node=1 eval_diffusion.py \
+# порт из номера задания: стадия eval пускает 6 копий этого скрипта, на общей
+# ноде фиксированный порт валит все, кроме первой
+torchrun --master_port=$((20000 + SLURM_JOB_ID % 10000)) --nproc_per_node=1 eval_diffusion.py \
     --scheduler sd \
     --encoder_name bert-base-cased \
     --swap_cfg_coef 0.0 \

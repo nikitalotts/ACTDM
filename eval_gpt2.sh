@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --time=01:00:00
+#SBATCH --time=04:00:00
 
 source ~/.bashrc
 eval "$(conda shell.bash hook)"
@@ -28,7 +28,8 @@ TOP_K=0
 
 echo "Starting GPT-2 evaluation (decoding=${DECODING})..."
 
-torchrun --nproc_per_node=1 eval_gpt2.py \
+# порт из номера задания: на общей ноде дефолтный 29500 может быть занят соседним заданием
+torchrun --master_port=$((20000 + SLURM_JOB_ID % 10000)) --nproc_per_node=1 eval_gpt2.py \
     --project_name actdm \
     ${ARCH_FLAGS} ${DATA_FLAGS} \
     --decoding ${DECODING} \
