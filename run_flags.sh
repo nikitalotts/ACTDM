@@ -28,6 +28,10 @@
 # кэш HuggingFace -- единая настройка для всех заданий
 source "$(dirname "${BASH_SOURCE[0]}")/hf_env.sh"
 
+# stdout питона в slurm-логе иначе буферизуется блоками по 4-8К: прогресс
+# не виден десятки минут, хотя задание работает
+export PYTHONUNBUFFERED=1
+
 ARCH_TYPE="${ARCH_TYPE:-genie}"
 CG_SCALE="${CG_SCALE:-10.0}"
 TIME_SCALE="${TIME_SCALE:-1.0}"
