@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=train_gpt2
 #SBATCH --output=slurm_logs/%j-%x.log
+#SBATCH --error=slurm_logs/%j-%x.log
 #SBATCH --cpus-per-task=20
 #SBATCH --gpus-per-task=4
 #SBATCH --ntasks=1

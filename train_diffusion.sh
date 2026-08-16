@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=train_diffusion
 #SBATCH --output=slurm_logs/%j-%x.log
+#SBATCH --error=slurm_logs/%j-%x.log
 #SBATCH --cpus-per-task=12
 #SBATCH --gpus-per-task=4
 #SBATCH --ntasks=1

@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=eval_diffusion
 #SBATCH --output=slurm_logs/%j-%x.log
+#SBATCH --error=slurm_logs/%j-%x.log
 #SBATCH --cpus-per-task=5
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1

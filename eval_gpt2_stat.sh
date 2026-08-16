@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=eval_gpt2_stat
 #SBATCH --output=slurm_logs/%j-%x.log
+#SBATCH --error=slurm_logs/%j-%x.log
 #SBATCH --cpus-per-task=4
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1
