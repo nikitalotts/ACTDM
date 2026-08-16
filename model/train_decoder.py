@@ -164,7 +164,11 @@ def train(config, encoder, decoder, tokenizer):
         )
 
         decoder.train()
+        max_train_steps = config.decoder.max_train_steps
         for batch in tqdm(train_loader):
+            # короткий проверочный прогон (SMOKE=1): обрываем эпоху
+            if max_train_steps is not None and step >= max_train_steps:
+                break
             loss, acc = loss_step(
                 batch=batch,
                 tokenizer=tokenizer,

@@ -219,7 +219,7 @@ def create_config(args):
     config.tracked_metric = data.datasets.metrics[config.tracked_dataset]["tracked_metric"]
     config.higher_better = True
     config.save_top_k = 5
-    return config
+    return apply_smoke_overrides(config)
 
 
 def create_gpt_config(args):
@@ -313,6 +313,49 @@ def create_gpt_config(args):
     print(f"[CONFIG] training_iters={training.training_iters}, batch_size={training.batch_size}, "
           f"accum_batch_steps={training.accum_batch_steps}")
 
+    return apply_smoke_overrides(config)
+
+
+def apply_smoke_overrides(config):
+    """Короткий проверочный прогон всего пайплайна: SMOKE=1 в окружении.
+
+    Задача -- за десятки минут прогнать те же кодовые пути, что и боевое
+    обучение (данные -> обучение -> чекпоинт -> генерация -> метрики), но на
+    сотнях шагов вместо сотен тысяч.
+
+    Все артефакты уводятся в имена с суффиксом -smoke: иначе тестовый прогон
+    перезапишет боевые чекпоинты, а load_checkpoint боевого запуска подхватит
+    недоученные веса из smoke-прогона.
+    """
+    if os.environ.get("SMOKE", "0") != "1":
+        return config
+
+    accum = config.training.accum_batch_steps
+    config.training.training_iters = 200 * accum
+    config.training.eval_freq = 100 * accum
+    config.training.checkpoint_freq = 100 * accum
+    # прогрев на 5000 шагов при 200 шагах обучения оставил бы lr около нуля
+    config.optim.linear_warmup = 20 * accum
+
+    # генерация и метрики -- самая долгая часть eval, для проверки хватает
+    # пары сотен текстов
+    config.validation.num_gen_texts = 200
+    config.validation.batch_size = min(config.validation.batch_size, 50)
+
+    config.training.checkpoints_prefix += "-smoke"
+
+    if "decoder" in config:
+        config.decoder.max_train_steps = 200
+        config.decoder.name += "-smoke"
+        config.decoder.decoder_path = (
+            f"{config.data.base_path}/{config.data.datasets.datasets_list[0]}"
+            f"/{config.decoder.name}.pth"
+        )
+
+    print(f"[CONFIG] SMOKE=1: training_iters={config.training.training_iters}, "
+          f"eval_freq={config.training.eval_freq}, "
+          f"num_gen_texts={config.validation.num_gen_texts}, "
+          f"checkpoints_prefix={config.training.checkpoints_prefix}")
     return config
 
 
@@ -409,6 +452,8 @@ def create_decoder_config():
     config.weight_decay = 0.001
     config.batch_size = 64
     config.epochs = 1
+    # ограничение числа шагов обучения; None -- полная эпоха (см. SMOKE=1)
+    config.max_train_steps = None
     config.max_norm = 1.0
     config.is_conditional = False
     config.dataset = ""
