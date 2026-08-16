@@ -425,6 +425,19 @@ def test_classifier_name_matches_configured_epochs():
 # Авторегрессионный baseline
 # =====================================================================
 
+def test_gpt_tokenizer_pads_left_for_generation():
+    """estimate() отрезает сгенерированное продолжение срезом
+    generated[:, src_len:] -- это корректно только при left padding промптов:
+    при right padding новые токены идут после [PAD]-ов короткого промпта и в
+    срез попадает паддинг. Тесты выше строят раннер через __new__, минуя
+    __init__, поэтому сама настройка padding_side нигде больше не проверяется."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    src = inspect.getsource(GPT2Runner.__init__)
+    assert re.search(r"padding_side\s*=\s*[\"']left[\"']", src), \
+        "GPT2Runner.__init__ обязан выставлять tokenizer.padding_side='left'"
+
+
 @needs_cuda
 def test_gpt_masks_prompt_in_loss():
     """Лосс считается только по продолжению: промпт и паддинг помечены -100."""
