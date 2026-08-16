@@ -45,6 +45,10 @@ case "$1" in
         # разбиение на промпт/продолжение делается на лету при обучении.
         # Запускать на ноде с интернетом; перед первым запуском прогреть кэши
         # моделей: python prefetch_offline.py
+        # Через sbatch эту стадию пускать нельзя: на compute-нодах нет интернета.
+        # Активируем окружение сами -- иначе возьмется системный python2.7
+        eval "$(conda shell.bash hook)" 2>/dev/null || true
+        conda activate pgwtd
         python -m data.load --dataset_name wikipedia \
             ${NUM_TEXTS:+--num_texts ${NUM_TEXTS}}
         echo "==> обучение читает только datasets/wikipedia; сырой кэш можно удалить:"
