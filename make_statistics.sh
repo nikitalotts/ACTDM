@@ -1,7 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=Acalc_Stat
-#SBATCH --output=Acalc_Stat-%j.log
-#SBATCH --error=Acalc_Stat-%j.err
+#SBATCH --job-name=make_statistics
+#SBATCH --output=slurm_logs/%j-%x.log
 #SBATCH --cpus-per-task=4
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1

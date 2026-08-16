@@ -26,6 +26,10 @@
 set -e
 export DATASET=wikipedia
 
+# сюда пишут stdout+stderr все sbatch-задания: slurm_logs/<jobid>-<имя>.log;
+# slurm не создает каталог сам, без него задание умирает молча
+mkdir -p "$(dirname "$0")/slurm_logs"
+
 # кэш HuggingFace: стадия data качает датасет напрямую отсюда (не через
 # sbatch), поэтому настройка кэша нужна и здесь, а не только в run_flags.sh
 source "$(dirname "$0")/hf_env.sh"
@@ -54,14 +58,15 @@ case "$1" in
     decoders)
         # genie декодирует с cross-attention на промпт -- ему нужен свой декодер;
         # diffuseq, guidance и unconditional делят безусловный
-        ARCH_TYPE=genie         sbatch train_decoder.sh
-        ARCH_TYPE=unconditional sbatch train_decoder.sh
+        # --job-name попадает в имя лога (%x в --output)
+        ARCH_TYPE=genie         sbatch --job-name=train_decoder-genie         train_decoder.sh
+        ARCH_TYPE=unconditional sbatch --job-name=train_decoder-unconditional train_decoder.sh
         echo "==> когда появятся оба datasets/wikipedia/decoder-*.pth: ./run_wikipedia.sh diffusion"
         ;;
     diffusion)
-        ARCH_TYPE=genie         sbatch train_diffusion.sh
-        ARCH_TYPE=diffuseq      sbatch train_diffusion.sh
-        ARCH_TYPE=unconditional sbatch train_diffusion.sh
+        ARCH_TYPE=genie         sbatch --job-name=train_diffusion-genie         train_diffusion.sh
+        ARCH_TYPE=diffuseq      sbatch --job-name=train_diffusion-diffuseq      train_diffusion.sh
+        ARCH_TYPE=unconditional sbatch --job-name=train_diffusion-unconditional train_diffusion.sh
         echo "==> когда обучится unconditional: ./run_wikipedia.sh classifiers"
         ;;
     gpt)
@@ -75,11 +80,11 @@ case "$1" in
         echo "==> когда обучатся: ./run_wikipedia.sh eval"
         ;;
     eval)
-        ARCH_TYPE=genie         sbatch eval_diffusion.sh
-        ARCH_TYPE=diffuseq      sbatch eval_diffusion.sh
-        ARCH_TYPE=unconditional sbatch eval_diffusion.sh
+        ARCH_TYPE=genie         sbatch --job-name=eval_diffusion-genie         eval_diffusion.sh
+        ARCH_TYPE=diffuseq      sbatch --job-name=eval_diffusion-diffuseq      eval_diffusion.sh
+        ARCH_TYPE=unconditional sbatch --job-name=eval_diffusion-unconditional eval_diffusion.sh
         for AUG in shuffled augmented combined; do
-            ARCH_TYPE=guidance AUG_SCHEME=${AUG} sbatch eval_diffusion.sh
+            ARCH_TYPE=guidance AUG_SCHEME=${AUG} sbatch --job-name=eval_diffusion-guidance-${AUG} eval_diffusion.sh
         done
         ARCH_TYPE=gpt sbatch eval_gpt2.sh
         echo "==> метрики в логах slurm, тексты в generated_texts/<checkpoints_prefix>/"

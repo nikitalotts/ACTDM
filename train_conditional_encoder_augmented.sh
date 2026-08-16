@@ -1,7 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=train_cond_encoder
-#SBATCH --output=train_cond_encoder-%j.log
-#SBATCH --error=train_cond_encoder-%j.log
+#SBATCH --job-name=train_cond_enc_augmented
+#SBATCH --output=slurm_logs/%j-%x.log
 #SBATCH --cpus-per-task=8
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1

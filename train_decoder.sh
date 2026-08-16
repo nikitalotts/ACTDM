@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=train_decoder
-#SBATCH --output=%j-train_decoder-.log
+#SBATCH --output=slurm_logs/%j-%x.log
 #SBATCH --cpus-per-task=4
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1

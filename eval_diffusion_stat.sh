@@ -1,7 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=eval_tencm_diffusion_stat
-#SBATCH --output=%j-eval_tencm_diffusion_stat.log
-#SBATCH --error=%j-eval_tencm_diffusion_stat.log
+#SBATCH --job-name=eval_diffusion_stat
+#SBATCH --output=slurm_logs/%j-%x.log
 #SBATCH --cpus-per-task=5
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1

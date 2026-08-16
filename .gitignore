@@ -25,6 +25,8 @@ wandb/
 /*.err
 /*.out
 /slurm-*
+slurm_logs/*
+!slurm_logs/.gitkeep
 
 # --- кеши ---
 .cache/
