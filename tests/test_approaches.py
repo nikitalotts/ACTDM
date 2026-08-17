@@ -230,6 +230,162 @@ def test_wikipedia_blank_cond_keeps_target_span():
         "бланк условия не должен сдвигать границу таргета")
 
 
+def test_wikipedia_split_is_contiguous_and_capped_at_128():
+    """Промпт и продолжение -- две подряд идущие части одного текста: продолжение
+    начинается ровно там, где кончился промпт (ничего не потеряно и не
+    продублировано на стыке), а суммарно берется не больше 128 токенов -- хвост
+    длинного абзаца отбрасывается."""
+    o = _wiki_obj(with_tokenizer=True)
+    # реальный текст с wordpiece-разбиениями, чтобы сработал снап границы
+    text = ("The unbelievable phenomenon of superconductivity was discovered in "
+            "mercury by Heike Kamerlingh Onnes. ") * 12
+    ids = o.tokenizer(text, add_special_tokens=False)["input_ids"]
+    assert len(ids) > 128, "предпосылка теста: текст должен быть длиннее 128 токенов"
+
+    src, trg = o._split_ids(ids, "prefix_lm")
+
+    assert src + trg == ids[:len(src) + len(trg)], "на стыке промпт/продолжение потеря или дубль"
+    assert len(src) + len(trg) <= o.max_context_len + o.max_sequence_len
+    assert len(trg) == o.max_sequence_len
+    # снап сдвигает границу максимум на одно слово влево
+    assert o.max_context_len - 8 <= len(src) <= o.max_context_len
+
+
+def test_wikipedia_prefix_lm_does_not_depend_on_rng():
+    """Схема детерминированная: научник выбрал ее вместо случайной длины промпта
+    именно потому, что плавающая граница размазывает позиционную статистику.
+    Один и тот же текст обязан давать одну и ту же пару при любом состоянии RNG
+    и на любой эпохе."""
+    import random as pyrandom
+
+    outs = []
+    for seed in (0, 12345, 999):
+        pyrandom.seed(seed)
+        o = _wiki_obj(with_tokenizer=True)
+        outs.append(o.batch_preprocessing_cond({"text": [WIKI_TEXT] * 3}))
+
+    assert all(o == outs[0] for o in outs[1:]), "prefix_lm зависит от состояния RNG"
+
+    # контраст: random_prefix обязан от RNG зависеть
+    rnd = []
+    for seed in (0, 12345):
+        pyrandom.seed(seed)
+        o = _wiki_obj(scheme="random_prefix", with_tokenizer=True)
+        rnd.append(o.batch_preprocessing_cond({"text": [WIKI_TEXT] * 3})["text_src"])
+    assert rnd[0] != rnd[1]
+
+
+@pytest.mark.parametrize("split", ["validation", "test"])
+def test_wikipedia_eval_splits_never_blank_the_prompt(split):
+    """CFG-бланк -- прием обучения. На валидации и тесте промпт обязан доходить
+    до модели целиком при любом swap_cfg_coef, иначе метрики условной генерации
+    считались бы частично по безусловной."""
+    o = _wiki_obj(split=split, swap=1.0, with_tokenizer=True)
+    out = o.batch_preprocessing_cond({"text": [WIKI_TEXT] * 8})
+    assert all(s.strip() for s in out["text_src"]), (
+        f"на сплите {split} промпт занулился -- обнуление разрешено только на train")
+
+
+def test_wikipedia_random_prefix_stays_within_context_budget():
+    """random_prefix оставлен для сравнения схем: его граница обязана лежать
+    внутри бюджета промпта, иначе промпт не влезет в max_context_len и будет
+    молча обрезан в collate."""
+    o = _wiki_obj(scheme="random_prefix", with_tokenizer=True)
+    ids = list(range(300))
+    for _ in range(50):
+        src, trg = o._split_ids(ids, "random_prefix")
+        assert len(src) < o.max_context_len
+        assert len(trg) <= o.max_sequence_len
+
+
+@pytest.mark.parametrize("ids", [[], [7], [7, 8]])
+def test_wikipedia_split_survives_degenerate_texts(ids):
+    """Короткие и пустые абзацы не должны ронять препроцессинг: датасет
+    фильтруется по длине, но фильтр считает слова, а не токены."""
+    o = _wiki_obj(with_tokenizer=True)
+    src, trg = o._split_ids(list(ids), "prefix_lm")
+    assert isinstance(src, list) and isinstance(trg, list)
+    assert len(src) + len(trg) == len(ids)
+    if ids:
+        assert trg, "при непустом тексте продолжение не должно быть пустым"
+
+
+def _collate_obj(at):
+    """DiffusionRunner только для collate_fn -- без модели, оптимизатора и GPU."""
+    from diffusion_holder import DiffusionRunner
+    from transformers import AutoTokenizer
+
+    cfg = create_config(make_args(at, dataset_name="wikipedia"))
+    r = DiffusionRunner.__new__(DiffusionRunner)
+    r.config = cfg
+    r.tokenizer = AutoTokenizer.from_pretrained(cfg.model.encoder_link)
+    return r
+
+
+@pytest.mark.parametrize("at", ["genie", "diffuseq"])
+def test_collate_geometry_is_64_plus_64(at):
+    """Итоговая геометрия батча -- та самая, о которой договорились: 64 позиции
+    промпта и 64 продолжения. У diffuseq они склеиваются в одну
+    последовательность, поэтому обе части обязаны быть паддингованы до
+    фиксированной длины, а не до самого длинного текста в батче."""
+    r = _collate_obj(at)
+    batch = [{"text_src": "Short prompt.", "text_trg": "Short tail."},
+             {"text_src": " ".join(f"w{i}" for i in range(200)),
+              "text_trg": " ".join(f"v{i}" for i in range(200))}]
+    out = r.collate_fn(batch)
+
+    assert out["input_ids_trg"].shape[1] <= 64
+    assert out["input_ids_src"].shape[1] <= 64
+    if at == "diffuseq":
+        # latent replacement: длины фиксированы, стык промпта и таргета
+        # обязан стоять на одном и том же месте во всех примерах батча
+        assert out["input_ids_src"].shape[1] == 64
+        assert out["input_ids_trg"].shape[1] == 64
+        total = out["input_ids_src"].shape[1] + out["input_ids_trg"].shape[1]
+        assert total == 128, f"склеенная последовательность не 128 позиций: {total}"
+
+
+def test_diffusion_target_spends_two_slots_on_special_tokens():
+    """Осознанное свойство схемы (наследство tencdm, так же было на rocstories):
+    у диффузии [CLS] и [SEP] занимают 2 из 64 позиций, поэтому реального
+    контента в таргете 62 токена, а у gpt (add_special_tokens=False) -- все 64.
+    Пары (промпт, продолжение) при этом одни и те же во всех подходах, разница
+    только в том, сколько токенов строки доходит до модели.
+
+    Тест фиксирует это, чтобы расхождение длин генерации между подходами не
+    выглядело потом багом. Если решим уравнять -- менять придется здесь.
+    """
+    r = _collate_obj("diffuseq")
+    long_trg = " ".join(f"word{i}" for i in range(200))
+    out = r.collate_fn([{"text_src": long_trg, "text_trg": long_trg}])
+
+    ids = out["input_ids_trg"][0]
+    assert len(ids) == 64
+    assert r.tokenizer.convert_ids_to_tokens(int(ids[0])) == "[CLS]"
+    assert r.tokenizer.convert_ids_to_tokens(int(ids[-1])) == "[SEP]"
+
+    # у gpt те же 64 позиции продолжения заняты контентом целиком
+    from gpt2_holder import GPT2Runner
+    from transformers import GPT2Tokenizer
+    g = GPT2Runner.__new__(GPT2Runner)
+    g.config = create_config(make_args("gpt", dataset_name="wikipedia"))
+    g.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    g.tokenizer.pad_token = g.tokenizer.eos_token
+    g_out = g.collate_fn([{"text_src": long_trg, "text_trg": long_trg}])
+    assert int((g_out["labels"][0] != -100).sum()) == 64
+
+
+def test_uncond_collate_matches_conditional_target_geometry():
+    """guidance берет чекпоинт безусловной диффузии, поэтому таргет обеих веток
+    обязан иметь одну длину -- иначе позиционные эмбеддинги не совпадут."""
+    cond = _collate_obj("diffuseq").collate_fn(
+        [{"text_src": "A prompt here.", "text_trg": "A continuation here."}])
+    unc = _collate_obj("unconditional").collate_fn(
+        [{"text_trg": "A continuation here."}])
+    assert "input_ids_src" not in unc, "в безусловном режиме промпт не подается"
+    assert unc["input_ids_trg"].shape[1] <= cond["input_ids_trg"].shape[1]
+
+
 def test_gpt_splits_wikipedia_with_same_tokenizer_as_diffusion():
     """Пары (промпт, продолжение) на wikipedia обязаны совпадать во всех
     подходах, поэтому gpt-конфиг обязан резать текст тем же токенизатором."""
