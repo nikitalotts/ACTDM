@@ -1042,5 +1042,206 @@ def test_real_pipeline_scripts_disable_smoke():
         assert re.search(r"^export SMOKE=1", f.read(), re.M)
 
 
+# =====================================================================
+# Обученные декодеры: тесты включаются, только если файлы лежат на диске
+# =====================================================================
+#
+# Артефакты живут на кластере, локально их нет -- поэтому все тесты этого
+# раздела пропускаются, когда файла по вычисленному из конфига пути нет.
+# Так один и тот же набор гоняется и на ноутбуке (без артефактов), и на
+# кластере после обучения декодеров.
+
+def _decoder_path(at):
+    return create_config(make_args(at, dataset_name="wikipedia")).decoder.decoder_path
+
+
+def _have_decoder(at):
+    try:
+        return os.path.exists(_decoder_path(at))
+    except Exception:
+        return False
+
+
+def _have_statistics():
+    try:
+        c = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+        return os.path.exists(c.data.enc_gen_mean) and os.path.exists(c.data.enc_gen_std)
+    except Exception:
+        return False
+
+
+def needs_decoder(at):
+    return pytest.mark.skipif(
+        not _have_decoder(at),
+        reason=f"нет обученного декодера для {at} (обучите: ARCH_TYPE={at} sbatch train_decoder.sh)",
+    )
+
+
+@pytest.mark.parametrize("at", ["genie", "diffuseq"])
+def test_trained_decoder_loads_into_current_architecture(at):
+    """Главная проверка совместимости: веса с диска обязаны сходиться с той
+    архитектурой, которую сейчас собирает код, по всем ключам и формам
+    (strict=True). Любой дрейф конфига между обучением декодера и инференсом
+    (число слоев, hidden_size, размер словаря, условность) всплывет здесь, а
+    не после суток обучения диффузии."""
+    if not _have_decoder(at):
+        pytest.skip(f"нет обученного декодера для {at}")
+    from model.decoder import Decoder
+
+    cfg = create_config(make_args(at, dataset_name="wikipedia"))
+    ckpt = torch.load(cfg.decoder.decoder_path, map_location="cpu")
+
+    # restore_decoder читает именно ключ "decoder"
+    assert "decoder" in ckpt, f"в чекпоинте нет ключа 'decoder': {list(ckpt)}"
+
+    decoder = Decoder(decoder_config=cfg.decoder, diffusion_config=cfg.se_config)
+    missing, unexpected = decoder.load_state_dict(ckpt["decoder"], strict=False)
+    assert not missing, f"в чекпоинте не хватает весов: {missing[:5]}"
+    assert not unexpected, f"в чекпоинте лишние веса: {unexpected[:5]}"
+
+    # словарь декодера обязан совпадать со словарем токенизатора
+    assert decoder.fc.out_features == cfg.se_config.vocab_size
+
+
+def test_conditional_decoder_carries_cross_attention_weights():
+    """genie декодирует с оглядкой на промпт, остальные -- нет. Если условный
+    декодер обучился без cross-attention (или наоборот), это тихая подмена:
+    формы совпадут, а условие до декодера доходить не будет."""
+    if not (_have_decoder("genie") and _have_decoder("diffuseq")):
+        pytest.skip("нужны оба обученных декодера")
+
+    cond = torch.load(_decoder_path("genie"), map_location="cpu")["decoder"]
+    uncond = torch.load(_decoder_path("diffuseq"), map_location="cpu")["decoder"]
+
+    cross = lambda sd: [k for k in sd if "crossattention" in k.lower()]
+    assert cross(cond), "в условном декодере нет весов cross-attention"
+    assert not cross(uncond), "в безусловном декодере оказались веса cross-attention"
+    # условный декодер поэтому и тяжелее
+    assert len(cond) > len(uncond)
+
+
+def test_unconditional_decoder_is_shared_by_three_approaches():
+    """diffuseq, guidance и unconditional обязаны читать ОДИН файл: они живут в
+    одном латентном пространстве, и разные декодеры означали бы разное качество
+    восстановления при сравнении подходов."""
+    paths = {at: _decoder_path(at) for at in ("diffuseq", "guidance", "unconditional")}
+    assert len(set(paths.values())) == 1, paths
+    if not _have_decoder("diffuseq"):
+        pytest.skip("декодер еще не обучен")
+    assert _decoder_path("genie") != paths["diffuseq"], (
+        "условный декодер genie не должен совпадать с безусловным")
+
+
+@pytest.mark.parametrize("at", ["genie", "diffuseq"])
+def test_trained_decoder_width_covers_data_length(at):
+    """Декодер обучался на ширине decoder.max_sequence_len, а работать будет на
+    data.max_sequence_len. Позиционных эмбеддингов у него нет, поэтому меньшая
+    ширина безопасна -- но обратное сочетание молча обрежет таргет."""
+    if not _have_decoder(at):
+        pytest.skip(f"нет обученного декодера для {at}")
+    cfg = create_config(make_args(at, dataset_name="wikipedia"))
+    assert cfg.decoder.max_sequence_len >= cfg.data.max_sequence_len
+
+
+@needs_cuda
+def test_trained_decoder_reconstructs_text_from_encoder_latents():
+    """Функциональная проверка: декодер обязан обращать энкодер. Прогоняем
+    реальный текст через тот же путь, что и на генерации (encode -> normalize
+    -> denormalize -> decode) и требуем высокой точности восстановления
+    токенов. Обучение показывало valid accuracy около 0.998, так что порог 0.9
+    ловит именно поломку пути (перепутанные нормализация/денормализация,
+    несовпадение статистик), а не недоученность."""
+    if not _have_decoder("diffuseq"):
+        pytest.skip("нет обученного безусловного декодера")
+    if not _have_statistics():
+        pytest.skip("нет статистик энкодера")
+
+    from model import Encoder
+    from model.decoder import Decoder
+    from model.enc_normalizer import EncNormalizer
+    from transformers import AutoTokenizer
+
+    cfg = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.encoder_link)
+
+    enc_normalizer = EncNormalizer(
+        enc_mean_path=cfg.data.enc_gen_mean,
+        enc_std_path=cfg.data.enc_gen_std,
+    )
+    encoder = Encoder(
+        cfg.model.encoder_link,
+        enc_normalizer=enc_normalizer,
+        is_change_sp_tokens=True,
+        emb=cfg.emb,
+    ).eval().cuda()
+
+    decoder = Decoder(decoder_config=cfg.decoder, diffusion_config=cfg.se_config)
+    decoder.load_state_dict(
+        torch.load(cfg.decoder.decoder_path, map_location="cpu")["decoder"])
+    decoder = decoder.eval().cuda()
+
+    texts = [
+        "The unbelievable phenomenon of superconductivity was discovered in mercury.",
+        "Wikipedia is a free online encyclopedia written and maintained by volunteers.",
+    ]
+    tok = tokenizer(
+        texts, add_special_tokens=True, padding="max_length", truncation=True,
+        max_length=cfg.data.max_sequence_len, return_tensors="pt",
+        return_token_type_ids=False,
+    )
+    tok = {k: v.cuda() for k, v in tok.items()}
+
+    with torch.no_grad():
+        latent = encoder(input_ids=tok["input_ids"], attention_mask=tok["attention_mask"])
+        # декодер обучался на денормализованных латентах -- ровно как в pred_logits
+        logits = decoder(enc_normalizer.denormalize(latent))
+
+    pred = logits.argmax(dim=-1)
+    mask = tok["attention_mask"].bool()
+    acc = ((pred == tok["input_ids"]) & mask).sum().item() / mask.sum().item()
+    assert acc > 0.9, f"декодер не восстанавливает текст: accuracy={acc:.3f}"
+
+
+@needs_cuda
+def test_decoder_path_normalization_is_not_reversed():
+    """Антитест к предыдущему: если подать декодеру НОРМАЛИЗОВАННЫЕ латенты
+    (то есть забыть denormalize в pred_logits), восстановление обязано
+    развалиться. Иначе первый тест прошел бы при любой ошибке нормализации."""
+    if not (_have_decoder("diffuseq") and _have_statistics()):
+        pytest.skip("нужны декодер и статистики")
+
+    from model import Encoder
+    from model.decoder import Decoder
+    from model.enc_normalizer import EncNormalizer
+    from transformers import AutoTokenizer
+
+    cfg = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.encoder_link)
+    enc_normalizer = EncNormalizer(cfg.data.enc_gen_mean, cfg.data.enc_gen_std)
+    encoder = Encoder(cfg.model.encoder_link, enc_normalizer=enc_normalizer,
+                      is_change_sp_tokens=True, emb=cfg.emb).eval().cuda()
+    decoder = Decoder(decoder_config=cfg.decoder, diffusion_config=cfg.se_config)
+    decoder.load_state_dict(
+        torch.load(cfg.decoder.decoder_path, map_location="cpu")["decoder"])
+    decoder = decoder.eval().cuda()
+
+    tok = tokenizer(["Wikipedia is a free online encyclopedia."],
+                    add_special_tokens=True, padding="max_length", truncation=True,
+                    max_length=cfg.data.max_sequence_len, return_tensors="pt",
+                    return_token_type_ids=False)
+    tok = {k: v.cuda() for k, v in tok.items()}
+
+    with torch.no_grad():
+        latent = encoder(input_ids=tok["input_ids"], attention_mask=tok["attention_mask"])
+        wrong = decoder(latent).argmax(dim=-1)          # без denormalize
+        right = decoder(enc_normalizer.denormalize(latent)).argmax(dim=-1)
+
+    mask = tok["attention_mask"].bool()
+    acc = lambda p: ((p == tok["input_ids"]) & mask).sum().item() / mask.sum().item()
+    assert acc(right) > acc(wrong), (
+        "денормализация не влияет на выход декодера -- проверьте, что статистики "
+        "действительно применяются")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
