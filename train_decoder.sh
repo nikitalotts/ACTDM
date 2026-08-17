@@ -2,11 +2,13 @@
 #SBATCH --job-name=train_decoder
 #SBATCH --output=slurm_logs/%j-%x.log
 #SBATCH --error=slurm_logs/%j-%x.log
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=20
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --time=1:00:00
+# Часа не хватает: перед обучением задание токенизирует весь train-сплит
+# (1.5 млн абзацев), и только потом идет эпоха примерно на 23к шагов
+#SBATCH --time=8:00:00
 
 source ~/.bashrc
 eval "$(conda shell.bash hook)"
