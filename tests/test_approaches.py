@@ -329,20 +329,36 @@ def test_collate_geometry_is_64_plus_64(at):
     последовательность, поэтому обе части обязаны быть паддингованы до
     фиксированной длины, а не до самого длинного текста в батче."""
     r = _collate_obj(at)
+    # ВСЕ тексты в батче короткие: если бы длины подгонялись под самый длинный
+    # пример (padding=True), ширина вышла бы заметно меньше 64 и стык промпта с
+    # таргетом у diffuseq гулял бы от батча к батчу. С длинным примером в батче
+    # этот тест ничего бы не проверял -- truncation обрезала бы его до тех же 64
     batch = [{"text_src": "Short prompt.", "text_trg": "Short tail."},
-             {"text_src": " ".join(f"w{i}" for i in range(200)),
-              "text_trg": " ".join(f"v{i}" for i in range(200))}]
+             {"text_src": "Another one.", "text_trg": "And its tail."}]
     out = r.collate_fn(batch)
 
-    assert out["input_ids_trg"].shape[1] <= 64
-    assert out["input_ids_src"].shape[1] <= 64
     if at == "diffuseq":
         # latent replacement: длины фиксированы, стык промпта и таргета
         # обязан стоять на одном и том же месте во всех примерах батча
-        assert out["input_ids_src"].shape[1] == 64
-        assert out["input_ids_trg"].shape[1] == 64
+        assert out["input_ids_src"].shape[1] == 64, (
+            "промпт diffuseq паддингуется не до max_context_len: "
+            f"{out['input_ids_src'].shape[1]}")
+        assert out["input_ids_trg"].shape[1] == 64, (
+            "таргет diffuseq паддингуется не до max_sequence_len: "
+            f"{out['input_ids_trg'].shape[1]}")
         total = out["input_ids_src"].shape[1] + out["input_ids_trg"].shape[1]
         assert total == 128, f"склеенная последовательность не 128 позиций: {total}"
+    else:
+        # genie подает промпт через cross-attention, фиксированная ширина не
+        # нужна -- батч ужимается по самому длинному примеру
+        assert out["input_ids_src"].shape[1] <= 64
+        assert out["input_ids_trg"].shape[1] <= 64
+
+    # длинный текст в любом режиме обрезается по бюджету
+    long_out = r.collate_fn([{"text_src": " ".join(f"w{i}" for i in range(200)),
+                              "text_trg": " ".join(f"v{i}" for i in range(200))}])
+    assert long_out["input_ids_src"].shape[1] == 64
+    assert long_out["input_ids_trg"].shape[1] == 64
 
 
 def test_diffusion_target_spends_two_slots_on_special_tokens():
