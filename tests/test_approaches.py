@@ -1203,10 +1203,18 @@ def test_trained_decoder_reconstructs_text_from_encoder_latents():
 
 
 @needs_cuda
-def test_decoder_path_normalization_is_not_reversed():
-    """Антитест к предыдущему: если подать декодеру НОРМАЛИЗОВАННЫЕ латенты
-    (то есть забыть denormalize в pred_logits), восстановление обязано
-    развалиться. Иначе первый тест прошел бы при любой ошибке нормализации."""
+def test_decoder_output_depends_on_latent_content():
+    """Антитест к проверке восстановления: она была бы бессмысленной, если бы
+    декодер выдавал похожий текст при любом входе. Требуем, чтобы точность
+    рушилась на шуме и на перемешанных позициях.
+
+    Важное наблюдение, чтобы не переписывать этот тест заново: подмена
+    denormalize НЕ ловится таким способом. Внутри блоков декодера стоит
+    LayerNorm, и глобальное аффинное преобразование латентов он поглощает --
+    измерено: правильный путь 1.00, без denormalize 1.00, с масштабом x10 тоже
+    1.00, а вот шум дает 0.00. То есть путь нормализации у декодера
+    forgiving; критичен он для самой диффузии, которая живет в нормализованном
+    пространстве."""
     if not (_have_decoder("diffuseq") and _have_statistics()):
         pytest.skip("нужны декодер и статистики")
 
@@ -1225,22 +1233,44 @@ def test_decoder_path_normalization_is_not_reversed():
         torch.load(cfg.decoder.decoder_path, map_location="cpu")["decoder"])
     decoder = decoder.eval().cuda()
 
-    tok = tokenizer(["Wikipedia is a free online encyclopedia."],
+    seq_len = cfg.data.max_sequence_len
+    tok = tokenizer(["Wikipedia is a free online encyclopedia written by volunteers."],
                     add_special_tokens=True, padding="max_length", truncation=True,
-                    max_length=cfg.data.max_sequence_len, return_tensors="pt",
+                    max_length=seq_len, return_tensors="pt",
                     return_token_type_ids=False)
     tok = {k: v.cuda() for k, v in tok.items()}
-
-    with torch.no_grad():
-        latent = encoder(input_ids=tok["input_ids"], attention_mask=tok["attention_mask"])
-        wrong = decoder(latent).argmax(dim=-1)          # без denormalize
-        right = decoder(enc_normalizer.denormalize(latent)).argmax(dim=-1)
-
     mask = tok["attention_mask"].bool()
     acc = lambda p: ((p == tok["input_ids"]) & mask).sum().item() / mask.sum().item()
-    assert acc(right) > acc(wrong), (
-        "денормализация не влияет на выход декодера -- проверьте, что статистики "
-        "действительно применяются")
+
+    with torch.no_grad():
+        latent = enc_normalizer.denormalize(
+            encoder(input_ids=tok["input_ids"], attention_mask=tok["attention_mask"]))
+        good = acc(decoder(latent).argmax(dim=-1))
+        noise = acc(decoder(torch.randn_like(latent)).argmax(dim=-1))
+        perm = torch.randperm(seq_len, device=latent.device)
+        shuffled = acc(decoder(latent[:, perm]).argmax(dim=-1))
+
+    assert good > 0.9, f"декодер не восстанавливает исходный текст: {good:.3f}"
+    assert noise < 0.2, f"декодер выдает текст независимо от латентов: шум дал {noise:.3f}"
+    assert shuffled < 0.5, (
+        f"перемешивание позиций почти не повлияло ({shuffled:.3f}) -- "
+        "декодер игнорирует содержимое латентов")
+
+
+def test_encoder_normalizer_round_trip_is_identity():
+    """normalize и denormalize обязаны быть обратными: на этом держится связка
+    'диффузия учится в нормализованном пространстве, декодер ждет сырое'."""
+    if not _have_statistics():
+        pytest.skip("нет статистик энкодера")
+    from model.enc_normalizer import EncNormalizer
+
+    cfg = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    nz = EncNormalizer(cfg.data.enc_gen_mean, cfg.data.enc_gen_std)
+    x = torch.randn(2, 8, cfg.se_config.hidden_size, device=nz.enc_mean.device)
+    assert torch.allclose(nz.denormalize(nz.normalize(x)), x, atol=1e-4)
+    # статистики не вырожденные: нулевой std означал бы деление на ноль
+    assert (nz.enc_std > 1e-6).all()
+    assert nz.enc_mean.shape[-1] == cfg.se_config.hidden_size
 
 
 if __name__ == "__main__":
