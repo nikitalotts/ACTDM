@@ -1273,5 +1273,56 @@ def test_encoder_normalizer_round_trip_is_identity():
     assert nz.enc_mean.shape[-1] == cfg.se_config.hidden_size
 
 
+# =====================================================================
+# RUN_TAG / BATCH_SIZE: замерочные прогоны не должны задевать боевые
+# =====================================================================
+
+@pytest.mark.parametrize("at", ["diffuseq", "gpt"])
+def test_run_tag_isolates_checkpoints_only(at, monkeypatch):
+    """RUN_TAG уводит чекпоинты замерочного прогона в отдельное имя, но НЕ
+    трогает декодер и статистики: их такой прогон только читает и обязан брать
+    боевые, иначе замер шел бы на других артефактах."""
+    monkeypatch.delenv("SMOKE", raising=False)
+    monkeypatch.delenv("RUN_TAG", raising=False)
+    monkeypatch.delenv("BATCH_SIZE", raising=False)
+    real = create_config(make_args(at, dataset_name="wikipedia"))
+    real_prefix = real.training.checkpoints_prefix
+    real_decoder = real.decoder.decoder_path if "decoder" in real else None
+
+    monkeypatch.setenv("RUN_TAG", "timing1gpu")
+    tagged = create_config(make_args(at, dataset_name="wikipedia"))
+
+    assert tagged.training.checkpoints_prefix == real_prefix + "-timing1gpu"
+    assert tagged.training.training_iters == real.training.training_iters,         "RUN_TAG не должен менять параметры обучения -- меряем боевой режим"
+    if real_decoder is not None:
+        assert tagged.decoder.decoder_path == real_decoder,             "замерочный прогон обязан читать боевой декодер"
+        assert tagged.data.enc_gen_mean == real.data.enc_gen_mean
+
+
+def test_batch_size_override_requires_run_tag(monkeypatch):
+    """Подмена батча без метки прогона писала бы чекпоинты в боевой каталог под
+    тем же именем -- и боевой запуск потом продолжил бы обучение с чужого
+    батча. Требуем RUN_TAG явно."""
+    monkeypatch.delenv("SMOKE", raising=False)
+    monkeypatch.delenv("RUN_TAG", raising=False)
+    monkeypatch.setenv("BATCH_SIZE", "128")
+    with pytest.raises(Exception, match="RUN_TAG"):
+        create_config(make_args("diffuseq", dataset_name="wikipedia"))
+
+    monkeypatch.setenv("RUN_TAG", "timing1gpu")
+    cfg = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    assert cfg.training.batch_size == 128
+
+
+def test_env_overrides_absent_by_default(monkeypatch):
+    """Ни RUN_TAG, ни BATCH_SIZE не должны влиять, пока не заданы явно."""
+    for var in ("SMOKE", "RUN_TAG", "BATCH_SIZE"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    assert cfg.training.batch_size == 512
+    assert "timing" not in cfg.training.checkpoints_prefix
+    assert cfg.training.training_iters == 150_000
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))

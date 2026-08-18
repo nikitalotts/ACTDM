@@ -1,5 +1,6 @@
 import ml_collections
 import os
+import re
 from transformers import PretrainedConfig, AutoConfig
 
 from utils.schemes import (
@@ -316,6 +317,36 @@ def create_gpt_config(args):
     return apply_smoke_overrides(config)
 
 
+def apply_env_overrides(config):
+    """Пометка прогона (RUN_TAG) и подмена батча (BATCH_SIZE) из окружения.
+
+    Нужны для замерочных запусков: прогнать боевые параметры на другом числе
+    GPU, посмотреть реальную скорость шага и упасть по таймауту, ничего при
+    этом не записав в боевые каталоги. RUN_TAG уходит в checkpoints_prefix,
+    поэтому чекпоинты и сгенерированные тексты такого прогона лежат отдельно,
+    а декодер и статистики переиспользуются боевые (они только читаются).
+    """
+    tag = os.environ.get("RUN_TAG", "").strip()
+    batch = os.environ.get("BATCH_SIZE", "").strip()
+
+    if batch and not tag:
+        raise Exception(
+            "BATCH_SIZE задан без RUN_TAG: прогон с другим батчем писал бы "
+            "чекпоинты в боевой каталог под тем же именем. Задайте RUN_TAG."
+        )
+
+    if tag:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "-", tag)
+        config.training.checkpoints_prefix += f"-{safe}"
+        print(f"[CONFIG] RUN_TAG={safe}: checkpoints_prefix={config.training.checkpoints_prefix}")
+
+    if batch:
+        config.training.batch_size = int(batch)
+        print(f"[CONFIG] BATCH_SIZE={batch} (глобальный батч подменен)")
+
+    return config
+
+
 def apply_smoke_overrides(config):
     """Короткий проверочный прогон всего пайплайна: SMOKE=1 в окружении.
 
@@ -327,6 +358,8 @@ def apply_smoke_overrides(config):
     перезапишет боевые чекпоинты, а load_checkpoint боевого запуска подхватит
     недоученные веса из smoke-прогона.
     """
+    config = apply_env_overrides(config)
+
     if os.environ.get("SMOKE", "0") != "1":
         return config
 

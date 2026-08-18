@@ -11,6 +11,10 @@
 #   ./smoke_test.sh gpt        GPT2-бейзлайн + генерация              ~30 мин
 #   ./smoke_test.sh eval       отдельный прогон eval по smoke-чекпоинтам
 #
+#   ./smoke_test.sh timing-diffuseq   замер скорости шага на 1 GPU с боевыми
+#   ./smoke_test.sh timing-gpt        параметрами; падает по таймауту, artefacts
+#                                     уходят в *-timing1gpu, боевые не трогает
+#
 # gpt ни от чего не зависит -- можно пускать сразу.
 # diffuseq требует посчитанных статистик (./run_wikipedia.sh stats) и
 # smoke-декодера, поэтому: decoder -> diffuseq.
@@ -41,6 +45,25 @@ case "$1" in
     gpt)
         ARCH_TYPE=gpt sbatch --time=${SMOKE_TIME} \
             --job-name=smoke_gpt train_gpt2.sh
+        ;;
+    timing-diffuseq|timing-gpt)
+        # Замер скорости шага на 1 GPU с БОЕВЫМИ параметрами (150k/200k шагов,
+        # тот же батч на GPU, что в реальном прогоне). Задание намеренно падает
+        # по --time: нужен только темп из tqdm, а не результат.
+        #
+        # SMOKE=0 -- параметры настоящие; RUN_TAG уводит чекпоинты и тексты в
+        # отдельный каталог, чтобы боевой прогон их не подхватил; BATCH_SIZE=128
+        # держит на единственной GPU ту же нагрузку, что приходится на одну GPU
+        # в четырехкарточном прогоне (512/4). Поэтому измеренное s/it -- это
+        # сразу время шага боевого прогона, делить на 4 НЕ надо.
+        AT="${1#timing-}"
+        [ "${AT}" = "gpt" ] && SCRIPT=train_gpt2.sh || SCRIPT=train_diffusion.sh
+        SMOKE=0 RUN_TAG=timing1gpu NPROC=1 BATCH_SIZE="${BATCH_SIZE:-128}" \
+            ARCH_TYPE="${AT}" sbatch \
+            --gpus-per-task=1 --time="${TIMING_TIME:-1:00:00}" \
+            --job-name=timing-${AT} "${SCRIPT}"
+        echo "==> смотрите темп в slurm_logs/<jobid>-timing-${AT}.log (строка вида '1.59s/it')"
+        echo "==> задание упадет по таймауту -- это ожидаемо"
         ;;
     eval)
         ARCH_TYPE=diffuseq sbatch --time=${SMOKE_TIME} \
