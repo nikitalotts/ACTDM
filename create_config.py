@@ -234,17 +234,18 @@ def create_gpt_config(args):
     config.work_dir = os.getcwd()
 
     training = config.training = ml_collections.ConfigDict()
-    # Бюджет обучения совпадает с диффузионным: эффективный батч 512 и 150k
-    # оптимизаторных шагов, то есть обе ветки видят одни и те же 76.8 млн
-    # примеров -- иначе сравнение подходов в статье некорректно.
-    # Микробатч поднять нельзя (не влезает в память), поэтому батч набирается
-    # накоплением градиента: 32 примера на микрошаг x 16 = 512.
-    training.accum_batch_steps = 16
-    training.training_iters = 150_000 * training.accum_batch_steps
-    # частота eval и чекпоинтов та же, что у диффузии: раз в 12500 шагов
-    training.checkpoint_freq = 12_500 * training.accum_batch_steps
-    training.eval_freq = 12_500 * training.accum_batch_steps
-    training.batch_size = 512 // training.accum_batch_steps
+    # Параметры те же, что на rocstories в дипломе: микробатч 32 (8 на GPU),
+    # накопление 4 -> эффективный батч 128, 50k оптимизаторных шагов.
+    # Менять их, чтобы «догнать» диффузию по числу примеров, смысла нет:
+    # на rocstories качество gpt переставало расти после ~10k шагов, то есть
+    # модель сходится задолго до конца бюджета. Сравнение честное не по
+    # равному бюджету, а по лучшему чекпоинту каждой модели (save_top_k
+    # по tracked_metric) -- см. data_budget и README.
+    training.accum_batch_steps = 4
+    training.training_iters = 50_000 * training.accum_batch_steps
+    training.checkpoint_freq = 2_500 * training.accum_batch_steps
+    training.eval_freq = 2_500 * training.accum_batch_steps
+    training.batch_size = 128 // training.accum_batch_steps
     training.ode_sampling = False
     training.checkpoints_folder = f"{config.work_dir}/checkpoints/"
     training.checkpoint_name = ""
@@ -252,8 +253,8 @@ def create_gpt_config(args):
     optim = config.optim = ml_collections.ConfigDict()
     optim.grad_clip_norm = 1.
     # scheduler.step_update получает номер ОПТИМИЗАТОРНОГО шага (см. gpt2_holder),
-    # поэтому прогрев задается в них же -- столько же, сколько у диффузии
-    optim.linear_warmup = 5000
+    # поэтому прогрев задается в них же. 2000 -- как на rocstories в дипломе
+    optim.linear_warmup = 2000
     optim.lr = 1e-4
     optim.min_lr = 1e-4
     optim.warmup_lr = 1e-8
