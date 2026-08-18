@@ -1031,6 +1031,117 @@ def test_smoke_shrinks_warmup_below_training_length(at, monkeypatch):
     assert c.training.checkpoint_freq <= c.training.training_iters
 
 
+def test_gpt_skips_ddp_sync_only_between_accumulation_steps():
+    """DDP синхронизирует градиенты на каждом backward. При accum=16 пятнадцать
+    из шестнадцати обменов лишние (для 355M параметров это ~1.4 ГБ каждый).
+    Обмен обязан отключаться ТОЛЬКО на промежуточных микрошагах: если убрать
+    его и на последнем, карты разъедутся -- у каждой останется свой градиент.
+    """
+    import inspect
+    from gpt2_holder import GPT2Runner
+
+    src = inspect.getsource(GPT2Runner.train_step)
+    assert "no_sync" in src, "лишние обмены градиентами при накоплении не отключены"
+    assert "self.step % accum != 0" in src, (
+        "условие синхронизации должно исключать ПОСЛЕДНИЙ микрошаг накопления")
+    # backward обязан быть внутри контекста, иначе отключение ни на что не влияет
+    ctx_pos = src.index("with sync_ctx:")
+    assert ctx_pos < src.index("backward()"), "backward вне контекста no_sync"
+    # шаг оптимизатора идет ПОСЛЕ выхода из контекста
+    assert src.index("backward()") < src.index("self.optimizer_step()")
+
+
+def test_gpt_accumulated_gradient_equals_single_large_batch():
+    """Накопление обязано давать тот же градиент, что один батч того же размера.
+    Проверяем численно: это ловит и потерянное деление на accum, и no_sync,
+    выключенный на последнем микрошаге, и сдвиг границ микробатчей.
+
+    Дропаут выключен: иначе маски в эталоне и в накоплении разные и сравнивать
+    нечего. Длины таргета одинаковые -- лосс внутри GPT2LMHeadModel усредняется
+    по токенам микробатча, и при разной длине веса микробатчей чуть разъезжаются
+    (на реальных данных wikipedia таргет почти всегда упирается в потолок 64
+    токена, разброс суммы по микробатчу меньше 1%).
+    """
+    import torch as _torch
+    from gpt2_holder import GPT2Runner
+    from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config
+
+    real_cuda = _torch.cuda.is_available
+    _torch.cuda.is_available = lambda: False  # fp32 на CPU, без шума bfloat16
+    try:
+        cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+        cfg.local_rank = 0
+        cfg.training.accum_batch_steps = 4
+
+        r = GPT2Runner.__new__(GPT2Runner)
+        r.config = cfg
+        r.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        r.tokenizer.pad_token = r.tokenizer.eos_token
+        r.tokenizer.padding_side = "left"
+        r.device = torch.device("cpu")
+        torch.manual_seed(0)
+        r.model = GPT2LMHeadModel(GPT2Config(
+            n_layer=2, n_head=2, n_embd=64, vocab_size=r.tokenizer.vocab_size))
+        r.ddp_model = r.model
+        r.model.eval()
+        r.grad_scaler = None
+        r.optimizer_step = lambda: torch.tensor(0.0)  # не даем обнулить градиенты
+
+        text = "the quick brown fox jumps over the lazy dog"
+        batch = [{"text_src": text, "text_trg": text} for _ in range(8)]
+
+        r.model.zero_grad()
+        big = r.collate_fn(batch)
+        r.model(input_ids=big["input_ids"], attention_mask=big["attention_mask"],
+                position_ids=big["position_ids"], labels=big["labels"]).loss.backward()
+        ref = [p.grad.clone() for p in r.model.parameters() if p.grad is not None]
+
+        r.model.zero_grad()
+        r.step = 0
+        for i in range(4):
+            r.train_step(r.collate_fn(batch[i * 2:(i + 1) * 2]))
+        got = [p.grad.clone() for p in r.model.parameters() if p.grad is not None]
+
+        rel = max((a - b).abs().max().item() / (a.abs().max().item() + 1e-12)
+                  for a, b in zip(ref, got))
+        assert rel < 1e-4, f"накопленный градиент разошелся с эталоном: {rel:.2e}"
+    finally:
+        _torch.cuda.is_available = real_cuda
+
+
+def test_gpt_loss_is_scaled_by_accumulation():
+    """Каждый микрошаг вносит 1/accum, иначе эффективный learning rate вырастет
+    в accum раз относительно рецепта из ВКР."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+
+    src = inspect.getsource(GPT2Runner.train_step)
+    assert re.search(r"loss\s*=\s*raw_loss\s*/\s*accum", src), (
+        "лосс не поделен на число шагов накопления")
+    # в лог идет НЕподеленный лосс, иначе кривые несопоставимы с диффузией
+    assert "'loss': raw_loss.detach()" in src
+
+
+def test_timing_stage_preserves_per_gpu_load():
+    """Замер на 1 GPU имеет смысл только если на карту приходится столько же
+    примеров, сколько в боевом четырехкарточном прогоне -- иначе меряется
+    другая нагрузка (а у gpt еще и падает по памяти: 128 против 8 на карту).
+
+    Значения в smoke_test.sh обязаны совпадать с batch_size // 4 из конфига.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "smoke_test.sh"), encoding="utf-8") as f:
+        script = f.read()
+
+    for at, marker in (("gpt", "gpt"), ("diffuseq", "else")):
+        cfg = create_config(make_args(at, dataset_name="wikipedia"))
+        expected = cfg.training.batch_size // 4
+        assert re.search(rf"DEFAULT_BATCH={expected}\b", script), (
+            f"для {at} замерочный BATCH_SIZE должен быть {expected} "
+            f"(batch_size={cfg.training.batch_size} на 4 карты)"
+        )
+
+
 def test_real_pipeline_scripts_disable_all_experimental_modes():
     """sbatch наследует окружение целиком, поэтому боевой конвейер обязан гасить
     ВСЕ переменные проверочных и замерочных режимов. Залипшая в шелле переменная

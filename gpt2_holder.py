@@ -1,4 +1,5 @@
 import os
+import contextlib
 import time
 import json
 import random
@@ -306,24 +307,38 @@ class GPT2Runner:
 
         batch = batch.to(self.device)
 
+        accum = self.config.training.accum_batch_steps
+        # DDP синхронизирует градиенты на каждом backward. При накоплении это
+        # лишнее: пока шаг оптимизатора не наступил, градиенты копятся локально.
+        # Для GPT2-medium (355M параметров) каждый обмен -- порядка 1.4 ГБ, и
+        # при accum=16 пятнадцать из шестнадцати обменов не нужны. Отключаем их
+        # на промежуточных микрошагах: результат математически тот же,
+        # синхронизация происходит на последнем микрошаге накопления.
+        is_accumulating = accum > 1 and self.step % accum != 0
+        sync_ctx = (self.ddp_model.no_sync()
+                    if is_accumulating and isinstance(
+                        self.ddp_model, torch.nn.parallel.DistributedDataParallel)
+                    else contextlib.nullcontext())
+
         device_type = "cuda" if torch.cuda.is_available() else "cpu"
-        with torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-            outputs = self.ddp_model(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                position_ids=batch["position_ids"],
-                labels=batch["labels"],
-            )
-            raw_loss = outputs.loss
-            loss = raw_loss / self.config.training.accum_batch_steps
+        with sync_ctx:
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+                outputs = self.ddp_model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    position_ids=batch["position_ids"],
+                    labels=batch["labels"],
+                )
+                raw_loss = outputs.loss
+                loss = raw_loss / accum
+
+            if self.grad_scaler is not None:
+                self.grad_scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
         loss_dict = {'loss': raw_loss.detach(), 'total_loss': raw_loss.detach()}
         stat_dict = {}
-
-        if self.grad_scaler is not None:
-            self.grad_scaler.scale(loss).backward()
-        else:
-            loss.backward()
 
         if self.step % self.config.training.accum_batch_steps == 0:
             stat_dict["grad_norm"] = self.optimizer_step()
