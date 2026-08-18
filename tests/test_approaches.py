@@ -1299,19 +1299,21 @@ def test_run_tag_isolates_checkpoints_only(at, monkeypatch):
         assert tagged.data.enc_gen_mean == real.data.enc_gen_mean
 
 
-def test_batch_size_override_requires_run_tag(monkeypatch):
-    """Подмена батча без метки прогона писала бы чекпоинты в боевой каталог под
-    тем же именем -- и боевой запуск потом продолжил бы обучение с чужого
-    батча. Требуем RUN_TAG явно."""
+def test_batch_size_override_tags_itself(monkeypatch):
+    """Подмена батча без метки писала бы чекпоинты в боевой каталог под тем же
+    именем -- и боевой запуск потом продолжил бы обучение с чужого батча.
+    Метку не требуем от пользователя, а подставляем сами."""
     monkeypatch.delenv("SMOKE", raising=False)
     monkeypatch.delenv("RUN_TAG", raising=False)
     monkeypatch.setenv("BATCH_SIZE", "128")
-    with pytest.raises(Exception, match="RUN_TAG"):
-        create_config(make_args("diffuseq", dataset_name="wikipedia"))
-
-    monkeypatch.setenv("RUN_TAG", "timing1gpu")
     cfg = create_config(make_args("diffuseq", dataset_name="wikipedia"))
     assert cfg.training.batch_size == 128
+    assert cfg.training.checkpoints_prefix.endswith("-bs128"),         "прогон с подмененным батчем обязан лежать отдельно от боевого"
+
+    # явная метка перебивает автоматическую
+    monkeypatch.setenv("RUN_TAG", "timing1gpu")
+    cfg = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    assert cfg.training.checkpoints_prefix.endswith("-timing1gpu")
 
 
 def test_env_overrides_absent_by_default(monkeypatch):

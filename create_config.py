@@ -329,11 +329,10 @@ def apply_env_overrides(config):
     tag = os.environ.get("RUN_TAG", "").strip()
     batch = os.environ.get("BATCH_SIZE", "").strip()
 
+    # Прогон с другим батчем -- это другой прогон, его чекпоинты не должны
+    # лежать под боевым именем. Метку не требуем: подставляем сами.
     if batch and not tag:
-        raise Exception(
-            "BATCH_SIZE задан без RUN_TAG: прогон с другим батчем писал бы "
-            "чекпоинты в боевой каталог под тем же именем. Задайте RUN_TAG."
-        )
+        tag = f"bs{batch}"
 
     if tag:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "-", tag)
