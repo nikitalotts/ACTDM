@@ -195,7 +195,10 @@ class GPT2Runner:
     def set_scheduler(self):
         self.scheduler = CosineLRScheduler(
             self.optimizer,
-            t_initial=self.config.training.training_iters,
+            # тикает шедулер оптимизаторными шагами (step_update ниже делит
+            # self.step на accum), поэтому и длина цикла -- в них же.
+            # training_iters считает МИКРОшаги, их в accum раз больше
+            t_initial=self.config.training.training_iters // self.config.training.accum_batch_steps,
             lr_min=self.config.optim.min_lr,
             warmup_lr_init=self.config.optim.warmup_lr,
             warmup_t=self.config.optim.linear_warmup,

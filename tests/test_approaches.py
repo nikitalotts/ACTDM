@@ -1348,12 +1348,10 @@ def test_env_overrides_absent_by_default(monkeypatch):
 # видеть данные одинаковое число раз -- иначе разница в метриках между genie,
 # diffuseq и guidance объясняется не архитектурой, а объемом обучения.
 
-# Осознанно зафиксированный перекос между диффузией и авторегрессионным
-# бейзлайном. Уравнять их напрямую нельзя: GPT2-medium дороже за пример
-# примерно в 3.8 раза, и обучение на 76.8 млн примеров заняло бы около 250
-# часов против 66 у диффузии. Значение обязано меняться ОСОЗНАННО и попадать
-# в текст статьи -- поэтому оно зафиксировано тестом.
-EXPECTED_GPT_VS_DIFFUSION_RATIO = 12.0
+# Все подходы, включая авторегрессионный бейзлайн, видят одинаковый объем
+# данных: эффективный батч 512 и 150k оптимизаторных шагов.
+EXPECTED_EFFECTIVE_BATCH = 512
+EXPECTED_OPTIMIZER_STEPS = 150_000
 
 
 def _budget(at):
@@ -1372,43 +1370,55 @@ def test_all_diffusion_approaches_share_training_budget(at):
     )
 
 
-def test_diffusion_budget_matches_declared_values():
-    """Бюджет диффузии посчитан из батча и числа шагов; если кто-то поменяет
-    одно из них, тест напомнит пересчитать время прогона и строку в статье."""
-    b = _budget("diffuseq")
-    assert b["effective_batch"] == 512
-    assert b["optimizer_steps"] == 150_000
-    assert b["examples_seen"] == 512 * 150_000  # 76.8 млн
+@pytest.mark.parametrize("at", ["genie", "diffuseq", "guidance", "unconditional", "gpt"])
+def test_every_approach_sees_the_same_amount_of_data(at):
+    """Главный инвариант честного сравнения: ВСЕ подходы, включая
+    авторегрессионный бейзлайн, обучаются на одинаковом объеме данных с
+    одинаковым эффективным батчем. Иначе разница в метриках объясняется
+    объемом обучения, а не архитектурой."""
+    b = _budget(at)
+    assert b["effective_batch"] == EXPECTED_EFFECTIVE_BATCH, (
+        f"{at}: эффективный батч {b['effective_batch']} вместо {EXPECTED_EFFECTIVE_BATCH}")
+    assert b["optimizer_steps"] == EXPECTED_OPTIMIZER_STEPS, (
+        f"{at}: {b['optimizer_steps']} оптимизаторных шагов вместо {EXPECTED_OPTIMIZER_STEPS}")
+    assert b["examples_seen"] == EXPECTED_EFFECTIVE_BATCH * EXPECTED_OPTIMIZER_STEPS
 
 
-def test_gpt_budget_gap_is_declared_not_accidental():
-    """Разрыв в объеме обучения между gpt и диффузией зафиксирован явной
-    константой. Тест падает и при случайном изменении любого из бюджетов, и
-    при попытке молча 'подровнять' один из них -- решение должно быть
-    осознанным и описанным в статье."""
-    gpt = _budget("gpt")
-    diff = _budget("diffuseq")
-    ratio = diff["examples_seen"] / gpt["examples_seen"]
-    assert ratio == pytest.approx(EXPECTED_GPT_VS_DIFFUSION_RATIO, rel=0.01), (
-        f"объем обучения gpt относительно диффузии изменился: {ratio:.1f}x вместо "
-        f"{EXPECTED_GPT_VS_DIFFUSION_RATIO}x. Если это намеренно -- обновите "
-        f"EXPECTED_GPT_VS_DIFFUSION_RATIO и цифры в статье"
-    )
+def test_gpt_reaches_target_batch_by_accumulation_not_memory():
+    """Микробатч gpt поднять нельзя -- GPT2-medium не влезает в память. Целевой
+    батч 512 обязан набираться накоплением градиента, а сам микробатч остаться
+    прежним (32 на шаг суммарно по GPU), иначе обучение упадет по памяти."""
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    assert cfg.training.batch_size == 32, "микробатч вырос -- проверьте память GPU"
+    assert cfg.training.accum_batch_steps == 16
+    assert cfg.training.batch_size * cfg.training.accum_batch_steps == EXPECTED_EFFECTIVE_BATCH
 
 
-def test_data_budget_accounts_for_gradient_accumulation():
-    """У gpt accum_batch_steps=4, поэтому training_iters считает МИКРОшаги.
-    Если бы бюджет считался без учета accum, сравнение подходов поехало бы
-    ровно в 4 раза."""
-    from create_config import data_budget
+def test_gpt_eval_cadence_matches_diffusion():
+    """eval и чекпоинты должны идти на одних и тех же оптимизаторных шагах, что
+    у диффузии: иначе кривые обучения в статье не сопоставимы по оси X."""
+    gpt = create_config(make_args("gpt", dataset_name="wikipedia"))
+    diff = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    to_opt = lambda c, key: c.training[key] // c.training.accum_batch_steps
+    assert to_opt(gpt, "eval_freq") == to_opt(diff, "eval_freq")
+    assert to_opt(gpt, "checkpoint_freq") == to_opt(diff, "checkpoint_freq")
+
+
+def test_gpt_scheduler_cycle_is_in_optimizer_steps():
+    """scheduler.step_update получает номер оптимизаторного шага (self.step //
+    accum), поэтому длина цикла t_initial обязана быть в них же. Если оставить
+    там micro-steps, косинус пройдет лишь 1/accum своего пути -- сейчас это
+    незаметно только потому, что min_lr == lr."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+
+    src = inspect.getsource(GPT2Runner.set_scheduler)
+    assert "accum_batch_steps" in src, (
+        "t_initial задан в микрошагах, а шедулер тикает оптимизаторными")
+    assert "warmup_t=self.config.optim.linear_warmup" in src
 
     cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
-    b = data_budget(cfg)
-    assert cfg.training.accum_batch_steps == 4
-    assert b["optimizer_steps"] == cfg.training.training_iters // 4
-    assert b["effective_batch"] == cfg.training.batch_size * 4
-    # примеры считаются по микрошагам: батч на микрошаг x число микрошагов
-    assert b["examples_seen"] == cfg.training.batch_size * cfg.training.training_iters
+    assert cfg.optim.linear_warmup < cfg.training.training_iters // cfg.training.accum_batch_steps
 
 
 if __name__ == "__main__":

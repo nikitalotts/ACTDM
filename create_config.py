@@ -234,18 +234,26 @@ def create_gpt_config(args):
     config.work_dir = os.getcwd()
 
     training = config.training = ml_collections.ConfigDict()
-    training.accum_batch_steps = 4
-    training.training_iters = 50_000 * training.accum_batch_steps
-    training.checkpoint_freq = 2_500 * training.accum_batch_steps
-    training.eval_freq = 2_500 * training.accum_batch_steps
-    training.batch_size = 128 // training.accum_batch_steps
+    # Бюджет обучения совпадает с диффузионным: эффективный батч 512 и 150k
+    # оптимизаторных шагов, то есть обе ветки видят одни и те же 76.8 млн
+    # примеров -- иначе сравнение подходов в статье некорректно.
+    # Микробатч поднять нельзя (не влезает в память), поэтому батч набирается
+    # накоплением градиента: 32 примера на микрошаг x 16 = 512.
+    training.accum_batch_steps = 16
+    training.training_iters = 150_000 * training.accum_batch_steps
+    # частота eval и чекпоинтов та же, что у диффузии: раз в 12500 шагов
+    training.checkpoint_freq = 12_500 * training.accum_batch_steps
+    training.eval_freq = 12_500 * training.accum_batch_steps
+    training.batch_size = 512 // training.accum_batch_steps
     training.ode_sampling = False
     training.checkpoints_folder = f"{config.work_dir}/checkpoints/"
     training.checkpoint_name = ""
 
     optim = config.optim = ml_collections.ConfigDict()
     optim.grad_clip_norm = 1.
-    optim.linear_warmup = 500 * training.accum_batch_steps
+    # scheduler.step_update получает номер ОПТИМИЗАТОРНОГО шага (см. gpt2_holder),
+    # поэтому прогрев задается в них же -- столько же, сколько у диффузии
+    optim.linear_warmup = 5000
     optim.lr = 1e-4
     optim.min_lr = 1e-4
     optim.warmup_lr = 1e-8
@@ -393,8 +401,9 @@ def apply_smoke_overrides(config):
     config.training.training_iters = 200 * accum
     config.training.eval_freq = 100 * accum
     config.training.checkpoint_freq = 100 * accum
-    # прогрев на 5000 шагов при 200 шагах обучения оставил бы lr около нуля
-    config.optim.linear_warmup = 20 * accum
+    # прогрев на 5000 шагов при 200 шагах обучения оставил бы lr около нуля.
+    # Задается в оптимизаторных шагах, поэтому на accum не умножается
+    config.optim.linear_warmup = 20
 
     # генерация и метрики -- самая долгая часть eval, для проверки хватает
     # пары сотен текстов
