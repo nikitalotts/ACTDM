@@ -1031,15 +1031,29 @@ def test_smoke_shrinks_warmup_below_training_length(at, monkeypatch):
     assert c.training.checkpoint_freq <= c.training.training_iters
 
 
-def test_real_pipeline_scripts_disable_smoke():
-    """run_wikipedia.sh гасит SMOKE явно: sbatch наследует окружение целиком,
-    и переменная, оставшаяся в шелле, иначе урезала бы боевое обучение."""
+def test_real_pipeline_scripts_disable_all_experimental_modes():
+    """sbatch наследует окружение целиком, поэтому боевой конвейер обязан гасить
+    ВСЕ переменные проверочных и замерочных режимов. Залипшая в шелле переменная
+    иначе испортила бы обучение молча: SMOKE урезал бы его до 200 шагов,
+    BATCH_SIZE поменял бы батч, NPROC загнал бы четырехкарточное задание на одну
+    GPU, RUN_TAG увел бы чекпоинты в чужой каталог."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, "run_wikipedia.sh"), encoding="utf-8") as f:
-        assert re.search(r"^export SMOKE=0", f.read(), re.M), \
-            "run_wikipedia.sh обязан явно выставлять SMOKE=0"
+        real = f.read()
+    assert re.search(r"^export SMOKE=0", real, re.M), \
+        "run_wikipedia.sh обязан явно выставлять SMOKE=0"
+    unset = re.search(r"^unset ([A-Z_ ]+)$", real, re.M)
+    assert unset, "run_wikipedia.sh обязан гасить переменные замерочных режимов"
+    cleared = set(unset.group(1).split())
+    for var in ("RUN_TAG", "BATCH_SIZE", "NPROC"):
+        assert var in cleared, f"{var} не гасится в боевом конвейере"
+
     with open(os.path.join(root, "smoke_test.sh"), encoding="utf-8") as f:
-        assert re.search(r"^export SMOKE=1", f.read(), re.M)
+        smoke = f.read()
+    assert re.search(r"^export SMOKE=1", smoke, re.M)
+    # замерочная стадия задает переменные только для своей команды sbatch,
+    # а не экспортом на весь скрипт -- иначе они утекли бы в соседние стадии
+    assert not re.search(r"^export (RUN_TAG|BATCH_SIZE|NPROC)", smoke, re.M)
 
 
 # =====================================================================
