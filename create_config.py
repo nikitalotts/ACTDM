@@ -317,6 +317,33 @@ def create_gpt_config(args):
     return apply_smoke_overrides(config)
 
 
+def data_budget(config):
+    """Сколько данных модель увидит за прогон.
+
+    Для честного сравнения подходов в статье это ключевая величина: модели
+    должны видеть данные одинаковое число раз. Считается одинаково для
+    диффузии и gpt, у которых разный accum_batch_steps:
+
+        training_iters -- число МИКРОшагов (у gpt их в accum раз больше),
+        batch_size     -- примеров на микрошаг суммарно по всем GPU.
+    """
+    micro_steps = config.training.training_iters
+    accum = config.training.accum_batch_steps
+    return {
+        "examples_seen": config.training.batch_size * micro_steps,
+        "effective_batch": config.training.batch_size * accum,
+        "optimizer_steps": micro_steps // accum,
+    }
+
+
+def print_data_budget(config):
+    b = data_budget(config)
+    print(f"[CONFIG] бюджет обучения: {b['examples_seen'] / 1e6:.1f} млн примеров "
+          f"(эффективный батч {b['effective_batch']}, "
+          f"{b['optimizer_steps']} оптимизаторных шагов)")
+    return config
+
+
 def apply_env_overrides(config):
     """Пометка прогона (RUN_TAG) и подмена батча (BATCH_SIZE) из окружения.
 
@@ -360,7 +387,7 @@ def apply_smoke_overrides(config):
     config = apply_env_overrides(config)
 
     if os.environ.get("SMOKE", "0") != "1":
-        return config
+        return print_data_budget(config)
 
     accum = config.training.accum_batch_steps
     config.training.training_iters = 200 * accum
@@ -394,7 +421,7 @@ def apply_smoke_overrides(config):
           f"eval_freq={config.training.eval_freq}, "
           f"num_gen_texts={config.validation.num_gen_texts}, "
           f"checkpoints_prefix={config.training.checkpoints_prefix}")
-    return config
+    return print_data_budget(config)
 
 
 def metrics_for_mode(is_pipeline_conditional):

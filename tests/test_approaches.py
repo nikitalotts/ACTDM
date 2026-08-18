@@ -1340,5 +1340,76 @@ def test_env_overrides_absent_by_default(monkeypatch):
     assert cfg.training.training_iters == 150_000
 
 
+# =====================================================================
+# Бюджет обучения: сколько данных видит каждый подход
+# =====================================================================
+#
+# Для статьи это ключ к честности сравнения. Диффузионные подходы обязаны
+# видеть данные одинаковое число раз -- иначе разница в метриках между genie,
+# diffuseq и guidance объясняется не архитектурой, а объемом обучения.
+
+# Осознанно зафиксированный перекос между диффузией и авторегрессионным
+# бейзлайном. Уравнять их напрямую нельзя: GPT2-medium дороже за пример
+# примерно в 3.8 раза, и обучение на 76.8 млн примеров заняло бы около 250
+# часов против 66 у диффузии. Значение обязано меняться ОСОЗНАННО и попадать
+# в текст статьи -- поэтому оно зафиксировано тестом.
+EXPECTED_GPT_VS_DIFFUSION_RATIO = 12.0
+
+
+def _budget(at):
+    from create_config import data_budget
+    return data_budget(create_config(make_args(at, dataset_name="wikipedia")))
+
+
+@pytest.mark.parametrize("at", ["genie", "diffuseq", "guidance", "unconditional"])
+def test_all_diffusion_approaches_share_training_budget(at):
+    """Четыре диффузионных режима обязаны видеть РОВНО одинаковый объем данных:
+    именно их метрики сравниваются между собой в статье, и разница в бюджете
+    сделала бы сравнение бессмысленным."""
+    assert _budget(at) == _budget("genie"), (
+        f"{at} обучается на другом объеме данных, чем genie: "
+        f"{_budget(at)} против {_budget('genie')}"
+    )
+
+
+def test_diffusion_budget_matches_declared_values():
+    """Бюджет диффузии посчитан из батча и числа шагов; если кто-то поменяет
+    одно из них, тест напомнит пересчитать время прогона и строку в статье."""
+    b = _budget("diffuseq")
+    assert b["effective_batch"] == 512
+    assert b["optimizer_steps"] == 150_000
+    assert b["examples_seen"] == 512 * 150_000  # 76.8 млн
+
+
+def test_gpt_budget_gap_is_declared_not_accidental():
+    """Разрыв в объеме обучения между gpt и диффузией зафиксирован явной
+    константой. Тест падает и при случайном изменении любого из бюджетов, и
+    при попытке молча 'подровнять' один из них -- решение должно быть
+    осознанным и описанным в статье."""
+    gpt = _budget("gpt")
+    diff = _budget("diffuseq")
+    ratio = diff["examples_seen"] / gpt["examples_seen"]
+    assert ratio == pytest.approx(EXPECTED_GPT_VS_DIFFUSION_RATIO, rel=0.01), (
+        f"объем обучения gpt относительно диффузии изменился: {ratio:.1f}x вместо "
+        f"{EXPECTED_GPT_VS_DIFFUSION_RATIO}x. Если это намеренно -- обновите "
+        f"EXPECTED_GPT_VS_DIFFUSION_RATIO и цифры в статье"
+    )
+
+
+def test_data_budget_accounts_for_gradient_accumulation():
+    """У gpt accum_batch_steps=4, поэтому training_iters считает МИКРОшаги.
+    Если бы бюджет считался без учета accum, сравнение подходов поехало бы
+    ровно в 4 раза."""
+    from create_config import data_budget
+
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    b = data_budget(cfg)
+    assert cfg.training.accum_batch_steps == 4
+    assert b["optimizer_steps"] == cfg.training.training_iters // 4
+    assert b["effective_batch"] == cfg.training.batch_size * 4
+    # примеры считаются по микрошагам: батч на микрошаг x число микрошагов
+    assert b["examples_seen"] == cfg.training.batch_size * cfg.training.training_iters
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
