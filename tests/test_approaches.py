@@ -1348,15 +1348,13 @@ def test_env_overrides_absent_by_default(monkeypatch):
 # видеть данные одинаковое число раз -- иначе разница в метриках между genie,
 # diffuseq и guidance объясняется не архитектурой, а объемом обучения.
 
-# Гиперпараметры повторяют постановку из ВКР на rocstories -- и у диффузии,
-# и у gpt. Бюджеты у них разные, и это осознанно: gpt на rocstories переставал
-# улучшаться после ~10k оптимизаторных шагов, то есть сходится задолго до конца
-# своего бюджета, а диффузии требуется на порядок больше шагов. Сравнение
-# честное не по равному бюджету, а по ЛУЧШЕМУ чекпоинту каждой модели
-# (save_top_k по tracked_metric). Значения зафиксированы, чтобы не разъезжались
-# молча: любое изменение обязано попасть и в текст статьи.
-DIFFUSION_BUDGET = {"effective_batch": 512, "optimizer_steps": 150_000}
-GPT_BUDGET = {"effective_batch": 128, "optimizer_steps": 50_000}
+# Объявленный бюджет одинаков у ВСЕХ подходов, включая авторегрессионный
+# бейзлайн: эффективный батч 512 и 150k оптимизаторных шагов -- одни и те же
+# 76.8 млн примеров. Фактически прогон останавливается по сходимости, и лучший
+# чекпоинт выбирается по tracked_metric (save_top_k), но объявленный бюджет
+# обязан совпадать, иначе сравнение в статье некорректно.
+EXPECTED_EFFECTIVE_BATCH = 512
+EXPECTED_OPTIMIZER_STEPS = 150_000
 
 
 def _budget(at):
@@ -1375,41 +1373,42 @@ def test_all_diffusion_approaches_share_training_budget(at):
     )
 
 
-@pytest.mark.parametrize("at,expected", [
-    ("diffuseq", DIFFUSION_BUDGET), ("gpt", GPT_BUDGET),
-])
-def test_training_budgets_match_thesis_setup(at, expected):
-    """Гиперпараметры обучения обязаны совпадать с постановкой из ВКР на
-    rocstories: на wikipedia меняются только длины текстов, но не рецепт
-    обучения, иначе результаты двух глав статьи несопоставимы."""
+@pytest.mark.parametrize("at", ["genie", "diffuseq", "guidance", "unconditional", "gpt"])
+def test_every_approach_declares_the_same_training_budget(at):
+    """Главный инвариант честности сравнения: все подходы, включая
+    авторегрессионный бейзлайн, обучаются с одинаковым эффективным батчем на
+    одинаковом числе шагов, то есть видят одни и те же 76.8 млн примеров."""
     b = _budget(at)
-    assert b["effective_batch"] == expected["effective_batch"], (
-        f"{at}: эффективный батч {b['effective_batch']} вместо {expected['effective_batch']}")
-    assert b["optimizer_steps"] == expected["optimizer_steps"], (
-        f"{at}: {b['optimizer_steps']} оптимизаторных шагов вместо {expected['optimizer_steps']}")
+    assert b["effective_batch"] == EXPECTED_EFFECTIVE_BATCH, (
+        f"{at}: эффективный батч {b['effective_batch']} вместо {EXPECTED_EFFECTIVE_BATCH}")
+    assert b["optimizer_steps"] == EXPECTED_OPTIMIZER_STEPS, (
+        f"{at}: {b['optimizer_steps']} оптимизаторных шагов вместо {EXPECTED_OPTIMIZER_STEPS}")
+    assert b["examples_seen"] == EXPECTED_EFFECTIVE_BATCH * EXPECTED_OPTIMIZER_STEPS
 
 
-def test_gpt_micro_batch_stays_within_memory():
+def test_gpt_reaches_target_batch_by_accumulation_not_memory():
     """Микробатч gpt поднимать нельзя: GPT2-medium (355M параметров) при 8
-    примерах на GPU уже близок к пределу памяти. Целевой батч набирается
-    накоплением градиента, а не увеличением микробатча."""
+    примерах на карту уже у предела памяти. Батч 512 обязан набираться
+    накоплением градиента, а микробатч остаться прежним."""
     cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
     assert cfg.training.batch_size == 32, "микробатч вырос -- проверьте память GPU"
-    assert cfg.training.accum_batch_steps == 4
+    assert cfg.training.accum_batch_steps == 16
+    assert cfg.training.batch_size * cfg.training.accum_batch_steps == EXPECTED_EFFECTIVE_BATCH
     assert cfg.optim.linear_warmup == 2000, "прогрев как на rocstories в ВКР"
 
 
-def test_eval_cadence_gives_comparable_number_of_points():
-    """У обеих веток должно набраться сопоставимое число точек на кривой
-    обучения (иначе не по чему выбирать лучший чекпоинт и нечего рисовать
-    в статье): диффузия 12 замеров за прогон, gpt 20."""
-    for at, expected_points in (("diffuseq", 12), ("gpt", 20)):
-        cfg = create_config(make_args(at, dataset_name="wikipedia"))
-        points = cfg.training.training_iters // cfg.training.eval_freq
-        assert points == expected_points, f"{at}: {points} точек вместо {expected_points}"
-        assert cfg.training.checkpoint_freq == cfg.training.eval_freq, (
-            "чекпоинт обязан сохраняться на том же шаге, где посчитан tracked_metric, "
-            "иначе save_top_k не сможет выбрать лучший")
+@pytest.mark.parametrize("at,every_opt_steps", [("diffuseq", 12_500), ("gpt", 2_500)])
+def test_checkpoint_cadence_is_measured_in_optimizer_steps(at, every_opt_steps):
+    """Частота eval и чекпоинтов задана в ОПТИМИЗАТОРНЫХ шагах и не менялась
+    относительно ВКР. Это важно при остановке по сходимости: gpt выходит на
+    плато рано, и точки кривой должны попадать в этот район, иначе выбирать
+    лучший чекпоинт будет не из чего."""
+    cfg = create_config(make_args(at, dataset_name="wikipedia"))
+    accum = cfg.training.accum_batch_steps
+    assert cfg.training.eval_freq // accum == every_opt_steps
+    assert cfg.training.checkpoint_freq == cfg.training.eval_freq, (
+        "чекпоинт обязан сохраняться на том же шаге, где посчитан tracked_metric, "
+        "иначе save_top_k не сможет выбрать лучший")
 
 
 def test_best_checkpoint_selection_is_what_makes_comparison_fair():

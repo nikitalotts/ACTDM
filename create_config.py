@@ -234,18 +234,23 @@ def create_gpt_config(args):
     config.work_dir = os.getcwd()
 
     training = config.training = ml_collections.ConfigDict()
-    # Параметры те же, что на rocstories в дипломе: микробатч 32 (8 на GPU),
-    # накопление 4 -> эффективный батч 128, 50k оптимизаторных шагов.
-    # Менять их, чтобы «догнать» диффузию по числу примеров, смысла нет:
-    # на rocstories качество gpt переставало расти после ~10k шагов, то есть
-    # модель сходится задолго до конца бюджета. Сравнение честное не по
-    # равному бюджету, а по лучшему чекпоинту каждой модели (save_top_k
-    # по tracked_metric) -- см. data_budget и README.
-    training.accum_batch_steps = 4
-    training.training_iters = 50_000 * training.accum_batch_steps
+    # Бюджет объявлен таким же, как у диффузии: эффективный батч 512 и 150k
+    # оптимизаторных шагов, то есть те же 76.8 млн примеров. Микробатч при этом
+    # остается прежним (32 суммарно по GPU, 8 на карту) -- GPT2-medium больше
+    # в память не влезает, поэтому батч набирается накоплением: 32 x 16.
+    #
+    # Полный бюджет -- это ~250 GPU-часов против 66 у диффузии, потому что
+    # GPT2-medium дороже за пример примерно в 3.8 раза. Прогон рассчитан на
+    # остановку по сходимости: на rocstories качество переставало расти после
+    # ~1.3 млн примеров, что здесь соответствует ~2500 оптимизаторным шагам.
+    training.accum_batch_steps = 16
+    training.training_iters = 150_000 * training.accum_batch_steps
+    # Частота как в ВКР -- раз в 2500 оптимизаторных шагов (~4 часа). Реже
+    # нельзя: при остановке по сходимости первые же точки кривой должны попасть
+    # в район 2500 шагов, иначе выбирать лучший чекпоинт будет не из чего.
     training.checkpoint_freq = 2_500 * training.accum_batch_steps
     training.eval_freq = 2_500 * training.accum_batch_steps
-    training.batch_size = 128 // training.accum_batch_steps
+    training.batch_size = 512 // training.accum_batch_steps
     training.ode_sampling = False
     training.checkpoints_folder = f"{config.work_dir}/checkpoints/"
     training.checkpoint_name = ""
