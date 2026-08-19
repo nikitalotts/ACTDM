@@ -234,23 +234,21 @@ def create_gpt_config(args):
     config.work_dir = os.getcwd()
 
     training = config.training = ml_collections.ConfigDict()
-    # Бюджет объявлен таким же, как у диффузии: эффективный батч 512 и 150k
-    # оптимизаторных шагов, то есть те же 76.8 млн примеров. Микробатч при этом
-    # остается прежним (32 суммарно по GPU, 8 на карту) -- GPT2-medium больше
-    # в память не влезает, поэтому батч набирается накоплением: 32 x 16.
+    # Рецепт обучения ровно такой же, как на rocstories в ВКР: микробатч 32
+    # (8 на карту), накопление 4 -> эффективный батч 128, 50k оптимизаторных
+    # шагов. Специально НЕ подгоняется под бюджет диффузии.
     #
-    # Полный бюджет -- это ~250 GPU-часов против 66 у диффузии, потому что
-    # GPT2-medium дороже за пример примерно в 3.8 раза. Прогон рассчитан на
-    # остановку по сходимости: на rocstories качество переставало расти после
-    # ~1.3 млн примеров, что здесь соответствует ~2500 оптимизаторным шагам.
-    training.accum_batch_steps = 16
-    training.training_iters = 150_000 * training.accum_batch_steps
-    # Частота как в ВКР -- раз в 2500 оптимизаторных шагов (~4 часа). Реже
-    # нельзя: при остановке по сходимости первые же точки кривой должны попасть
-    # в район 2500 шагов, иначе выбирать лучший чекпоинт будет не из чего.
+    # Обоснование (оно же идет в статью): ни одна модель не обучается до конца
+    # объявленного бюджета -- берется лучший чекпоинт по tracked_metric. На
+    # rocstories качество gpt переставало расти после ~10k оптимизаторных
+    # шагов, диффузию тоже останавливали раньше конца. Уравнивать бюджеты
+    # означало бы либо недоучить диффузию, либо жечь сотни GPU-часов на уже
+    # сошедшемся gpt. Фактический compute указывается в статье отдельно.
+    training.accum_batch_steps = 4
+    training.training_iters = 50_000 * training.accum_batch_steps
     training.checkpoint_freq = 2_500 * training.accum_batch_steps
     training.eval_freq = 2_500 * training.accum_batch_steps
-    training.batch_size = 512 // training.accum_batch_steps
+    training.batch_size = 128 // training.accum_batch_steps
     training.ode_sampling = False
     training.checkpoints_folder = f"{config.work_dir}/checkpoints/"
     training.checkpoint_name = ""
