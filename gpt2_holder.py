@@ -25,6 +25,80 @@ from utils.util import set_seed, reduce_tensor
 
 
 
+# Сколько позиций считать за раз в чанкованном лоссе. 1024 позиции x 50257 слов
+# -- это 206 МБ логитов в fp32 плюс столько же на log_softmax, порядка 0.4 ГБ
+# пика независимо от батча. Больше брать нельзя: при батче 32 в лосс идет всего
+# ~2000 позиций, и чанк в 8192 означал бы, что чанкования нет вовсе.
+LM_LOSS_CHUNK_TOKENS = 1024
+
+
+def _chunk_loss(hidden, labels, lm_head):
+    logits = lm_head(hidden)
+    return torch.nn.functional.cross_entropy(
+        logits.float(), labels, reduction="sum")
+
+
+def chunked_lm_loss(hidden, lm_head, labels, chunk_tokens=LM_LOSS_CHUNK_TOKENS):
+    """Кросс-энтропия без материализации полного тензора логитов.
+
+    GPT2LMHeadModel считает логиты сразу для всей последовательности:
+    [батч x 128 позиций x 50257 слов]. При батче 32 это 0.8 ГБ в fp32, плюс
+    столько же на копию внутри cross_entropy (log_softmax сохраняется для
+    backward), плюс bf16-копия -- около 2 ГБ, и все это растет линейно с батчем.
+
+    Здесь два сокращения:
+      * логиты считаются ТОЛЬКО для позиций, попадающих в лосс. Промпт
+        помечен -100 и раньше прогонялся через выходной слой впустую -- это
+        половина позиций;
+      * оставшиеся позиции обрабатываются чанками под checkpoint: в памяти
+        живут логиты одного чанка, остальные пересчитываются на backward.
+
+    Лосс идентичен исходному: сумма по токенам, деленная на их число.
+    """
+    hidden = hidden[:, :-1, :].reshape(-1, hidden.size(-1))
+    labels = labels[:, 1:].reshape(-1)
+
+    keep = labels != -100
+    hidden = hidden[keep]
+    labels = labels[keep]
+
+    total = labels.numel()
+    if total == 0:
+        return hidden.sum() * 0.0
+
+    loss = None
+    for i in range(0, total, chunk_tokens):
+        part = torch.utils.checkpoint.checkpoint(
+            _chunk_loss, hidden[i:i + chunk_tokens], labels[i:i + chunk_tokens],
+            lm_head, use_reentrant=False)
+        loss = part if loss is None else loss + part
+    return loss / total
+
+
+class GPT2WithChunkedLoss(torch.nn.Module):
+    """Обертка, считающая лосс внутри forward.
+
+    Нужна из-за двух ограничений сразу. GPT2LMHeadModel материализует логиты
+    всегда, даже когда labels не переданы, поэтому звать его нельзя -- надо
+    идти в .transformer напрямую. Но вызывать .transformer в обход DDP тоже
+    нельзя: DDP вешает хуки на forward обернутого модуля, и без его вызова
+    градиенты по картам не синхронизируются. Поэтому оборачиваем в DDP вот
+    этот модуль: он ходит в transformer и сам считает чанкованный лосс.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids, attention_mask, position_ids, labels):
+        hidden = self.model.transformer(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+        ).last_hidden_state
+        return chunked_lm_loss(hidden, self.model.lm_head, labels)
+
+
 def _loader_workers() -> int:
     """Воркеров загрузчика -- по числу выделенных ядер, но не больше 8.
 
@@ -66,10 +140,13 @@ class GPT2Runner:
         print(f"[GPT2] Model initialized from SCRATCH (random weights)")
         print(f"[GPT2] Params: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}")
 
-        self.ddp_model = self.model
+        # DDP оборачивает не саму GPT2LMHeadModel, а обертку с чанкованным
+        # лоссом -- иначе логиты материализуются на всю последовательность
+        self.loss_model = GPT2WithChunkedLoss(self.model).to(self.device)
+        self.ddp_model = self.loss_model
         if self.config.ddp and torch.cuda.is_available():
             self.ddp_model = torch.nn.parallel.DistributedDataParallel(
-                self.model,
+                self.loss_model,
                 device_ids=[config.local_rank],
                 broadcast_buffers=False,
             )
@@ -334,13 +411,12 @@ class GPT2Runner:
         device_type = "cuda" if torch.cuda.is_available() else "cpu"
         with sync_ctx:
             with torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-                outputs = self.ddp_model(
+                raw_loss = self.ddp_model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     position_ids=batch["position_ids"],
                     labels=batch["labels"],
                 )
-                raw_loss = outputs.loss
                 loss = raw_loss / accum
 
             if self.grad_scaler is not None:
@@ -379,13 +455,12 @@ class GPT2Runner:
             batch = batch.to(self.device)
             device_type = "cuda" if torch.cuda.is_available() else "cpu"
             with torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-                outputs = self.ddp_model(
+                loss = self.ddp_model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     position_ids=batch["position_ids"],
                     labels=batch["labels"],
                 )
-                loss = outputs.loss
 
             bs = batch["input_ids"].size(0)
             valid_loss_sum += loss.item() * bs

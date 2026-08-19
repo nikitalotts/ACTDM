@@ -1584,5 +1584,90 @@ def test_gpt_scheduler_cycle_is_in_optimizer_steps():
     assert cfg.optim.linear_warmup < cfg.training.training_iters // cfg.training.accum_batch_steps
 
 
+# =====================================================================
+# Чанкованный лосс: логиты не материализуются на всю последовательность
+# =====================================================================
+
+def test_chunked_loss_equals_reference_implementation():
+    """Лосс и градиенты обязаны совпадать со штатным путем GPT2LMHeadModel.
+    Чанкование -- это только про память: значение меняться не должно."""
+    import torch as _torch
+    from gpt2_holder import chunked_lm_loss, GPT2Runner
+    from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config
+
+    real_cuda = _torch.cuda.is_available
+    _torch.cuda.is_available = lambda: False
+    try:
+        cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+        cfg.local_rank = 0
+        r = GPT2Runner.__new__(GPT2Runner)
+        r.config = cfg
+        r.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        r.tokenizer.pad_token = r.tokenizer.eos_token
+        r.tokenizer.padding_side = "left"
+        torch.manual_seed(0)
+        model = GPT2LMHeadModel(GPT2Config(
+            n_layer=2, n_head=2, n_embd=64, vocab_size=r.tokenizer.vocab_size)).eval()
+
+        batch = [{"text_src": "the quick brown fox jumps over the lazy dog near a river",
+                  "text_trg": "and then it fell asleep under a tree beside the water"}
+                 for _ in range(4)]
+        b = r.collate_fn(batch)
+
+        model.zero_grad()
+        ref = model(input_ids=b["input_ids"], attention_mask=b["attention_mask"],
+                    position_ids=b["position_ids"], labels=b["labels"]).loss
+        ref.backward()
+        ref_grads = [p.grad.clone() for p in model.parameters() if p.grad is not None]
+
+        model.zero_grad()
+        hidden = model.transformer(
+            input_ids=b["input_ids"], attention_mask=b["attention_mask"],
+            position_ids=b["position_ids"]).last_hidden_state
+        # чанк заведомо меньше числа позиций -- проверяем именно склейку чанков
+        got = chunked_lm_loss(hidden, model.lm_head, b["labels"], chunk_tokens=7)
+        got.backward()
+        got_grads = [p.grad.clone() for p in model.parameters() if p.grad is not None]
+
+        assert abs(ref.item() - got.item()) < 1e-5, (
+            f"лосс разошелся: {ref.item():.6f} против {got.item():.6f}")
+        rel = max((a - c).abs().max().item() / (a.abs().max().item() + 1e-12)
+                  for a, c in zip(ref_grads, got_grads))
+        assert rel < 1e-4, f"градиенты разошлись: {rel:.2e}"
+    finally:
+        _torch.cuda.is_available = real_cuda
+
+
+def test_chunk_size_is_smaller_than_typical_target_span():
+    """Чанк должен быть меньше числа позиций в лоссе, иначе чанкования нет.
+    При батче 32 в лосс идет ~32 x 63 = 2016 позиций: чанк 8192 означал бы
+    один чанк и нулевую экономию (именно так и было в первой версии)."""
+    from gpt2_holder import LM_LOSS_CHUNK_TOKENS
+
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    per_gpu = cfg.training.batch_size // 4
+    positions = per_gpu * (cfg.data.max_sequence_len - 1)
+    assert LM_LOSS_CHUNK_TOKENS < positions, (
+        f"чанк {LM_LOSS_CHUNK_TOKENS} не меньше {positions} позиций -- "
+        "чанкование не сработает")
+
+
+def test_ddp_wraps_the_module_that_computes_loss():
+    """GPT2LMHeadModel считает логиты всегда, поэтому лосс берем из обертки над
+    .transformer. Обернуть в DDP надо именно ее: если звать .transformer в
+    обход DDP, градиенты между картами не синхронизируются."""
+    import inspect
+    from gpt2_holder import GPT2Runner, GPT2WithChunkedLoss
+
+    src = inspect.getsource(GPT2Runner.__init__)
+    assert "GPT2WithChunkedLoss" in src
+    assert re.search(r"DistributedDataParallel\(\s*self\.loss_model", src), (
+        "в DDP обернута не обертка с лоссом")
+
+    fwd = inspect.getsource(GPT2WithChunkedLoss.forward)
+    assert "self.model.transformer" in fwd, "обертка должна идти в transformer"
+    assert "chunked_lm_loss" in fwd
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))

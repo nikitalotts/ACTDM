@@ -34,6 +34,8 @@ import time
 
 import torch
 
+from gpt2_holder import chunked_lm_loss
+
 
 def free_all():
     gc.collect()
@@ -94,9 +96,13 @@ class GPTProbe(Probe):
         pos = (attn.cumsum(dim=-1) - 1).clamp(min=0)
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            out = self.model(input_ids=ids, attention_mask=attn,
-                             position_ids=pos, labels=labels)
-            loss = out.loss / self.config.training.accum_batch_steps
+            # тот же путь, что в обучении: логиты считаются чанками и только
+            # для позиций продолжения (см. gpt2_holder.chunked_lm_loss)
+            hidden = self.model.transformer(
+                input_ids=ids, attention_mask=attn, position_ids=pos
+            ).last_hidden_state
+            loss = chunked_lm_loss(hidden, self.model.lm_head, labels)
+            loss = loss / self.config.training.accum_batch_steps
         loss.backward()
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
