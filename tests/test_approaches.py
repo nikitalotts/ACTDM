@@ -1082,7 +1082,9 @@ def test_gpt_accumulated_gradient_equals_single_large_batch():
         torch.manual_seed(0)
         r.model = GPT2LMHeadModel(GPT2Config(
             n_layer=2, n_head=2, n_embd=64, vocab_size=r.tokenizer.vocab_size))
-        r.ddp_model = r.model
+        # train_step ждет обертку, считающую лосс: логиты идут чанками
+        from gpt2_holder import GPT2WithChunkedLoss
+        r.ddp_model = GPT2WithChunkedLoss(r.model)
         r.model.eval()
         r.grad_scaler = None
         r.optimizer_step = lambda: torch.tensor(0.0)  # не даем обнулить градиенты
