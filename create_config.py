@@ -8,6 +8,43 @@ from utils.schemes import (
 )
 
 
+# --- общий бюджет обучения для ВСЕХ подходов ------------------------------------
+# Одинаковые эффективный батч и число шагов -> одинаковое число увиденных
+# примеров. Иначе сравнение подходов в статье некорректно.
+#
+# Размер батча на карту подобран замером (find_max_batch.py на V100-32GB):
+#   предел на карту -- gpt 66, genie 629, diffuseq 426, unconditional 960.
+# Узкое место -- gpt, поэтому общий батч упирается в него: берем 32 на карту
+# (55% памяти, с запасом на разброс длин), это 128 за микрошаг на четырех
+# картах. Диффузии набирают те же 512 за один шаг (128 на карту), gpt -- за
+# четыре шага накопления. Поднимать батч выше смысла нет: замер показал, что
+# пропускная способность выходит на плато уже к 128 на карту (у diffuseq рост
+# со 128 до 426 дает +2%), карта загружена на 98% и упирается в вычисления,
+# а не в память.
+EFFECTIVE_BATCH = 512
+OPTIMIZER_STEPS = 150_000
+# 30 замеров за прогон: нужны кривые метрики, по которым видно плато и по
+# которым отбирается лучший чекпоинт (save_top_k)
+EVAL_EVERY_STEPS = 5_000
+# сколько примеров одна карта тянет за микрошаг, по замеру памяти
+PER_GPU_BATCH = {"gpt": 32, "default": 128}
+WORLD_SIZE = 4
+
+
+def training_budget(training, architecture_type):
+    """Раскладывает общий бюджет на батч, накопление и число микрошагов."""
+    per_gpu = PER_GPU_BATCH.get(architecture_type, PER_GPU_BATCH["default"])
+    micro_batch = per_gpu * WORLD_SIZE
+    accum = max(1, EFFECTIVE_BATCH // micro_batch)
+
+    training.accum_batch_steps = accum
+    training.batch_size = micro_batch
+    training.training_iters = OPTIMIZER_STEPS * accum
+    training.checkpoint_freq = EVAL_EVERY_STEPS * accum
+    training.eval_freq = EVAL_EVERY_STEPS * accum
+    return training
+
+
 def create_config(args):
     """Собирает конфиг под architecture_type.
 
@@ -29,11 +66,7 @@ def create_config(args):
     config.work_dir = os.getcwd()
     
     training = config.training = ml_collections.ConfigDict()
-    training.accum_batch_steps = 1
-    training.training_iters = 150_000 * training.accum_batch_steps
-    training.checkpoint_freq = 12_500 * training.accum_batch_steps 
-    training.eval_freq = 12_500 
-    training.batch_size = 512 // training.accum_batch_steps
+    training_budget(training, architecture_type)
     training.ode_sampling = False
     training.checkpoints_folder = f"{config.work_dir}/checkpoints/"
     training.checkpoint_name = ""
@@ -234,21 +267,7 @@ def create_gpt_config(args):
     config.work_dir = os.getcwd()
 
     training = config.training = ml_collections.ConfigDict()
-    # Рецепт обучения ровно такой же, как на rocstories в ВКР: микробатч 32
-    # (8 на карту), накопление 4 -> эффективный батч 128, 50k оптимизаторных
-    # шагов. Специально НЕ подгоняется под бюджет диффузии.
-    #
-    # Обоснование (оно же идет в статью): ни одна модель не обучается до конца
-    # объявленного бюджета -- берется лучший чекпоинт по tracked_metric. На
-    # rocstories качество gpt переставало расти после ~10k оптимизаторных
-    # шагов, диффузию тоже останавливали раньше конца. Уравнивать бюджеты
-    # означало бы либо недоучить диффузию, либо жечь сотни GPU-часов на уже
-    # сошедшемся gpt. Фактический compute указывается в статье отдельно.
-    training.accum_batch_steps = 4
-    training.training_iters = 50_000 * training.accum_batch_steps
-    training.checkpoint_freq = 2_500 * training.accum_batch_steps
-    training.eval_freq = 2_500 * training.accum_batch_steps
-    training.batch_size = 128 // training.accum_batch_steps
+    training_budget(training, "gpt")
     training.ode_sampling = False
     training.checkpoints_folder = f"{config.work_dir}/checkpoints/"
     training.checkpoint_name = ""

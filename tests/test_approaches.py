@@ -1465,8 +1465,7 @@ def test_env_overrides_absent_by_default(monkeypatch):
 # (save_top_k). gpt на rocstories выходил на плато после ~10k оптимизаторных
 # шагов, диффузию тоже останавливали раньше. Значения зафиксированы, чтобы не
 # разъезжались молча: любое изменение обязано попасть и в текст статьи.
-DIFFUSION_BUDGET = {"effective_batch": 512, "optimizer_steps": 150_000}
-GPT_BUDGET = {"effective_batch": 128, "optimizer_steps": 50_000}
+COMMON_BUDGET = {"effective_batch": 512, "optimizer_steps": 150_000}
 
 
 def _budget(at):
@@ -1485,30 +1484,52 @@ def test_all_diffusion_approaches_share_training_budget(at):
     )
 
 
-@pytest.mark.parametrize("at,expected", [
-    ("diffuseq", DIFFUSION_BUDGET), ("gpt", GPT_BUDGET),
-])
-def test_training_budgets_match_thesis_setup(at, expected):
-    """Рецепт обучения обязан совпадать с постановкой из ВКР на rocstories: на
-    wikipedia меняются длины текстов, но не батчи и не число шагов, иначе
-    результаты двух глав статьи несопоставимы между собой."""
+@pytest.mark.parametrize("at", ["genie", "diffuseq", "guidance", "unconditional", "gpt"])
+def test_every_approach_gets_the_same_budget(at):
+    """Все подходы, включая авторегрессионный бейзлайн, обучаются с одинаковым
+    эффективным батчем на одинаковом числе шагов, то есть видят одно и то же
+    число примеров. Способ набора батча при этом разный (у gpt накопление,
+    у диффузий один шаг) -- он определяется тем, сколько влезает в память."""
     b = _budget(at)
-    assert b["effective_batch"] == expected["effective_batch"], (
-        f"{at}: эффективный батч {b['effective_batch']} вместо {expected['effective_batch']}")
-    assert b["optimizer_steps"] == expected["optimizer_steps"], (
-        f"{at}: {b['optimizer_steps']} оптимизаторных шагов вместо {expected['optimizer_steps']}")
+    assert b["effective_batch"] == COMMON_BUDGET["effective_batch"], (
+        f"{at}: эффективный батч {b['effective_batch']}")
+    assert b["optimizer_steps"] == COMMON_BUDGET["optimizer_steps"], (
+        f"{at}: {b['optimizer_steps']} оптимизаторных шагов")
+    assert b["examples_seen"] == 512 * 150_000
 
 
-def test_gpt_micro_batch_stays_within_memory():
-    """Микробатч gpt поднимать нельзя: GPT2-medium (355M параметров) при 8
-    примерах на карту уже у предела памяти. Батч набирается накоплением."""
+def test_gpt_batch_fits_measured_memory_limit():
+    """Батч gpt подобран замером на V100-32GB (find_max_batch.py): 32 примера
+    на карту занимают 55% памяти при пределе 66. Меньше -- зря теряем скорость
+    (при 8 было 24.5 примера/с против 30.2), больше -- рискуем OOM на длинном
+    прогоне, где длины текстов плавают.
+
+    Эффективный батч при этом обязан остаться 128, как в ВКР: меняется способ
+    набора, а не рецепт обучения.
+    """
     cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
-    assert cfg.training.batch_size == 32, "микробатч вырос -- проверьте память GPU"
-    assert cfg.training.accum_batch_steps == 4
+    per_gpu = cfg.training.batch_size // 4
+    assert per_gpu == 32, f"{per_gpu} на карту -- перепроверьте find_max_batch.py"
+    assert per_gpu * 4 * cfg.training.accum_batch_steps == COMMON_BUDGET["effective_batch"], \
+        "эффективный батч уехал от общего"
     assert cfg.optim.linear_warmup == 2000, "прогрев как на rocstories в ВКР"
 
 
-@pytest.mark.parametrize("at,every_opt_steps", [("diffuseq", 12_500), ("gpt", 2_500)])
+def test_diffusion_batch_fits_measured_memory_limit():
+    """У диффузий батч на карту тоже подобран замером: 128 занимает 28-35%
+    памяти при пределе 426 (diffuseq) и 629 (genie). Выше не идем -- замер
+    показал, что пропускная способность там уже на плато, а память нужна на
+    разброс длин."""
+    for at, max_measured in (("diffuseq", 426), ("genie", 629), ("unconditional", 960)):
+        cfg = create_config(make_args(at, dataset_name="wikipedia"))
+        per_gpu = cfg.training.batch_size // 4
+        assert per_gpu == 128, f"{at}: {per_gpu} на карту"
+        assert per_gpu < max_measured, f"{at}: батч выше измеренного предела"
+        assert cfg.training.accum_batch_steps == 1, (
+            f"{at}: батч влезает целиком, накопление не нужно")
+
+
+@pytest.mark.parametrize("at,every_opt_steps", [("diffuseq", 5_000), ("gpt", 5_000)])
 def test_checkpoint_cadence_is_measured_in_optimizer_steps(at, every_opt_steps):
     """Частота eval и чекпоинтов задана в ОПТИМИЗАТОРНЫХ шагах и не менялась
     относительно ВКР. Это важно при остановке по сходимости: gpt выходит на
