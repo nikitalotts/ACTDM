@@ -25,8 +25,12 @@ GPT2-medium -- это всего ~1.4 ГБ весов, и на карте с 32 
 
 import argparse
 import gc
+import json
 import os
+import subprocess
 import sys
+import threading
+import time
 
 import torch
 
@@ -207,132 +211,277 @@ def probe_for(arch, config, device):
     return GPTProbe(config, device) if arch == "gpt" else DiffusionProbe(config, device)
 
 
-def find_max(arch, config, device, max_batch, verbose=True):
-    """Удвоение до OOM, затем бинарный поиск границы."""
-    probe = probe_for(arch, config, device)
-    free_all()
-    base_mem = torch.cuda.memory_allocated()
-    print(f"  параметров обучаемой модели: {probe.params / 1e6:.0f}M, "
-          f"занято после загрузки: {gb(base_mem):.2f} ГБ")
+class UtilSampler:
+    """Фоновый опрос загрузки GPU во время замера.
 
-    total_mem = torch.cuda.get_device_properties(0).total_memory
+    Пиковая память говорит, влезает ли батч, но не говорит, занята ли карта
+    делом. Мониторинг кластера показывал 20% загрузки GPU при 22% занятой
+    памяти -- то есть карты простаивали. Здесь тот же показатель меряется
+    сразу для каждого батча, чтобы видеть, с какого размера GPU наконец
+    загружается полностью.
+    """
 
-    def fits(bs):
-        free_all()
+    def __init__(self, device_index=0, period=0.05):
+        self.device_index = device_index
+        self.period = period
+        self.samples = []
+        self._stop = threading.Event()
+        self._thread = None
+        self._read = self._pick_reader()
+
+    def _pick_reader(self):
         try:
-            probe.step(bs)          # первый шаг аллоцирует состояния Adam
-            probe.step(bs)          # второй идет уже с ними -- это и есть пик
-            peak = torch.cuda.max_memory_allocated()
-            if peak > total_mem:
-                # Драйвер молча вытеснил часть данных в системную память вместо
-                # того, чтобы бросить OOM (так делает WDDM на Windows). Тогда
-                # предела памяти не существует и подбор бессмысленен.
-                raise SystemExit(
-                    f"\nОСТАНОВЛЕНО: пик {gb(peak):.2f} ГБ превысил объем карты "
-                    f"{gb(total_mem):.2f} ГБ, но OOM не случился.\n"
-                    f"Значит драйвер сливает память в RAM, и подобранный батч "
-                    f"будет неверным.\nЗапускайте скрипт на кластере: "
-                    f"sbatch find_max_batch.sh"
-                )
-            if verbose:
-                print(f"    батч {bs:5d}: OK, пик {gb(peak):.2f} ГБ")
-            return True, peak
-        except torch.cuda.OutOfMemoryError:
-            if verbose:
-                print(f"    батч {bs:5d}: OOM")
-            free_all()
-            return False, None
-        except RuntimeError as e:
-            if "out of memory" not in str(e).lower():
-                raise
-            if verbose:
-                print(f"    батч {bs:5d}: OOM")
-            free_all()
-            return False, None
+            import pynvml  # noqa: F401
+            torch.cuda.utilization(self.device_index)
 
-    ok, peak_ok = 0, 0
-    bs = 1
+            def read():
+                return torch.cuda.utilization(self.device_index)
+            return read
+        except Exception:
+            pass
+
+        # запасной путь: на кластере nvidia-smi есть всегда, даже когда
+        # питоновской обертки к NVML в окружении нет
+        def read_smi():
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=utilization.gpu",
+                 "--format=csv,noheader,nounits", "-i", str(self.device_index)],
+                text=True, stderr=subprocess.DEVNULL, timeout=5)
+            return int(out.strip().splitlines()[0])
+        try:
+            read_smi()
+            return read_smi
+        except Exception:
+            return None
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                self.samples.append(self._read())
+            except Exception:
+                break
+            self._stop.wait(self.period)
+
+    def __enter__(self):
+        if self._read is not None:
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+    @property
+    def stats(self):
+        if not self.samples:
+            return None, None
+        return sum(self.samples) / len(self.samples), max(self.samples)
+
+
+def measure(probe, bs, total_mem, n_steps=6, warmup=2):
+    """Полный замер одного размера батча. None -- значит не влез."""
+    free_all()
+    try:
+        for _ in range(warmup):      # первый шаг аллоцирует состояния Adam
+            probe.step(bs)
+        torch.cuda.synchronize()
+        static = torch.cuda.memory_allocated()   # веса + градиенты + Adam
+        torch.cuda.reset_peak_memory_stats()
+
+        with UtilSampler() as sampler:
+            t0 = time.perf_counter()
+            for _ in range(n_steps):
+                probe.step(bs)
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - t0
+
+        peak = torch.cuda.max_memory_allocated()
+        reserved = torch.cuda.max_memory_reserved()
+        if peak > total_mem:
+            raise SystemExit(
+                f"\nОСТАНОВЛЕНО: пик {gb(peak):.2f} ГБ превысил объем карты "
+                f"{gb(total_mem):.2f} ГБ, но OOM не случился.\n"
+                f"Значит драйвер сливает память в RAM, и подобранный батч будет "
+                f"неверным.\nЗапускайте на кластере: sbatch find_max_batch.sh"
+            )
+        util_mean, util_max = sampler.stats
+        step_time = elapsed / n_steps
+        return {
+            "batch": bs,
+            "step_time": step_time,
+            "examples_per_sec": bs / step_time,
+            "peak_gb": gb(peak),
+            "reserved_gb": gb(reserved),
+            "static_gb": gb(static),
+            "activations_gb": gb(max(peak - static, 0)),
+            "mem_percent": 100 * reserved / total_mem,
+            "util_mean": util_mean,
+            "util_max": util_max,
+        }
+    except torch.cuda.OutOfMemoryError:
+        free_all()
+        return None
+    except RuntimeError as e:
+        if "out of memory" not in str(e).lower():
+            raise
+        free_all()
+        return None
+
+
+def sweep(arch, config, device, max_batch, verbose=True):
+    """Прогон по степеням двойки до OOM, затем уточнение границы делением пополам."""
+    probe = probe_for(arch, config, device)
+    total_mem = torch.cuda.get_device_properties(device).total_memory
+    free_all()
+    print(f"  обучаемых параметров: {probe.params / 1e6:.0f}M")
+
+    rows, bs = [], 1
     while bs <= max_batch:
-        good, peak = fits(bs)
-        if not good:
+        r = measure(probe, bs, total_mem)
+        if r is None:
+            if verbose:
+                print(f"    батч {bs:5d}: OOM")
             break
-        ok, peak_ok = bs, peak
+        rows.append(r)
+        if verbose:
+            u = f"{r['util_mean']:.0f}%" if r["util_mean"] is not None else "n/a"
+            print(f"    батч {bs:5d}: {r['step_time'] * 1000:7.1f} мс/шаг, "
+                  f"{r['examples_per_sec']:8.1f} прим/с, "
+                  f"память {r['reserved_gb']:5.2f} ГБ ({r['mem_percent']:.0f}%), "
+                  f"загрузка GPU {u}")
         bs *= 2
-    else:
-        probe.teardown()
-        return ok, peak_ok, True     # уперлись в потолок перебора, не в память
 
-    lo, hi = ok, bs                  # lo влезает, hi нет
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
-        good, peak = fits(mid)
-        if good:
-            lo, peak_ok = mid, peak
-        else:
-            hi = mid
+    # точная граница между последним влезшим и первым упавшим
+    if rows and bs <= max_batch:
+        lo, hi = rows[-1]["batch"], bs
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            r = measure(probe, mid, total_mem)
+            if r is None:
+                hi = mid
+            else:
+                lo = mid
+                rows.append(r)
+        rows.sort(key=lambda x: x["batch"])
+
     probe.teardown()
-    return lo, peak_ok, False
+    return rows
+
+
+def report(arch, rows, config, world_size):
+    """Таблица по батчам плюс оценка времени боевого прогона."""
+    if not rows:
+        print("  нечего показать\n")
+        return None
+
+    from create_config import data_budget
+    need = data_budget(config)["examples_seen"]
+
+    print(f"\n  {arch}: замеры по батчам (на одну карту)")
+    print("  " + "-" * 92)
+    print(f"  {'батч':>6}{'мс/шаг':>10}{'прим/с':>10}{'память ГБ':>12}{'% памяти':>10}"
+          f"{'активации':>11}{'GPU %':>8}{'прогон, ч':>12}")
+    print("  " + "-" * 92)
+    for r in rows:
+        # боевой прогон идет на world_size картах, каждая тянет свою долю
+        hours = need / (r["examples_per_sec"] * world_size) / 3600
+        u = f"{r['util_mean']:.0f}" if r["util_mean"] is not None else "n/a"
+        print(f"  {r['batch']:>6}{r['step_time'] * 1000:>10.1f}{r['examples_per_sec']:>10.1f}"
+              f"{r['reserved_gb']:>12.2f}{r['mem_percent']:>10.0f}"
+              f"{r['activations_gb']:>11.2f}{u:>8}{hours:>12.1f}")
+    print("  " + "-" * 92)
+
+    best = max(rows, key=lambda r: r["examples_per_sec"])
+    fits = rows[-1]
+    print(f"  максимум по памяти: батч {fits['batch']} "
+          f"({fits['reserved_gb']:.2f} ГБ, {fits['mem_percent']:.0f}% карты)")
+    print(f"  максимум по скорости: батч {best['batch']} "
+          f"({best['examples_per_sec']:.0f} прим/с)")
+    # Берем с запасом: в замере все тексты полной длины и одинаковые, а в
+    # реальном батче длины плавают, плюс память фрагментируется на длинном
+    # прогоне. Оставляем незанятыми не меньше 15% карты.
+    roomy = [r for r in rows if r["mem_percent"] < 85]
+    safe = max(roomy, key=lambda r: r["batch"])["batch"] if roomy else rows[0]["batch"]
+    print(f"  рекомендую: {safe} на карту "
+          f"(= {safe * world_size} суммарно на {world_size} картах)\n")
+    return {"rows": rows, "max_fit": fits["batch"], "fastest": best["batch"],
+            "recommended": safe}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--arch", nargs="+",
-                    default=["gpt", "genie", "diffuseq", "unconditional"],
-                    help="какие подходы проверять")
+                    default=["gpt", "genie", "diffuseq", "unconditional"])
     ap.add_argument("--dataset", default="wikipedia")
     ap.add_argument("--max-batch", type=int, default=4096)
+    ap.add_argument("--world-size", type=int, default=4,
+                    help="сколько карт в боевом прогоне (для оценки времени)")
+    ap.add_argument("--json", default="max_batch_report.json",
+                    help="куда сложить сырые замеры для дальнейшего анализа")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
     if not torch.cuda.is_available():
-        sys.exit("Нужна GPU: скрипт меряет именно память карты")
+        sys.exit("Нужна GPU: скрипт меряет именно память и загрузку карты")
 
     from create_config import create_config
     from utils.util import parse as parse_train_args
 
     device = torch.device("cuda:0")
-    name = torch.cuda.get_device_name(0)
-    total = torch.cuda.get_device_properties(0).total_memory
-    print(f"GPU: {name}, всего памяти {gb(total):.1f} ГБ\n")
+    props = torch.cuda.get_device_properties(0)
+    print(f"GPU: {props.name}, памяти {gb(props.total_memory):.1f} ГБ, "
+          f"SM {props.multi_processor_count}\n")
 
-    results = {}
+    summary = {}
     for arch in args.arch:
         print(f"=== {arch} ===")
         sys.argv = ["find_max_batch", "--dataset_name", args.dataset,
                     "--architecture_type", arch]
         config = create_config(parse_train_args())
         config.local_rank = 0
+        current_per_gpu = config.training.batch_size // args.world_size
 
-        current = config.training.batch_size
         try:
-            best, peak, capped = find_max(arch, config, device, args.max_batch,
-                                          verbose=not args.quiet)
+            rows = sweep(arch, config, device, args.max_batch, verbose=not args.quiet)
+        except SystemExit:
+            raise
         except Exception as e:
             print(f"  ОШИБКА: {type(e).__name__}: {e}\n")
             continue
 
-        results[arch] = (best, peak, current, capped)
-        print(f"  --> максимум {best} на карту"
-              f"{' (уперлись в --max-batch)' if capped else ''}, "
-              f"пик {gb(peak):.2f} ГБ\n")
+        res = report(arch, rows, config, args.world_size)
+        if res:
+            res["current_per_gpu"] = current_per_gpu
+            summary[arch] = res
 
-    print("=" * 72)
-    print(f"{'подход':<16}{'сейчас/GPU':>12}{'максимум':>12}{'запас':>10}{'рекомендую':>14}")
-    print("-" * 72)
-    for arch, (best, peak, current, capped) in results.items():
-        per_gpu = current // 4          # боевые прогоны идут на 4 картах
-        # берем ~75% от предела: активации плавают от длины текстов, плюс
-        # фрагментация памяти на длинном прогоне
-        rec = int(best * 0.75)
-        rec = max(1, 1 << (rec.bit_length() - 1))   # ближайшая степень двойки вниз
-        print(f"{arch:<16}{per_gpu:>12}{best:>12}{best / max(per_gpu, 1):>9.1f}x{rec:>14}")
-    print("=" * 72)
-    print("'сейчас/GPU' -- батч из конфига, деленный на 4 карты.")
-    print("'рекомендую' -- степень двойки около 75% от предела, с запасом на")
-    print("фрагментацию и на разброс длин в реальных батчах.")
-    print("\nЧтобы поднять батч, правьте training.batch_size в create_config.py")
-    print("(это батч СУММАРНО по картам: batch_size_per_gpu = batch_size // 4).")
+    print("=" * 84)
+    print(f"{'подход':<16}{'сейчас/GPU':>12}{'влезает':>10}{'быстрее всего':>16}"
+          f"{'рекомендую':>13}{'ускорение':>12}")
+    print("-" * 84)
+    for arch, r in summary.items():
+        cur = r["current_per_gpu"]
+        rows = {x["batch"]: x for x in r["rows"]}
+        speedup = ""
+        if cur in rows and r["recommended"] in rows:
+            speedup = f"{rows[r['recommended']]['examples_per_sec'] / rows[cur]['examples_per_sec']:.1f}x"
+        print(f"{arch:<16}{cur:>12}{r['max_fit']:>10}{r['fastest']:>16}"
+              f"{r['recommended']:>13}{speedup:>12}")
+    print("=" * 84)
+    print("'ускорение' -- во сколько раз вырастет пропускная способность")
+    print("относительно текущего батча из конфига.")
+    print("\nБатч в конфиге задается СУММАРНО по картам:")
+    print(f"  training.batch_size = <рекомендую> x {args.world_size}")
+
+    if summary:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump({"gpu": props.name,
+                       "total_memory_gb": gb(props.total_memory),
+                       "world_size": args.world_size,
+                       "results": summary}, f, ensure_ascii=False, indent=2)
+        print(f"\nСырые замеры: {args.json}")
 
 
 if __name__ == "__main__":
