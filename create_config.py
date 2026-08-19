@@ -8,40 +8,52 @@ from utils.schemes import (
 )
 
 
-# --- общий бюджет обучения для ВСЕХ подходов ------------------------------------
-# Одинаковые эффективный батч и число шагов -> одинаковое число увиденных
-# примеров. Иначе сравнение подходов в статье некорректно.
+# --- рецепты обучения из ВКР (rocstories) ---------------------------------------
+# Батч и learning rate настраивались в паре, поэтому переносятся вместе и по
+# отдельности не меняются. Уравнивать батч между диффузией и gpt намеренно НЕ
+# стали: батч -- такой же гиперпараметр модели, как lr, и одинаковым он быть не
+# обязан. Опустить диффузию с 512 до 128 ради симметрии значило бы сравнивать
+# настроенный gpt с ненастроенной диффузией (плюс потеря 15-28% пропускной
+# способности по замеру find_max_batch.py).
 #
-# Размер батча на карту подобран замером (find_max_batch.py на V100-32GB):
-#   предел на карту -- gpt 66, genie 629, diffuseq 426, unconditional 960.
-# Узкое место -- gpt, поэтому общий батч упирается в него: берем 32 на карту
-# (55% памяти, с запасом на разброс длин), это 128 за микрошаг на четырех
-# картах. Диффузии набирают те же 512 за один шаг (128 на карту), gpt -- за
-# четыре шага накопления. Поднимать батч выше смысла нет: замер показал, что
-# пропускная способность выходит на плато уже к 128 на карту (у diffuseq рост
-# со 128 до 426 дает +2%), карта загружена на 98% и упирается в вычисления,
-# а не в память.
-EFFECTIVE_BATCH = 512
-OPTIMIZER_STEPS = 150_000
-# 30 замеров за прогон: нужны кривые метрики, по которым видно плато и по
-# которым отбирается лучший чекпоинт (save_top_k)
-EVAL_EVERY_STEPS = 5_000
-# сколько примеров одна карта тянет за микрошаг, по замеру памяти
-PER_GPU_BATCH = {"gpt": 32, "default": 128}
+# Сопоставимость обеспечивается тем, что действительно важно: один датасет и
+# одна нарезка, одни метрики, один протокол отбора лучшего чекпоинта. Бюджеты
+# и фактический compute указываются в статье отдельной таблицей.
+#
+# per_gpu -- сколько примеров карта тянет за микрошаг; подобрано замером на
+# V100-32GB (предел: gpt 66, diffuseq 426, genie 629, unconditional 960).
+# Единственное отличие от ВКР: у gpt было 8 на карту с накоплением 4, теперь
+# 32 без накопления. Эффективный батч и число шагов те же, но прогон быстрее
+# на четверть -- в ВКР батч 8 был выбран с запасом, а замер показал, что 32
+# занимают лишь 55% памяти.
 WORLD_SIZE = 4
+TRAINING_RECIPE = {
+    "gpt": {
+        "effective_batch": 128,
+        "optimizer_steps": 50_000,
+        "eval_every": 2_500,
+        "per_gpu": 32,
+    },
+    "default": {                      # genie, diffuseq, guidance, unconditional
+        "effective_batch": 512,
+        "optimizer_steps": 150_000,
+        "eval_every": 12_500,
+        "per_gpu": 128,
+    },
+}
 
 
 def training_budget(training, architecture_type):
-    """Раскладывает общий бюджет на батч, накопление и число микрошагов."""
-    per_gpu = PER_GPU_BATCH.get(architecture_type, PER_GPU_BATCH["default"])
-    micro_batch = per_gpu * WORLD_SIZE
-    accum = max(1, EFFECTIVE_BATCH // micro_batch)
+    """Раскладывает рецепт на батч, накопление и число микрошагов."""
+    r = TRAINING_RECIPE.get(architecture_type, TRAINING_RECIPE["default"])
+    micro_batch = r["per_gpu"] * WORLD_SIZE
+    accum = max(1, r["effective_batch"] // micro_batch)
 
     training.accum_batch_steps = accum
     training.batch_size = micro_batch
-    training.training_iters = OPTIMIZER_STEPS * accum
-    training.checkpoint_freq = EVAL_EVERY_STEPS * accum
-    training.eval_freq = EVAL_EVERY_STEPS * accum
+    training.training_iters = r["optimizer_steps"] * accum
+    training.checkpoint_freq = r["eval_every"] * accum
+    training.eval_freq = r["eval_every"] * accum
     return training
 
 
