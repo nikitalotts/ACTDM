@@ -10,6 +10,8 @@ from datasets import Dataset, load_from_disk
 from itertools import cycle
 from transformers import AutoTokenizer
 
+from data.util import available_cpus
+
 
 class WikipediaDatasetDDP:
     def __init__(self, config, dataset_name, split):
@@ -55,11 +57,18 @@ class WikipediaDatasetDDP:
         dt = Dataset.from_file(path)
         dt = self.spilt_data_across_gpu(dt)
         
+        # num_proc был зашит как 50 при 12-20 выделенных ядрах: процессы дрались
+        # за ядра и одновременно писали временные arrow-файлы. Мониторинг
+        # кластера ругался на износ SSD (до 193 МБ/с записи) и на помеху другим
+        # пользователям, при загрузке CPU меньше 50%. Берем столько процессов,
+        # сколько выделено ядер, и держим результат в памяти: нарезанный шард
+        # одного ранга -- это сотни мегабайт текста, диск для него не нужен.
         self.dt = dt.map(
             self.batch_preprocessing,
             batched=True,
             load_from_cache_file=False,
-            num_proc=50,
+            keep_in_memory=True,
+            num_proc=max(1, min(available_cpus(), 16)),
             desc="Dataset preprocessing",
             batch_size=1000,
         )

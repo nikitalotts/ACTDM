@@ -27,7 +27,7 @@ from diffusion_utils.solvers import create_solver
 from utils.ema_model import ExponentialMovingAverage
 from utils.util import mse_loss, get_stat, reduce_tensor, set_seed
 from data.dataset import DatasetDDP, get_dataset_iter
-from data.util import tokenize, BatchEncoding
+from data.util import tokenize, BatchEncoding, available_cpus
 
 from model.score_estimator import ScoreEstimatorEMB
 from model.encoder import Encoder
@@ -37,6 +37,17 @@ from model.conditional_encoder import ConditionalEncoder
 
 from estimation_utils.util import gather_texts, compute_metric
 from estimation_utils.metrics import compute_metric
+
+
+
+def _loader_workers() -> int:
+    """Воркеров загрузчика -- по числу выделенных ядер, но не больше 8.
+
+    Раньше стояло 30 у train-лоадера и 20 у valid при 12-20 ядрах на
+    задание. Лишние воркеры не ускоряют чтение, а конкурируют за ядра
+    с препроцессингом и грузят диск.
+    """
+    return max(1, min(available_cpus() // 2, 8))
 
 
 class DiffusionRunner:
@@ -469,7 +480,7 @@ class DiffusionRunner:
 
         self.train_loader = DataLoader(
             self.train_dataset,
-            num_workers=30,
+            num_workers=_loader_workers(),
             batch_size=self.config.training.batch_size_per_gpu,
             shuffle=True,
             collate_fn=self.collate_fn,
@@ -478,7 +489,7 @@ class DiffusionRunner:
     def set_valid_data_generator(self) -> None:
         self.valid_loader = DataLoader(
             self.valid_dataset,
-            num_workers=20,
+            num_workers=_loader_workers(),
             batch_size=self.config.validation.batch_size,
             collate_fn=self.collate_fn,
             shuffle=False,
@@ -889,7 +900,7 @@ class DiffusionRunner:
         dt = next(get_dataset_iter(self.config, dataset_name, split=split))
         loader = DataLoader(
             dt,
-            num_workers=20,
+            num_workers=_loader_workers(),
             batch_size=self.config.validation.batch_size,
             collate_fn=self.collate_fn,
         )

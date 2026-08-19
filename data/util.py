@@ -1,6 +1,27 @@
+import os
 from typing import List, Union, Optional, Dict, Any
 import torch
 from collections import UserDict
+
+
+def available_cpus(default: int = 8) -> int:
+    """Сколько ядер реально выделено заданию.
+
+    Раньше число процессов было зашито константами (num_proc=50 в map,
+    num_workers=30 в загрузчике), а slurm дает 20 ядер заданию gpt и 12
+    диффузии. Полсотни процессов на дюжину ядер не ускоряют препроцессинг:
+    они дерутся за ядра и одновременно пишут временные файлы, из-за чего
+    мониторинг кластера ругался на износ SSD (121 МБ/с записи) при загрузке
+    CPU 18%. Берем ровно столько, сколько выделено.
+    """
+    n = os.environ.get("SLURM_CPUS_PER_TASK")
+    if n and n.isdigit():
+        return max(1, int(n))
+    try:
+        return max(1, len(os.sched_getaffinity(0)))       # Linux
+    except AttributeError:
+        return max(1, os.cpu_count() or default)          # Windows
+
 
 def tokenize(batch_texts: List[str], tokenizer, max_length):
     X = tokenizer(
