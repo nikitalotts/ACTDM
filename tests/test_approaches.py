@@ -1515,7 +1515,7 @@ def test_gpt_batch_fits_measured_memory_limit():
     """
     cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
     per_gpu = cfg.training.batch_size // 4
-    assert per_gpu == 64, f"{per_gpu} на карту -- перепроверьте find_max_batch.py"
+    assert per_gpu == 32, f"{per_gpu} на карту -- перепроверьте find_max_batch.py"
     assert per_gpu * 4 * cfg.training.accum_batch_steps == GPT_BUDGET["effective_batch"], \
         "эффективный батч уехал от общего"
     assert cfg.optim.linear_warmup == 2000, "прогрев как на rocstories в ВКР"
