@@ -291,8 +291,11 @@ def create_gpt_config(args):
     # scheduler.step_update получает номер ОПТИМИЗАТОРНОГО шага (см. gpt2_holder),
     # поэтому прогрев задается в них же. 2000 -- как на rocstories в дипломе
     optim.linear_warmup = 2000
-    optim.lr = 1e-4
-    optim.min_lr = 1e-4
+    # В ВКР было 1e-4 при эффективном батче 128. Батч поднят до 512 (чтобы
+    # совпадал с диффузионным), и lr масштабирован по правилу корня:
+    # 1e-4 * sqrt(512/128) = 2e-4.
+    optim.lr = 2e-4
+    optim.min_lr = 2e-4
     optim.warmup_lr = 1e-8
     optim.weight_decay = 0.01
     optim.beta_1 = 0.9

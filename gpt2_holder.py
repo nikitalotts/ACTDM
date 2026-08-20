@@ -21,7 +21,7 @@ from data.dataset import DatasetDDP, get_dataset_iter
 from data.util import BatchEncoding, available_cpus
 from estimation_utils.metrics import compute_metric
 from estimation_utils.util import gather_texts
-from utils.util import set_seed, reduce_tensor
+from utils.util import set_seed, reduce_tensor, gpu_stats
 
 
 
@@ -438,6 +438,10 @@ class GPT2Runner:
             for k, v in stat_dict.items():
                 if isinstance(v, torch.Tensor):
                     self.log_metric("statistics", k, v.item())
+            # загрузка карты и память: чтение счетчиков torch бесплатно,
+            # NVML опрашивается не чаще раза в минуту (см. gpu_stats)
+            for k, v in gpu_stats().items():
+                self.log_metric("gpu", k, v)
 
         return loss_dict, stat_dict
 

@@ -1,6 +1,7 @@
 import torch
 import random
 import argparse
+import time as _time
 import numpy as np
 from copy import deepcopy
 import torch.backends.cudnn as cudnn
@@ -251,3 +252,42 @@ def parse():
                         help="Шаг между базовыми сидами соседних прогонов")
 
     return parser.parse_args()
+
+
+# --- статистика GPU для логов обучения -------------------------------------------
+# Мониторинг кластера показывал 20% загрузки карт при 22% занятой памяти, но
+# понять это можно было только постфактум из отчета HPC TaskMaster. Логируем те
+# же величины прямо в обучении, чтобы видеть их на кривых wandb.
+_UTIL_STATE = {"last": 0.0, "value": None}
+
+
+def gpu_stats(util_every_sec: float = 60.0):
+    """Память и загрузка текущей карты. None, если GPU нет.
+
+    Память -- это чтение счетчиков torch, стоит наносекунды и не синхронизирует
+    поток. Загрузка идет через NVML и стоит дороже, поэтому опрашивается не
+    чаще раза в минуту, а между опросами возвращается последнее значение.
+    """
+    import torch as _torch
+
+    if not _torch.cuda.is_available():
+        return {}
+
+    dev = _torch.cuda.current_device()
+    total = _torch.cuda.get_device_properties(dev).total_memory
+    stats = {
+        "gpu_mem_reserved_gb": _torch.cuda.memory_reserved(dev) / 2 ** 30,
+        "gpu_mem_peak_gb": _torch.cuda.max_memory_allocated(dev) / 2 ** 30,
+        "gpu_mem_percent": 100.0 * _torch.cuda.memory_reserved(dev) / total,
+    }
+
+    now = _time.time()
+    if now - _UTIL_STATE["last"] >= util_every_sec:
+        _UTIL_STATE["last"] = now
+        try:
+            _UTIL_STATE["value"] = _torch.cuda.utilization(dev)
+        except Exception:
+            _UTIL_STATE["value"] = None
+    if _UTIL_STATE["value"] is not None:
+        stats["gpu_util_percent"] = float(_UTIL_STATE["value"])
+    return stats

@@ -25,7 +25,7 @@ from diffusion_utils.dynamic import DynamicSDE
 from diffusion_utils.solvers import create_solver
 
 from utils.ema_model import ExponentialMovingAverage
-from utils.util import mse_loss, get_stat, reduce_tensor, set_seed
+from utils.util import mse_loss, get_stat, reduce_tensor, set_seed, gpu_stats
 from data.dataset import DatasetDDP, get_dataset_iter
 from data.util import tokenize, BatchEncoding, available_cpus
 
@@ -652,6 +652,9 @@ class DiffusionRunner:
 
             for k, v in stat_dict.items():
                 self.log_metric("statistics", k, v.item())
+
+            for k, v in gpu_stats().items():
+                self.log_metric("gpu", k, v)
 
         return loss_dict, stat_dict
 
