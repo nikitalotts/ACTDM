@@ -1468,7 +1468,7 @@ def test_env_overrides_absent_by_default(monkeypatch):
 # шагов, диффузию тоже останавливали раньше. Значения зафиксированы, чтобы не
 # разъезжались молча: любое изменение обязано попасть и в текст статьи.
 DIFFUSION_BUDGET = {"effective_batch": 512, "optimizer_steps": 150_000}
-GPT_BUDGET = {"effective_batch": 128, "optimizer_steps": 50_000}
+GPT_BUDGET = {"effective_batch": 512, "optimizer_steps": 50_000}
 
 
 def _budget(at):
@@ -1493,10 +1493,10 @@ def test_all_diffusion_approaches_share_training_budget(at):
     ("gpt", GPT_BUDGET),
 ])
 def test_training_budgets_match_thesis_recipe(at, expected):
-    """Рецепты обучения перенесены из ВКР без изменений. Батч и lr там
-    настраивались в паре, поэтому уравнивать батч между диффузией и gpt
-    намеренно не стали -- сопоставимость держится на одинаковых данных,
-    метриках и протоколе отбора чекпоинта, а не на одинаковом батче."""
+    """Эффективный батч одинаков у всех подходов (512), число шагов -- из ВКР
+    (150k у диффузий, 50k у gpt: он выходит на плато сильно раньше). Обе
+    величины зафиксированы, чтобы не разъезжались молча."""
+    assert expected["effective_batch"] == 512, "батч должен быть общим для всех"
     b = _budget(at)
     assert b["effective_batch"] == expected["effective_batch"], (
         f"{at}: эффективный батч {b['effective_batch']}")
@@ -1515,7 +1515,7 @@ def test_gpt_batch_fits_measured_memory_limit():
     """
     cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
     per_gpu = cfg.training.batch_size // 4
-    assert per_gpu == 32, f"{per_gpu} на карту -- перепроверьте find_max_batch.py"
+    assert per_gpu == 64, f"{per_gpu} на карту -- перепроверьте find_max_batch.py"
     assert per_gpu * 4 * cfg.training.accum_batch_steps == GPT_BUDGET["effective_batch"], \
         "эффективный батч уехал от общего"
     assert cfg.optim.linear_warmup == 2000, "прогрев как на rocstories в ВКР"
