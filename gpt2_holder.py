@@ -25,11 +25,11 @@ from utils.util import set_seed, reduce_tensor, gpu_stats
 
 
 
-# Сколько позиций считать за раз в чанкованном лоссе. 1024 позиции x 50257 слов
-# -- это 206 МБ логитов в fp32 плюс столько же на log_softmax, порядка 0.4 ГБ
-# пика независимо от батча. Больше брать нельзя: при батче 32 в лосс идет всего
-# ~2000 позиций, и чанк в 8192 означал бы, что чанкования нет вовсе.
-LM_LOSS_CHUNK_TOKENS = 1024
+# Сколько позиций считать за раз в чанкованном лоссе. 512 позиций x 50257 слов
+# -- это 103 МБ логитов в fp32 плюс столько же на log_softmax, порядка 0.2 ГБ
+# пика независимо от батча. Больше брать нельзя: чанк, превышающий число позиций
+# в лоссе, означает, что чанкования нет вовсе.
+LM_LOSS_CHUNK_TOKENS = 512
 
 
 def _chunk_loss(hidden, labels, lm_head):
@@ -140,6 +140,21 @@ class GPT2Runner:
         print(f"[GPT2] Model initialized from SCRATCH (random weights)")
         print(f"[GPT2] Params: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}")
 
+        # Пересчет активаций в блоках трансформера вместо их хранения. Именно
+        # активации 24 блоков -- основной расход памяти (около 20 ГБ из 24.7 при
+        # батче 64), а не выходной слой. Без этого 128 примеров на карту не
+        # влезают: нужно 0.18 ГБ на пример, а без пересчета выходит 0.31.
+        # Платим примерно 30% скорости, получаем возможность набирать батч 512
+        # за один шаг, без накопления.
+        if getattr(self.config.training, "gradient_checkpointing", True):
+            try:
+                self.model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False})
+            except TypeError:      # transformers постарше не знает kwargs
+                self.model.gradient_checkpointing_enable()
+            self.model.config.use_cache = False   # с пересчетом кэш не нужен
+            print("[GPT2] gradient checkpointing включен")
+
         # DDP оборачивает не саму GPT2LMHeadModel, а обертку с чанкованным
         # лоссом -- иначе логиты материализуются на всю последовательность
         self.loss_model = GPT2WithChunkedLoss(self.model).to(self.device)
@@ -149,6 +164,9 @@ class GPT2Runner:
                 self.loss_model,
                 device_ids=[config.local_rank],
                 broadcast_buffers=False,
+                # градиенты живут прямо в буферах обмена, без второй копии:
+                # для 355M параметров это экономит около 1.3 ГБ
+                gradient_as_bucket_view=True,
             )
 
         self.train_datasets_iter = DatasetDDP(

@@ -77,6 +77,13 @@ class GPTProbe(Probe):
         tok = GPT2Tokenizer.from_pretrained("gpt2-medium")
         cfg = GPT2Config.from_pretrained("gpt2-medium")
         self.model = GPT2LMHeadModel(cfg).to(self.device)
+        # тот же режим, что в обучении: пересчет активаций блоков
+        try:
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False})
+        except TypeError:
+            self.model.gradient_checkpointing_enable()
+        self.model.config.use_cache = False
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.config.optim.lr,

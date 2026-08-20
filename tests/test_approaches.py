@@ -1515,7 +1515,7 @@ def test_gpt_batch_fits_measured_memory_limit():
     """
     cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
     per_gpu = cfg.training.batch_size // 4
-    assert per_gpu == 32, f"{per_gpu} на карту -- перепроверьте find_max_batch.py"
+    assert per_gpu == 128, f"{per_gpu} на карту -- перепроверьте find_max_batch.py"
     assert per_gpu * 4 * cfg.training.accum_batch_steps == GPT_BUDGET["effective_batch"], \
         "эффективный батч уехал от общего"
     assert cfg.optim.linear_warmup == 2000, "прогрев как на rocstories в ВКР"
@@ -1669,6 +1669,36 @@ def test_ddp_wraps_the_module_that_computes_loss():
     fwd = inspect.getsource(GPT2WithChunkedLoss.forward)
     assert "self.model.transformer" in fwd, "обертка должна идти в transformer"
     assert "chunked_lm_loss" in fwd
+
+
+def test_gpt_uses_activation_checkpointing():
+    """128 примеров на карту влезают только с пересчетом активаций блоков:
+    без него расход 0.31 ГБ на пример, нужно не больше 0.18. Пересчет обязан
+    быть включен и идти с use_reentrant=False -- иначе он конфликтует с DDP.
+
+    На численный результат это не влияет: лосс и градиенты совпадают побитово
+    (проверено), меняется только то, что активации не хранятся, а считаются
+    заново на backward.
+    """
+    import inspect
+    from gpt2_holder import GPT2Runner
+
+    src = inspect.getsource(GPT2Runner.__init__)
+    assert "gradient_checkpointing_enable" in src, (
+        "без пересчета активаций 128 на карту не влезет")
+    assert "use_reentrant" in src, "с reentrant-вариантом ломается DDP"
+    assert "use_cache = False" in src, "кэш при пересчете не нужен и мешает"
+    assert "gradient_as_bucket_view=True" in src, (
+        "градиенты должны жить в буферах DDP, без второй копии")
+
+
+def test_gpt_takes_full_batch_in_one_step():
+    """Батч 512 набирается за один шаг, как у диффузий: накопления нет."""
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    diff = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    assert cfg.training.accum_batch_steps == 1, "накопление должно быть отключено"
+    assert cfg.training.batch_size == diff.training.batch_size == 512
+    assert cfg.training.batch_size // 4 == 128, "128 примеров на карту"
 
 
 if __name__ == "__main__":
