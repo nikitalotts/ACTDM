@@ -50,6 +50,19 @@ def _loader_workers() -> int:
     return max(1, min(available_cpus() // 2, 8))
 
 
+
+def _should_resume(config) -> bool:
+    """Короткий проверочный прогон обязан начинаться с нуля.
+
+    Иначе получается тихая ловушка: smoke сохраняет чекпоинт на шаге 200, а при
+    следующем запуске training_iters тоже 200, load_checkpoint поднимает step=200,
+    и цикл обучения выходит, не сделав ни шага. В логе при этом все выглядит
+    успешно -- отрабатывает eval на СТАРЫХ весах и печатаются метрики прошлого
+    прогона. Именно так и произошло с заданием 4267591.
+    """
+    return os.environ.get("SMOKE", "0") != "1"
+
+
 class DiffusionRunner:
     def __init__(
             self,
@@ -159,7 +172,7 @@ class DiffusionRunner:
             self.set_grad_scaler()
             self.step = 0
             
-            if self.load_checkpoint():
+            if _should_resume(self.config) and self.load_checkpoint():
                 if self.config.is_pipeline_conditional:
                     self.estimate("validation")
                 self.estimate("test")
@@ -533,6 +546,16 @@ class DiffusionRunner:
     
     def train(self) -> None:
         self.set_valid_data_generator()
+
+        # Прогон, поднятый из чекпоинта, у которого шаг уже равен бюджету,
+        # не сделает ни одного шага обучения, но отработает eval на старых
+        # весах и напишет метрики в лог -- выглядит как успешный прогон.
+        # Кричим об этом явно.
+        if self.step >= self.config.training.training_iters:
+            print(f"[WARNING] шаг {self.step} >= бюджета "
+                  f"{self.config.training.training_iters}: обучения НЕ БУДЕТ, "
+                  f"чекпоинт уже доучен. Удалите каталог чекпоинтов или "
+                  f"увеличьте training_iters.")
 
         self.train_range = trange(self.step + 1, self.config.training.training_iters + 1)
         self.train_range_iter = iter(self.train_range)

@@ -1701,5 +1701,51 @@ def test_gpt_takes_full_batch_in_one_step():
     assert cfg.training.batch_size // 4 == 128, "128 примеров на карту"
 
 
+def test_smoke_never_resumes_stale_checkpoint():
+    """Ловушка, на которой уже погорели (задание 4267591): smoke сохраняет
+    чекпоинт на шаге 200, при следующем запуске бюджет тоже 200, чекпоинт
+    поднимается, и цикл выходит НЕ СДЕЛАВ НИ ОДНОГО ШАГА. При этом eval
+    отрабатывает на старых весах и печатает метрики прошлого прогона -- в логе
+    все выглядит успешно. Поэтому в smoke-режиме чекпоинты не подхватываются.
+    """
+    import inspect
+    from gpt2_holder import GPT2Runner, _should_resume as gpt_resume
+    from diffusion_holder import DiffusionRunner, _should_resume as diff_resume
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner.__init__)
+        assert "_should_resume" in src, (
+            f"{runner.__name__} подхватывает чекпоинт без проверки режима")
+
+    real = os.environ.get("SMOKE")
+    try:
+        os.environ["SMOKE"] = "1"
+        assert not gpt_resume(None) and not diff_resume(None), (
+            "в smoke-режиме чекпоинт подхватываться не должен")
+        os.environ["SMOKE"] = "0"
+        assert gpt_resume(None) and diff_resume(None), (
+            "боевой прогон обязан продолжаться с чекпоинта")
+        del os.environ["SMOKE"]
+        assert gpt_resume(None) and diff_resume(None)
+    finally:
+        os.environ.pop("SMOKE", None)
+        if real is not None:
+            os.environ["SMOKE"] = real
+
+
+def test_finished_run_warns_instead_of_silently_skipping_training():
+    """Если шаг из чекпоинта уже равен бюджету, обучения не будет. Молча это
+    делать нельзя -- лог тогда неотличим от успешного прогона."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner.train)
+        assert "обучения НЕ БУДЕТ" in src, (
+            f"{runner.__name__}.train молча пропускает обучение")
+        assert src.index("self.step >= self.config.training.training_iters") <             src.index("self.train_range = trange"), "проверка должна быть до цикла"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
