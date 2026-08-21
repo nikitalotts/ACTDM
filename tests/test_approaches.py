@@ -1759,5 +1759,67 @@ def test_all_approaches_see_identical_amount_of_data(at):
         f"{at}: {b['examples_seen'] / 1e6:.1f} млн примеров вместо 76.8")
 
 
+def test_full_production_path_matches_reference_implementation():
+    """Сквозная проверка: боевой путь целиком (чанкованный лосс + пересчет
+    активаций блоков) против штатного GPT2LMHeadModel с labels.
+
+    Проверяются обе техники СРАЗУ и на модели поглубже, чем в отдельных тестах:
+    ошибка могла бы прятаться именно во взаимодействии двух checkpoint-ов --
+    внешнего на блоках и внутреннего на чанках лосса.
+    """
+    import torch as _torch
+    from gpt2_holder import GPT2Runner, GPT2WithChunkedLoss
+    from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config
+
+    real_cuda = _torch.cuda.is_available
+    _torch.cuda.is_available = lambda: False
+    try:
+        cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+        cfg.local_rank = 0
+        r = GPT2Runner.__new__(GPT2Runner)
+        r.config = cfg
+        r.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        r.tokenizer.pad_token = r.tokenizer.eos_token
+        r.tokenizer.padding_side = "left"
+        batch = r.collate_fn([
+            {"text_src": "the quick brown fox jumps over the lazy dog near a river",
+             "text_trg": "and then it fell asleep under a tall tree beside water"}
+            for _ in range(6)])
+
+        def run(production):
+            torch.manual_seed(0)
+            m = GPT2LMHeadModel(GPT2Config(
+                n_layer=4, n_head=4, n_embd=128,
+                vocab_size=r.tokenizer.vocab_size)).eval()
+            if production:
+                m.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False})
+                m.config.use_cache = False
+            m.zero_grad()
+            if production:
+                loss = GPT2WithChunkedLoss(m)(
+                    batch["input_ids"], batch["attention_mask"],
+                    batch["position_ids"], batch["labels"])
+            else:
+                loss = m(input_ids=batch["input_ids"],
+                         attention_mask=batch["attention_mask"],
+                         position_ids=batch["position_ids"],
+                         labels=batch["labels"]).loss
+            loss.backward()
+            return loss.item(), [p.grad.clone() for p in m.parameters()
+                                 if p.grad is not None]
+
+        ref_loss, ref_grads = run(production=False)
+        got_loss, got_grads = run(production=True)
+
+        assert abs(ref_loss - got_loss) < 1e-5, (
+            f"лосс разошелся: {ref_loss:.10f} против {got_loss:.10f}")
+        rel = max((a - c).abs().max().item() / (a.abs().max().item() + 1e-12)
+                  for a, c in zip(ref_grads, got_grads))
+        assert rel < 1e-4, f"градиенты разошлись: {rel:.2e}"
+    finally:
+        _torch.cuda.is_available = real_cuda
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
