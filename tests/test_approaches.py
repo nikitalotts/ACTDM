@@ -1468,7 +1468,7 @@ def test_env_overrides_absent_by_default(monkeypatch):
 # шагов, диффузию тоже останавливали раньше. Значения зафиксированы, чтобы не
 # разъезжались молча: любое изменение обязано попасть и в текст статьи.
 DIFFUSION_BUDGET = {"effective_batch": 512, "optimizer_steps": 150_000}
-GPT_BUDGET = {"effective_batch": 512, "optimizer_steps": 50_000}
+GPT_BUDGET = {"effective_batch": 512, "optimizer_steps": 150_000}
 
 
 def _budget(at):
@@ -1745,6 +1745,18 @@ def test_finished_run_warns_instead_of_silently_skipping_training():
         assert "обучения НЕ БУДЕТ" in src, (
             f"{runner.__name__}.train молча пропускает обучение")
         assert src.index("self.step >= self.config.training.training_iters") <             src.index("self.train_range = trange"), "проверка должна быть до цикла"
+
+
+@pytest.mark.parametrize("at", ["genie", "diffuseq", "guidance", "unconditional", "gpt"])
+def test_all_approaches_see_identical_amount_of_data(at):
+    """Теперь совпадает не только батч, но и число шагов, а значит и объем
+    увиденных данных -- 76.8 млн примеров у каждого подхода. Это то, на чем
+    держится сравнение в статье."""
+    b = _budget(at)
+    assert b["effective_batch"] == 512
+    assert b["optimizer_steps"] == 150_000
+    assert b["examples_seen"] == 512 * 150_000, (
+        f"{at}: {b['examples_seen'] / 1e6:.1f} млн примеров вместо 76.8")
 
 
 if __name__ == "__main__":
