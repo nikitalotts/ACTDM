@@ -1821,5 +1821,114 @@ def test_full_production_path_matches_reference_implementation():
         _torch.cuda.is_available = real_cuda
 
 
+def _tiny_gpt_batches(runner_cls, n_batches=4):
+    """Мелкая модель и несколько батчей для проверок пересчета активаций."""
+    from transformers import GPT2Tokenizer
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    cfg.local_rank = 0
+    r = runner_cls.__new__(runner_cls)
+    r.config = cfg
+    r.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    r.tokenizer.pad_token = r.tokenizer.eos_token
+    r.tokenizer.padding_side = "left"
+    texts = [{"text_src": f"the quick brown fox number {i} jumps over the lazy dog",
+              "text_trg": f"and then it fell asleep under a tall tree beside water {i}"}
+             for i in range(n_batches * 2)]
+    return r, [r.collate_fn(texts[i * 2:(i + 1) * 2]) for i in range(n_batches)]
+
+
+def _build_tiny_gpt(vocab, checkpointing):
+    from transformers import GPT2LMHeadModel, GPT2Config
+    torch.manual_seed(0)
+    m = GPT2LMHeadModel(GPT2Config(n_layer=6, n_head=4, n_embd=128, vocab_size=vocab))
+    if checkpointing:
+        m.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False})
+        m.config.use_cache = False
+    return m
+
+
+def test_activation_checkpointing_preserves_dropout_masks():
+    """Пересчет активаций происходит на backward, уже ПОСЛЕ прямого прохода.
+    Если бы при этом не восстанавливалось состояние генератора случайных чисел,
+    маски дропаута на пересчете отличались бы от прямого прохода, и градиент
+    считался бы для другой сети -- обучение молча поехало бы.
+
+    Проверяем в train-режиме, где дропаут активен (остальные тесты гоняют eval).
+    """
+    import torch as _torch
+    from gpt2_holder import GPT2Runner, GPT2WithChunkedLoss
+
+    real_cuda = _torch.cuda.is_available
+    _torch.cuda.is_available = lambda: False
+    try:
+        r, batches = _tiny_gpt_batches(GPT2Runner, n_batches=1)
+        b = batches[0]
+
+        def run(checkpointing):
+            m = _build_tiny_gpt(r.tokenizer.vocab_size, checkpointing)
+            m.train()
+            m.zero_grad()
+            torch.manual_seed(42)          # одинаковый старт RNG у обоих
+            loss = GPT2WithChunkedLoss(m)(b["input_ids"], b["attention_mask"],
+                                          b["position_ids"], b["labels"])
+            loss.backward()
+            return loss.item(), [p.grad.clone() for p in m.parameters()
+                                 if p.grad is not None]
+
+        l_off, g_off = run(False)
+        l_on, g_on = run(True)
+        assert abs(l_off - l_on) < 1e-6, f"{l_off} против {l_on}"
+        rel = max((a - b_).abs().max().item() / (a.abs().max().item() + 1e-12)
+                  for a, b_ in zip(g_off, g_on))
+        assert rel < 1e-5, f"градиенты при активном дропауте разошлись: {rel:.2e}"
+    finally:
+        _torch.cuda.is_available = real_cuda
+
+
+def test_checkpointing_gives_identical_training_trajectory():
+    """Самая строгая проверка: прогоняем 12 настоящих шагов оптимизатора с
+    пересчетом активаций и без, и сравниваем ВЕСА после обучения.
+
+    Одношаговые проверки могут пропустить накапливающуюся ошибку -- здесь она
+    была бы видна, потому что каждый шаг стартует с результата предыдущего.
+    """
+    import torch as _torch
+    from gpt2_holder import GPT2Runner, GPT2WithChunkedLoss
+
+    real_cuda = _torch.cuda.is_available
+    _torch.cuda.is_available = lambda: False
+    try:
+        r, batches = _tiny_gpt_batches(GPT2Runner, n_batches=4)
+
+        def train(checkpointing, steps=12):
+            m = _build_tiny_gpt(r.tokenizer.vocab_size, checkpointing)
+            m.train()
+            opt = torch.optim.AdamW(m.parameters(), lr=1e-3)
+            losses = []
+            for step in range(steps):
+                torch.manual_seed(1000 + step)   # одинаковый дропаут на обоих
+                b = batches[step % len(batches)]
+                loss = GPT2WithChunkedLoss(m)(b["input_ids"], b["attention_mask"],
+                                              b["position_ids"], b["labels"])
+                loss.backward()
+                opt.step()
+                opt.zero_grad(set_to_none=True)
+                losses.append(loss.item())
+            return losses, [p.detach().clone() for p in m.parameters()]
+
+        loss_off, w_off = train(False)
+        loss_on, w_on = train(True)
+
+        assert loss_off[0] > loss_off[-1], "лосс обязан падать -- иначе тест ничего не проверяет"
+        for i, (a, b_) in enumerate(zip(loss_off, loss_on)):
+            assert abs(a - b_) < 1e-5, f"шаг {i}: лосс {a:.6f} против {b_:.6f}"
+        rel = max((a - b_).abs().max().item() / (a.abs().max().item() + 1e-12)
+                  for a, b_ in zip(w_off, w_on))
+        assert rel < 1e-5, f"веса после 12 шагов разошлись: {rel:.2e}"
+    finally:
+        _torch.cuda.is_available = real_cuda
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
