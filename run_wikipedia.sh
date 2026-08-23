@@ -11,6 +11,9 @@
 #   ./run_wikipedia.sh stats        статистики энкодера            (после data)
 #   ./run_wikipedia.sh decoders     условный + безусловный декодер (после stats)
 #   ./run_wikipedia.sh diffusion    диффузии genie/diffuseq/uncond (после decoders)
+#   ./run_wikipedia.sh diffuseq     то же, но по одной модели за раз:
+#   ./run_wikipedia.sh genie        genie | diffuseq | unconditional
+#   ./run_wikipedia.sh unconditional
 #   ./run_wikipedia.sh gpt          GPT2-бейзлайн                  (после data)
 #   ./run_wikipedia.sh classifiers  3 классификатора для guidance  (после diffusion:
 #                                   augmented и combined реконструируют x_0
@@ -78,10 +81,16 @@ case "$1" in
         echo "==> когда появятся оба datasets/wikipedia/decoder-*.pth: ./run_wikipedia.sh diffusion"
         ;;
     diffusion)
-        ARCH_TYPE=genie         sbatch --job-name=train_diffusion-genie         train_diffusion.sh
-        ARCH_TYPE=diffuseq      sbatch --job-name=train_diffusion-diffuseq      train_diffusion.sh
-        ARCH_TYPE=unconditional sbatch --job-name=train_diffusion-unconditional train_diffusion.sh
+        # все три сразу; для запуска по одной есть отдельные стадии ниже
+        for AT in genie diffuseq unconditional; do
+            ARCH_TYPE=${AT} sbatch --job-name=train_diffusion-${AT} train_diffusion.sh
+        done
         echo "==> когда обучится unconditional: ./run_wikipedia.sh classifiers"
+        ;;
+    genie|diffuseq|unconditional)
+        # одна диффузия отдельным заданием -- когда нужно занять карты не всеми
+        # тремя сразу или перезапустить только одну после обрыва
+        ARCH_TYPE="$1" sbatch --job-name=train_diffusion-"$1" train_diffusion.sh
         ;;
     gpt)
         ARCH_TYPE=gpt sbatch train_gpt2.sh
@@ -106,7 +115,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,24p' "$0"
+        sed -n '2,27p' "$0"
         exit 1
         ;;
 esac

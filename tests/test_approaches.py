@@ -1930,5 +1930,36 @@ def test_checkpointing_gives_identical_training_trajectory():
         _torch.cuda.is_available = real_cuda
 
 
+def test_pipeline_has_per_model_diffusion_stages():
+    """Каждую диффузию можно запустить отдельным заданием, а не только все три
+    разом: так удобнее занимать очередь по одной и перезапускать одну модель
+    после обрыва, не трогая остальные."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "run_wikipedia.sh"), encoding="utf-8") as f:
+        script = f.read()
+
+    assert re.search(r"^\s*genie\|diffuseq\|unconditional\)", script, re.M), (
+        "нет стадий для запуска диффузий по одной")
+    # стадия обязана прокидывать architecture_type, иначе обучится не то
+    stage = script[script.index("genie|diffuseq|unconditional)"):]
+    stage = stage[:stage.index(";;")]
+    assert 'ARCH_TYPE="$1"' in stage, "стадия не передает architecture_type"
+    assert "train_diffusion.sh" in stage
+
+    # справка по стадиям не должна обрезаться посреди списка
+    m = re.search(r"sed -n '2,(\d+)p'", script)
+    assert m, "справка по стадиям не печатается"
+    # шапка -- это сплошной блок комментариев от второй строки до первой
+    # строки, которая комментарием не является
+    lines = script.splitlines()
+    header_end = 1
+    for i, line in enumerate(lines[1:], start=2):
+        if not line.startswith("#"):
+            break
+        header_end = i
+    assert int(m.group(1)) >= header_end, (
+        f"справка обрезается на строке {m.group(1)}, а шапка идет до {header_end}")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
