@@ -6,7 +6,9 @@
 #SBATCH --gpus-per-task=4
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --time=16:00:00
+# полный прогон ~224 ч, так что дозапуски все равно нужны; чем больше
+# лимит, тем их меньше (4 вместо 14)
+#SBATCH --time=72:00:00
 
 source ~/.bashrc
 eval "$(conda shell.bash hook)"

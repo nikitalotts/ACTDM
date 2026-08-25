@@ -6,7 +6,9 @@
 #SBATCH --gpus-per-task=4
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --time=57:00:00
+# diffuseq по замеру нужно ~68 ч + 2 ч на eval; genie и unconditional
+# укладываются с большим запасом (52 и 37 ч)
+#SBATCH --time=72:00:00
 
 
 source ~/.bashrc
