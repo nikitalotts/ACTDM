@@ -8,7 +8,7 @@
 #SBATCH --nodes=1
 # полный прогон ~224 ч, так что дозапуски все равно нужны; чем больше
 # лимит, тем их меньше (4 вместо 14)
-#SBATCH --time=72:00:00
+#SBATCH --time=75:00:00
 
 source ~/.bashrc
 eval "$(conda shell.bash hook)"

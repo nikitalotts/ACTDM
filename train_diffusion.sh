@@ -8,7 +8,7 @@
 #SBATCH --nodes=1
 # diffuseq по замеру нужно ~68 ч + 2 ч на eval; genie и unconditional
 # укладываются с большим запасом (52 и 37 ч)
-#SBATCH --time=72:00:00
+#SBATCH --time=75:00:00
 
 
 source ~/.bashrc
