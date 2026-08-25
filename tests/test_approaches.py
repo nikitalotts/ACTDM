@@ -1963,3 +1963,170 @@ def test_pipeline_has_per_model_diffusion_stages():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
+
+
+# --- дозапуск после лимита времени ----------------------------------------------
+
+def test_resume_takes_last_step_not_best_metric(tmp_path):
+    """Прогон, снятый по лимиту времени, обязан продолжиться с ПОСЛЕДНЕГО шага.
+
+    Нумерованные чекпоинты отбираются по top-k лучших по метрике, поэтому шаг,
+    не попавший в top-k, на диск не ложится вовсе. Если дозапуск брал бы
+    max(<шаг>), gpt (224 ч обучения при лимите 75 ч) откатывался бы к лучшему по
+    mauve шагу -- а он не обязан быть последним, и прогон мог бы никогда не
+    дойти до конца бюджета.
+    """
+    from utils.util import resume_checkpoint_path
+
+    folder = tmp_path / "ckpt"
+    folder.mkdir()
+    assert resume_checkpoint_path(str(folder)) is None, "пустой каталог -- продолжать нечего"
+
+    # так выглядит каталог прогона, у которого лучшие по метрике шаги -- ранние
+    for step in (2500, 5000):
+        (folder / f"{step}.pth").write_bytes(b"x")
+    assert resume_checkpoint_path(str(folder)).endswith("5000.pth"), (
+        "без last.pth должен работать прежний путь -- максимальный нумерованный")
+
+    (folder / "last.pth").write_bytes(b"x")
+    assert resume_checkpoint_path(str(folder)).endswith("last.pth"), (
+        "при наличии last.pth дозапуск идет с него, а не с лучшего по метрике")
+
+    assert resume_checkpoint_path(str(folder), "2500").endswith("2500.pth"), (
+        "явно заданный checkpoint_name должен перекрывать автоматический выбор")
+    assert resume_checkpoint_path(str(tmp_path / "нет-такого")) is None
+
+
+def test_last_checkpoint_is_written_regardless_of_metric():
+    """last.pth пишется на каждом checkpoint_freq, а не только в конце прогона.
+
+    Иначе после снятия по лимиту времени его в каталоге просто нет, и дозапуск
+    вынужден брать нумерованный -- то есть лучший по метрике, а не последний.
+    """
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner.save_checkpoint)
+        head = src[:src.index("if last:")]
+        assert '"last.pth"' in head, (
+            f"{runner.__name__}.save_checkpoint пишет last.pth только для last=True")
+        assert "tracked_test_metric" not in head, (
+            f"{runner.__name__}: запись last.pth не должна зависеть от метрики")
+
+
+def test_checkpoint_write_is_atomic():
+    """Задание снимают по лимиту в произвольный момент, в том числе посреди
+    torch.save. Недописанный last.pth сделал бы дозапуск невозможным, поэтому
+    пишем во временный файл и переименовываем."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(getattr(runner, f"_{runner.__name__}__save_checkpoint"))
+        code = " ".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+        assert "os.replace" in code and ".tmp" in code, (
+            f"{runner.__name__} пишет чекпоинт не атомарно")
+        assert code.index("torch.save") < code.index("os.replace"), (
+            f"{runner.__name__}: переименование должно идти ПОСЛЕ записи")
+        assert "torch.save(checkpoint, save_path)" not in code, (
+            f"{runner.__name__} все еще пишет прямо в целевой файл")
+
+
+def test_resume_restores_top_k_bookkeeping():
+    """После дозапуска учет top-k должен подниматься из чекпоинта.
+
+    Иначе all_checkpoints пуст: первые save_top_k новых чекпоинтов пишутся
+    безусловно, а файлы прошлого прогона остаются вне учета и не удаляются
+    никогда -- каталог растет на каждый дозапуск.
+    """
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    src = inspect.getsource(GPT2Runner.load_checkpoint)
+    assert "tracked_metrics" in src and "all_checkpoints" in src
+
+    src = inspect.getsource(DiffusionRunner.load_checkpoint)
+    assert "_restore_tracked_metrics" in src
+    src = inspect.getsource(DiffusionRunner._restore_tracked_metrics)
+    assert "tracked_metrics" in src and "heapify" in src
+
+
+def test_eval_still_picks_numbered_checkpoint_not_last():
+    """last.pth -- служебный файл для дозапуска, это ПОСЛЕДНИЙ шаг, а не лучший.
+    Метрики в статью считаются по лучшему чекпоинту, поэтому restore_parameters
+    обязан по-прежнему отбирать нумерованные файлы."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner.restore_parameters)
+        assert "isdigit" in src, (
+            f"{runner.__name__}.restore_parameters должен брать нумерованные чекпоинты")
+        assert "resume_checkpoint_path" not in src, (
+            f"{runner.__name__}.restore_parameters не должен брать last.pth")
+
+
+def test_resume_checkpoint_is_written_before_eval():
+    """Порядок в цикле обучения: сначала last.pth, потом eval.
+
+    Генерация на eval идет батчем validation.batch_size в fp32 и у diffuseq на
+    вдвое более длинной последовательности -- это пик памяти всего прогона.
+    Падение там до сохранения стоило бы всех шагов с прошлого чекпоинта
+    (12500 у диффузии, 2500 у gpt -- часы GPU).
+    """
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner.train_epoch)
+        assert "self.save_checkpoint(last=True)" in src, (
+            f"{runner.__name__}.train_epoch не пишет last.pth до eval")
+        assert src.index("self.save_checkpoint(last=True)") < src.index("self.estimate("), (
+            f"{runner.__name__}: last.pth должен писаться ДО eval")
+        # нумерованный по-прежнему после eval -- ему нужна метрика оттуда
+        assert src.index("self.estimate(") < src.rindex("self.save_checkpoint()"), (
+            f"{runner.__name__}: нумерованный чекпоинт должен писаться после eval")
+
+
+def test_missing_file_in_restored_top_k_does_not_crash_training(tmp_path):
+    """Учет top-k теперь поднимается из чекпоинта, поэтому в куче могут быть
+    пути прошлого прогона. Если такой файл удалили руками, шаг сохранения не
+    должен ронять обучение по FileNotFoundError."""
+    from diffusion_holder import DiffusionRunner
+
+    r = DiffusionRunner.__new__(DiffusionRunner)
+    r.config = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    r.config.training.checkpoints_folder = str(tmp_path)
+    r.config.training.checkpoints_prefix = "prefix"
+    r.config.save_top_k = 1
+    r.config.higher_better = True
+    r.step = 25000
+    r.tracked_test_metric = {25000: 0.9}
+    # в куче -- путь, которого на диске уже нет
+    r.all_checkpoints = [(0.1, str(tmp_path / "prefix" / "12500.pth"))]
+
+    saved = []
+    r._DiffusionRunner__save_checkpoint = lambda path: saved.append(path)
+
+    class _Rank0:
+        @staticmethod
+        def get_rank():
+            return 0
+
+    import diffusion_holder
+    real_dist = diffusion_holder.dist
+    diffusion_holder.dist = _Rank0
+    try:
+        r.save_checkpoint()          # не должно бросить FileNotFoundError
+    finally:
+        diffusion_holder.dist = real_dist
+
+    assert any(p.endswith("last.pth") for p in saved), "last.pth должен писаться всегда"
+    assert any(p.endswith("25000.pth") for p in saved), (
+        "лучший по метрике шаг должен вытеснить отсутствующий файл, а не упасть")

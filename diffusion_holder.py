@@ -25,7 +25,7 @@ from diffusion_utils.dynamic import DynamicSDE
 from diffusion_utils.solvers import create_solver
 
 from utils.ema_model import ExponentialMovingAverage
-from utils.util import mse_loss, get_stat, reduce_tensor, set_seed, gpu_stats
+from utils.util import mse_loss, get_stat, reduce_tensor, set_seed, gpu_stats, resume_checkpoint_path
 from data.dataset import DatasetDDP, get_dataset_iter
 from data.util import tokenize, BatchEncoding, available_cpus
 
@@ -290,15 +290,20 @@ class DiffusionRunner:
         if not os.path.exists(prefix_folder):
             os.makedirs(prefix_folder)
 
+        # Чекпоинт для ДОзапуска пишется всегда, независимо от метрики.
+        # Нумерованные файлы отбираются по top-k: шаг, не попавший в top-k, на
+        # диск вообще не ложится. Прогон, снятый по лимиту времени, откатывался
+        # бы тогда не к последнему шагу, а к лучшему по метрике -- у gpt (224 ч
+        # при лимите 75 ч) это давало бы бесконечный цикл дозапусков, а у
+        # диффузий -- потерю до нескольких часов обучения на каждом дозапуске.
+        self.__save_checkpoint(os.path.join(prefix_folder, "last.pth"))
         if last:
-            prefix = 'last'
-        else:
-            prefix = str(self.step)
+            return
 
-        save_path = os.path.join(prefix_folder, prefix + ".pth")
+        save_path = os.path.join(prefix_folder, str(self.step) + ".pth")
 
-        # 'last' не участвует в top-k, и на шаге без прошедшего eval метрики нет
-        if last or self.step not in self.tracked_test_metric:
+        # на шаге без прошедшего eval метрики нет -- в top-k такой шаг не заводим
+        if self.step not in self.tracked_test_metric:
             self.__save_checkpoint(save_path)
             return
 
@@ -319,7 +324,13 @@ class DiffusionRunner:
                 heapq.heappush(self.all_checkpoints, item)
 
     def __remove_checkpoint(self, save_path):
-        os.remove(save_path)
+        # Учет top-k поднимается из чекпоинта, поэтому в куче могут оказаться
+        # пути прошлого прогона -- каталог мог быть почищен руками. Отсутствие
+        # файла не повод ронять обучение на шаге сохранения.
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        else:
+            print(f"[WARNING] нечего удалять, файла уже нет: {save_path}")
     
     def __save_checkpoint(self, save_path):
 
@@ -350,30 +361,46 @@ class DiffusionRunner:
                 },
         }
 
-        torch.save(checkpoint, save_path)
+        # Пишем через временный файл: задание может быть снято по лимиту прямо
+        # во время записи, а недописанный last.pth сломал бы дозапуск.
+        # os.replace атомарен в пределах одной ФС.
+        tmp_path = save_path + ".tmp"
+        torch.save(checkpoint, tmp_path)
+        os.replace(tmp_path, save_path)
 
         print(f"Save model to: {save_path}")
 
         
+    def _restore_tracked_metrics(self, load) -> None:
+        """Поднимает учет top-k из чекпоинта.
+
+        Без этого после дозапуска self.all_checkpoints пуст: первые save_top_k
+        новых чекпоинтов сохраняются безусловно, а файлы прошлого прогона
+        остаются вне учета и не удаляются никогда -- каталог растет.
+        """
+        tracked = load.get("tracked_metrics")
+        if not tracked:
+            return
+        self.tracked_test_metric = dict(tracked["test_metrics"])
+        self.all_checkpoints = [tuple(t) for t in tracked["all_checkpoints"]]
+        heapq.heapify(self.all_checkpoints)
+
     def load_checkpoint(self) -> int:
         prefix_folder = os.path.join(self.config.training.checkpoints_folder, self.config.training.checkpoints_prefix)
 
         if not os.path.exists(prefix_folder):
             return False
 
-        checkpoint_names = list(os.listdir(prefix_folder))
-        checkpoint_names = [str(t).replace(".pth", "") for t in checkpoint_names]
-        checkpoint_names = [int(t) for t in checkpoint_names if t.isdigit()]
-
-        if not checkpoint_names:
+        checkpoint_name = resume_checkpoint_path(
+            prefix_folder, self.config.training.checkpoint_name)
+        if checkpoint_name is None:
             return False
-            
-        name = self.config.training.checkpoint_name
-        if not name:
-            name = max(checkpoint_names)
-        checkpoint_name = f"{prefix_folder}/{name}.pth"
 
         load = torch.load(checkpoint_name, map_location="cpu")
+
+        # без этого top-k после дозапуска считается с нуля: файлы прошлого
+        # запуска остаются вне учета и никогда не удаляются
+        self._restore_tracked_metrics(load)
 
         self.ema.load_state_dict(load["ema"])
         self.ema.cuda()
@@ -608,6 +635,17 @@ class DiffusionRunner:
             _ = next(self.train_range_iter)
 
             loss_dict, stat_dict = self.train_step(batch)
+
+            # Чекпоинт для дозапуска пишется ДО eval, а не после. На eval идет
+            # генерация батчами по validation.batch_size (1000 текстов) и в
+            # fp32 -- самая прожорливая по памяти часть прогона, причем у
+            # diffuseq последовательность вдвое длиннее (64 промпта + 64
+            # продолжения). Падение там (например, по OOM) до сохранения стоило
+            # бы всех 12500 шагов с прошлого чекпоинта -- это часы GPU.
+            # Нумерованный чекпоинт по-прежнему пишется после eval: ему нужна
+            # метрика, которая появляется только там.
+            if self.step % self.config.training.checkpoint_freq == 0:
+                self.save_checkpoint(last=True)
 
             if self.step % self.config.training.eval_freq == 0:
                 total_start = time.time()

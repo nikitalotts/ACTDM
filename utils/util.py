@@ -291,3 +291,39 @@ def gpu_stats(util_every_sec: float = 60.0):
     if _UTIL_STATE["value"] is not None:
         stats["gpu_util_percent"] = float(_UTIL_STATE["value"])
     return stats
+
+
+# --- выбор чекпоинта для дозапуска ----------------------------------------------
+def resume_checkpoint_path(prefix_folder: str, checkpoint_name=None):
+    """Путь к чекпоинту, с которого продолжается обучение. None -- продолжать нечего.
+
+    Нумерованные файлы <шаг>.pth отбираются по top-k лучших по метрике: шаг, не
+    попавший в top-k, на диск вообще не ложится. Если брать max(<шаг>), то
+    прогон, снятый по лимиту времени, откатывался бы не к последнему шагу, а к
+    лучшему по метрике. У gpt (224 ч при лимите 75 ч) это давало бы
+    бесконечный цикл дозапусков: метрика не обязана расти монотонно, и лучший
+    шаг мог остаться далеко позади.
+
+    Поэтому дозапуск идет с last.pth -- его пишет каждый checkpoint_freq
+    независимо от метрики, и его шаг всегда не меньше любого нумерованного.
+    Нумерованные остаются запасным вариантом (каталоги прошлых прогонов, где
+    last.pth еще не было).
+    """
+    import os as _os
+
+    if not _os.path.exists(prefix_folder):
+        return None
+
+    if checkpoint_name:
+        path = _os.path.join(prefix_folder, f"{checkpoint_name}.pth")
+        return path if _os.path.exists(path) else None
+
+    last_path = _os.path.join(prefix_folder, "last.pth")
+    if _os.path.exists(last_path):
+        return last_path
+
+    names = [str(t)[:-4] for t in _os.listdir(prefix_folder) if str(t).endswith(".pth")]
+    steps = [int(t) for t in names if t.isdigit()]
+    if not steps:
+        return None
+    return _os.path.join(prefix_folder, f"{max(steps)}.pth")

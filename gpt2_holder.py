@@ -21,7 +21,7 @@ from data.dataset import DatasetDDP, get_dataset_iter
 from data.util import BatchEncoding, available_cpus
 from estimation_utils.metrics import compute_metric
 from estimation_utils.util import gather_texts
-from utils.util import set_seed, reduce_tensor, gpu_stats
+from utils.util import set_seed, reduce_tensor, gpu_stats, resume_checkpoint_path
 
 
 
@@ -407,6 +407,15 @@ class GPT2Runner:
             _ = next(self.train_range_iter)
 
             loss_dict, stat_dict = self.train_step(batch)
+
+            # Чекпоинт для дозапуска пишется ДО eval, а не после. На eval идет
+            # генерация батчами по validation.batch_size -- самая прожорливая
+            # по памяти часть прогона, и падение там (например, по OOM) до
+            # сохранения стоило бы всех шагов с прошлого чекпоинта. Нумерованный
+            # чекпоинт по-прежнему пишется после eval: ему нужна метрика,
+            # которая появляется только там.
+            if self.step % self.config.training.checkpoint_freq == 0:
+                self.save_checkpoint(last=True)
 
             if self.step % self.config.training.eval_freq == 0:
                 total_start = time.time()
@@ -911,10 +920,19 @@ class GPT2Runner:
         if not os.path.exists(prefix_folder):
             os.makedirs(prefix_folder)
 
-        prefix = 'last' if last else str(self.step)
-        save_path = os.path.join(prefix_folder, prefix + ".pth")
+        # Чекпоинт для ДОзапуска пишется всегда, независимо от метрики.
+        # Нумерованные файлы отбираются по top-k (у gpt их всего 2): шаг, не
+        # попавший в top-k, на диск не ложится. Прогон, снятый по лимиту
+        # времени, откатывался бы тогда не к последнему шагу, а к лучшему по
+        # метрике -- при 224 ч обучения и лимите 75 ч это давало бы
+        # бесконечный цикл дозапусков, ведь mauve не растет монотонно.
+        self.__save_checkpoint(os.path.join(prefix_folder, "last.pth"))
+        if last:
+            return
 
-        if last or self.step not in self.tracked_test_metric:
+        save_path = os.path.join(prefix_folder, str(self.step) + ".pth")
+
+        if self.step not in self.tracked_test_metric:
             self.__save_checkpoint(save_path)
             return
 
@@ -929,7 +947,13 @@ class GPT2Runner:
         else:
             heap_smallest = self.all_checkpoints[0]
             if heap_smallest[0] < item[0]:
-                os.remove(heap_smallest[1])
+                # Учет top-k поднимается из чекпоинта, поэтому в куче могут
+                # оказаться пути прошлого прогона -- каталог мог быть почищен
+                # руками. Отсутствие файла не повод ронять обучение.
+                if os.path.exists(heap_smallest[1]):
+                    os.remove(heap_smallest[1])
+                else:
+                    print(f"[WARNING] нечего удалять, файла уже нет: {heap_smallest[1]}")
                 heapq.heappop(self.all_checkpoints)
                 self.__save_checkpoint(item[1])
                 heapq.heappush(self.all_checkpoints, item)
@@ -947,7 +971,12 @@ class GPT2Runner:
                 "all_checkpoints": [(score, path) for score, path in self.all_checkpoints],
             },
         }
-        torch.save(checkpoint, save_path)
+        # Пишем через временный файл: задание может быть снято по лимиту прямо
+        # во время записи, а недописанный last.pth сломал бы дозапуск.
+        # os.replace атомарен в пределах одной ФС.
+        tmp_path = save_path + ".tmp"
+        torch.save(checkpoint, tmp_path)
+        os.replace(tmp_path, save_path)
         print(f"Save model to: {save_path}")
 
     def load_checkpoint(self):
@@ -955,19 +984,20 @@ class GPT2Runner:
         if not os.path.exists(prefix_folder):
             return False
 
-        checkpoint_names = list(os.listdir(prefix_folder))
-        checkpoint_names = [str(t).replace(".pth", "") for t in checkpoint_names]
-        checkpoint_names = [int(t) for t in checkpoint_names if t.isdigit()]
-
-        if not checkpoint_names:
+        checkpoint_name = resume_checkpoint_path(
+            prefix_folder, self.config.training.checkpoint_name)
+        if checkpoint_name is None:
             return False
 
-        name = self.config.training.checkpoint_name
-        if not name:
-            name = max(checkpoint_names)
-        checkpoint_name = f"{prefix_folder}/{name}.pth"
-
         load = torch.load(checkpoint_name, map_location="cpu")
+
+        # без этого top-k после дозапуска считается с нуля: файлы прошлого
+        # прогона остаются вне учета и никогда не удаляются
+        if load.get("tracked_metrics"):
+            self.tracked_test_metric = dict(load["tracked_metrics"]["test_metrics"])
+            self.all_checkpoints = [tuple(t) for t in load["tracked_metrics"]["all_checkpoints"]]
+            heapq.heapify(self.all_checkpoints)
+
         self.model.load_state_dict(load["model"])
         self.optimizer.load_state_dict(load["optimizer"])
         self.scheduler.load_state_dict(load["scheduler"])
