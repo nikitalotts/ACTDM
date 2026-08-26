@@ -1961,6 +1961,64 @@ def test_pipeline_has_per_model_diffusion_stages():
         f"справка обрезается на строке {m.group(1)}, а шапка идет до {header_end}")
 
 
+def test_eval_generation_batch_leaves_memory_headroom():
+    """Батч генерации на eval ограничен сверху: тензор логитов декодера
+    [батч x 64 позиции x 28996 слов] в fp32 растет линейно и при 1000 занимает
+    6.9 ГБ разом, плюс состояния солвера и матрицы внимания.
+
+    Цена ошибки несимметрична: при возобновлении из чекпоинта eval вызывается
+    СРАЗУ в __init__, до обучения. Упавший по памяти eval убил бы не 12500
+    шагов, а каждый следующий дозапуск -- задание падало бы снова и снова.
+    На результаты батч не влияет, только на скорость.
+    """
+    cfg = create_config(make_args("diffuseq", dataset_name="wikipedia"))
+    vocab = cfg.se_config.vocab_size
+    logits_gb = (cfg.validation.batch_size * cfg.data.max_sequence_len
+                 * vocab * 4) / 2 ** 30
+    assert logits_gb < 5.0, (
+        f"логиты декодера на eval занимают {logits_gb:.1f} ГБ -- "
+        f"снизьте validation.batch_size")
+    assert cfg.validation.batch_size <= cfg.validation.num_gen_texts
+
+
+def test_resume_prefers_last_checkpoint_over_best():
+    """Дозапуск обязан продолжаться с ПОСЛЕДНЕГО шага, а не с лучшего по
+    метрике: нумерованные чекпоинты пишутся только при попадании в top-k, и
+    max(<шаг>) откатил бы прогон назад -- у gpt (224 ч при лимите 75 ч) это
+    давало бы дозапуски, не продвигающие обучение.
+
+    А eval, наоборот, обязан брать ЛУЧШИЙ чекпоинт: метрики в статью считаются
+    по нему, а не по последнему состоянию.
+    """
+    import inspect
+    from utils.util import resume_checkpoint_path
+    from diffusion_holder import DiffusionRunner
+    from gpt2_holder import GPT2Runner
+
+    for runner in (DiffusionRunner, GPT2Runner):
+        assert "resume_checkpoint_path" in inspect.getsource(runner.load_checkpoint), (
+            f"{runner.__name__}.load_checkpoint не использует общий выбор чекпоинта")
+        restore = inspect.getsource(runner.restore_parameters)
+        assert "resume_checkpoint_path" not in restore, (
+            f"{runner.__name__}.restore_parameters обязан брать лучший чекпоинт, "
+            f"а не last.pth")
+        assert "isdigit" in restore, "eval должен отбирать нумерованные чекпоинты"
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        assert resume_checkpoint_path(d) is None, "пустой каталог -- продолжать нечего"
+        open(os.path.join(d, "5000.pth"), "wb").close()
+        open(os.path.join(d, "2500.pth"), "wb").close()
+        assert resume_checkpoint_path(d).endswith("5000.pth"), (
+            "без last.pth берем наибольший нумерованный")
+        open(os.path.join(d, "last.pth"), "wb").close()
+        assert resume_checkpoint_path(d).endswith("last.pth"), (
+            "last.pth важнее нумерованных: он пишется независимо от метрики")
+        # недописанный временный файл не должен подхватываться
+        open(os.path.join(d, "9999.pth.tmp"), "wb").close()
+        assert resume_checkpoint_path(d).endswith("last.pth")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v", "--tb=short", "-q"]))
 
