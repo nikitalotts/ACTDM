@@ -220,7 +220,15 @@ def train(config, encoder, decoder, tokenizer):
 
 def main():
     args = parse()
-    
+
+    # Этот скрипт ПИШЕТ в config.decoder.decoder_path, поэтому в smoke-режиме
+    # он обязан целиться в -smoke файл и никогда в боевой декодер. Именно на
+    # этот флаг смотрит apply_smoke_overrides, решая, можно ли подставить уже
+    # обученный боевой декодер вместо отсутствующего smoke-декодера.
+    # Ставим здесь, а не в шелле: так его нельзя забыть, каким бы способом
+    # задание ни запускали.
+    os.environ["TRAINING_DECODER"] = "1"
+
     config = create_config(args)
 
     print("CONFIG", config)

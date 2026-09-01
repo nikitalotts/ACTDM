@@ -474,8 +474,26 @@ def apply_smoke_overrides(config):
 
     if "decoder" in config:
         config.decoder.max_train_steps = 200
+        real_decoder_path = f"{artifacts_dir}/{config.decoder.name}.pth"
         config.decoder.name += "-smoke"
-        config.decoder.decoder_path = f"{artifacts_dir}/{config.decoder.name}.pth"
+        smoke_decoder_path = f"{artifacts_dir}/{config.decoder.name}.pth"
+        config.decoder.decoder_path = smoke_decoder_path
+
+        # Диффузионный smoke декодер только ЧИТАЕТ. Если боевой декодер уже
+        # обучен, проверяться честнее на нем: это тот самый файл, который
+        # возьмет боевой прогон, и не надо тратить отдельное задание на
+        # 200-шаговый огрызок.
+        #
+        # Подменяем только когда smoke-декодера нет И мы не обучаем декодер
+        # прямо сейчас: train_decoder.py ПИШЕТ в decoder_path, и без этой
+        # оговорки короткий проверочный прогон затер бы боевой декодер --
+        # артефакт, который стоит 8 часов и от которого зависят все диффузии.
+        if (os.environ.get("TRAINING_DECODER") != "1"
+                and not os.path.exists(smoke_decoder_path)
+                and os.path.exists(real_decoder_path)):
+            config.decoder.decoder_path = real_decoder_path
+            print(f"[CONFIG] SMOKE: smoke-декодера нет, читаем боевой "
+                  f"{real_decoder_path}")
 
     # классификатор guidance переименовываем тоже: иначе короткий прогон
     # затер бы боевой чекпоинт классификатора недоученными весами

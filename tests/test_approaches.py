@@ -2188,3 +2188,75 @@ def test_missing_file_in_restored_top_k_does_not_crash_training(tmp_path):
     assert any(p.endswith("last.pth") for p in saved), "last.pth должен писаться всегда"
     assert any(p.endswith("25000.pth") for p in saved), (
         "лучший по метрике шаг должен вытеснить отсутствующий файл, а не упасть")
+
+
+# --- smoke переиспользует боевой декодер -----------------------------------------
+
+def _smoke_decoder_path(at, tmp_path, monkeypatch, files=(), training_decoder=False):
+    """Куда укажет decoder_path в smoke-режиме при заданном наборе файлов."""
+    from create_config import apply_smoke_overrides
+
+    cfg = create_config(make_args(at, dataset_name="wikipedia"))
+    cfg.data.base_path = str(tmp_path)
+    artifacts = tmp_path / "wikipedia"
+    artifacts.mkdir(exist_ok=True)
+    for name in files:
+        (artifacts / name).write_bytes(b"x")
+
+    monkeypatch.setenv("SMOKE", "1")
+    if training_decoder:
+        monkeypatch.setenv("TRAINING_DECODER", "1")
+    else:
+        monkeypatch.delenv("TRAINING_DECODER", raising=False)
+    return os.path.basename(apply_smoke_overrides(cfg).decoder.decoder_path)
+
+
+def test_smoke_reuses_trained_decoder_when_smoke_one_is_absent(tmp_path, monkeypatch):
+    """Диффузионный smoke декодер только читает. Если боевой уже обучен, честнее
+    и быстрее проверяться на нем: это тот самый файл, который возьмет боевой
+    прогон, и не нужно жечь задание на 200-шаговый огрызок."""
+    real = "decoder-bert-base-cased-128-transformer-conditional.pth"
+    assert _smoke_decoder_path("genie", tmp_path, monkeypatch, files=[real]) == real
+
+
+def test_smoke_decoder_wins_over_trained_one_when_it_exists(tmp_path, monkeypatch):
+    """Обратной совместимости ради: если smoke-декодер обучен, берется он."""
+    real = "decoder-bert-base-cased-128-transformer-conditional.pth"
+    smoke = "decoder-bert-base-cased-128-transformer-conditional-smoke.pth"
+    assert _smoke_decoder_path(
+        "genie", tmp_path, monkeypatch, files=[real, smoke]) == smoke
+
+
+def test_decoder_training_never_targets_the_real_decoder(tmp_path, monkeypatch):
+    """САМОЕ ВАЖНОЕ в этой подмене: train_decoder.py ПИШЕТ в decoder_path.
+    Если бы подмена срабатывала и при обучении, smoke-прогон на 200 шагов затер
+    бы боевой декодер -- артефакт на 8 часов, от которого зависят все диффузии.
+    """
+    real = "decoder-bert-base-cased-128-transformer-conditional.pth"
+    got = _smoke_decoder_path(
+        "genie", tmp_path, monkeypatch, files=[real], training_decoder=True)
+    assert got.endswith("-conditional-smoke.pth"), (
+        f"обучение декодера в smoke-режиме целится в {got} -- боевой файл будет затерт")
+
+
+def test_decoder_trainer_sets_the_guard_itself():
+    """Флаг ставится внутри train_decoder.py, а не в шелле: иначе его можно
+    забыть при ручном запуске задания, и цена ошибки -- боевой декодер."""
+    import inspect
+    from model import train_decoder
+
+    src = inspect.getsource(train_decoder.main)
+    assert 'os.environ["TRAINING_DECODER"] = "1"' in src
+    assert src.index("TRAINING_DECODER") < src.index("create_config(args)"), (
+        "флаг должен ставиться ДО создания конфига")
+
+
+def test_no_smoke_no_substitution(tmp_path, monkeypatch):
+    """Вне smoke-режима подмена не должна вмешиваться вообще."""
+    from create_config import apply_smoke_overrides
+
+    cfg = create_config(make_args("genie", dataset_name="wikipedia"))
+    before = cfg.decoder.decoder_path
+    monkeypatch.delenv("SMOKE", raising=False)
+    assert apply_smoke_overrides(cfg).decoder.decoder_path == before
+    assert "-smoke" not in before

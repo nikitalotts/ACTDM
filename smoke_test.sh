@@ -6,8 +6,11 @@
 # текстах. Все артефакты получают суффикс -smoke и НЕ пересекаются с боевыми:
 # после проверки их можно просто удалить.
 #
-#   ./smoke_test.sh decoder    безусловный декодер (нужен diffuseq)   ~15 мин
+#   ./smoke_test.sh decoder    smoke-декодеры ~15 мин; НУЖЕН, только если
+#                              боевые decoder-*.pth еще не обучены -- иначе
+#                              diffuseq/genie сами возьмут боевой декодер
 #   ./smoke_test.sh diffuseq   диффузия diffuseq + генерация          ~30 мин
+#   ./smoke_test.sh genie      диффузия genie + генерация             ~30 мин
 #   ./smoke_test.sh gpt        GPT2-бейзлайн + генерация              ~30 мин
 #   ./smoke_test.sh eval       отдельный прогон eval по smoke-чекпоинтам
 #
@@ -16,8 +19,11 @@
 #                                     уходят в *-timing1gpu, боевые не трогает
 #
 # gpt ни от чего не зависит -- можно пускать сразу.
-# diffuseq требует посчитанных статистик (./run_wikipedia.sh stats) и
-# smoke-декодера, поэтому: decoder -> diffuseq.
+# diffuseq и genie требуют посчитанных статистик (./run_wikipedia.sh stats) и
+# декодера. Декодер берется так: если есть smoke-декодер -- он, иначе боевой
+# (диффузия его только читает, а проверяться на боевом даже честнее -- это тот
+# самый файл, который возьмет полный прогон). Стадия decoder нужна лишь тогда,
+# когда боевых декодеров еще нет.
 #
 # Удалить следы проверки:
 #   rm -rf checkpoints/*-smoke datasets/wikipedia/*-smoke.pth generated_texts/*-smoke
@@ -34,13 +40,29 @@ SMOKE_TIME="${SMOKE_TIME:-2:00:00}"
 
 case "$1" in
     decoder)
+        # genie декодирует с cross-attention на промпт -- ему нужен свой
+        # декодер; diffuseq и unconditional делят безусловный.
+        #
+        # Стадия нужна, ТОЛЬКО пока боевых декодеров нет: когда они обучены,
+        # diffuseq/genie подставят их сами. Обучение декодера при этом всегда
+        # пишет в -smoke файл (флаг TRAINING_DECODER в model/train_decoder.py),
+        # так что боевой декодер этой стадией не затрется.
         ARCH_TYPE=unconditional sbatch --time=${SMOKE_TIME} \
-            --job-name=smoke_decoder train_decoder.sh
-        echo "==> ждем datasets/wikipedia/decoder-*-smoke.pth, затем: ./smoke_test.sh diffuseq"
+            --job-name=smoke_decoder-unconditional train_decoder.sh
+        ARCH_TYPE=genie sbatch --time=${SMOKE_TIME} \
+            --job-name=smoke_decoder-genie train_decoder.sh
+        echo "==> ждем оба datasets/wikipedia/decoder-*-smoke.pth, затем: ./smoke_test.sh diffuseq | genie"
         ;;
     diffuseq)
         ARCH_TYPE=diffuseq sbatch --time=${SMOKE_TIME} \
             --job-name=smoke_diffuseq train_diffusion.sh
+        ;;
+    genie)
+        # у genie свой код: условие идет через cross-attention, а декодер
+        # условный. С diffuseq этот путь не пересекается, и первый раз он
+        # отрабатывает только на eval -- то есть через часы боевого прогона.
+        ARCH_TYPE=genie sbatch --time=${SMOKE_TIME} \
+            --job-name=smoke_genie train_diffusion.sh
         ;;
     gpt)
         ARCH_TYPE=gpt sbatch --time=${SMOKE_TIME} \
@@ -83,11 +105,13 @@ case "$1" in
     eval)
         ARCH_TYPE=diffuseq sbatch --time=${SMOKE_TIME} \
             --job-name=smoke_eval_diffuseq eval_diffusion.sh
+        ARCH_TYPE=genie sbatch --time=${SMOKE_TIME} \
+            --job-name=smoke_eval_genie eval_diffusion.sh
         ARCH_TYPE=gpt sbatch --time=${SMOKE_TIME} \
             --job-name=smoke_eval_gpt eval_gpt2.sh
         ;;
     *)
-        sed -n '2,20p' "$0"
+        sed -n '2,29p' "$0"
         exit 1
         ;;
 esac
