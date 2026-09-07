@@ -2260,3 +2260,92 @@ def test_no_smoke_no_substitution(tmp_path, monkeypatch):
     monkeypatch.delenv("SMOKE", raising=False)
     assert apply_smoke_overrides(cfg).decoder.decoder_path == before
     assert "-smoke" not in before
+
+
+def test_smoke_covers_every_approach():
+    """Каждый из четырех подходов должен быть проверяем коротким прогоном.
+
+    Пропущенный подход всплывает не сразу и дорого: у unconditional другой стек
+    метрик (mauve/div/ppl вместо bleu/rouge/bert-score) и другая нарезка данных,
+    а у guidance -- градиент классификатора на генерации. Оба этих пути первый
+    раз исполняются только на eval, то есть через часы боевого обучения.
+    """
+    import io as _io
+
+    script = _io.open("smoke_test.sh", encoding="utf-8").read()
+    for at in ARCHITECTURE_TYPES:
+        assert f"ARCH_TYPE={at} " in script or f"ARCH_TYPE={at}\n" in script, (
+            f"smoke_test.sh не умеет проверять {at}")
+
+    # цепочка guidance: без чекпоинта uncond схемы augmented/combined не обучатся
+    for stage in ("uncond|unconditional)", "classifiers)", "guidance)"):
+        assert stage in script, f"нет стадии {stage}"
+    assert script.index("uncond|unconditional)") < script.index("    guidance)"), (
+        "uncond должен идти раньше guidance: guidance переиспользует его чекпоинт")
+
+
+def test_classifier_checkpoint_loader_ignores_last_pth():
+    """last.pth появился в каталогах чекпоинтов ради дозапуска. Загрузчики
+    классификаторов перебирают тот же каталог, и без фильтра int('last')
+    уронил бы обучение классификатора."""
+    import io as _io
+
+    for name in ("train_conditional_encoder_augmented.py",
+                 "train_conditional_encoder_combined.py"):
+        src = _io.open(name, encoding="utf-8").read()
+        assert "isdigit()" in src, (
+            f"{name} перебирает чекпоинты без isdigit-фильтра -- споткнется о last.pth")
+
+
+def test_final_checkpoint_survives_top_k_at_agreed_budget():
+    """При бюджете 87500 шагов последний чекпоинт обязан пережить отбор top-k.
+
+    Сравнение в статье идет на фиксированном шаге, и eval берет max(нумерованных).
+    У genie/diffuseq трекается bert-score, он рос монотонно и 87500 попадал в
+    top-k сам. У unconditional трекается mauve -- она скачет, и провал на
+    последнем eval выкинул бы 87500.pth с диска. Guidance переиспользует ровно
+    этот чекпоинт, так что промах утащил бы за собой и его.
+    """
+    AGREED_STEPS = 87_500
+    for at in ("genie", "diffuseq", "unconditional", "guidance"):
+        c = create_config(make_args(at, dataset_name="wikipedia"))
+        events = AGREED_STEPS // c.training.checkpoint_freq
+        assert c.save_top_k >= events, (
+            f"{at}: {events} точек сохранения при save_top_k={c.save_top_k} -- "
+            f"последний чекпоинт может быть вытеснен")
+
+
+def test_unconditional_is_scored_by_distributional_metrics():
+    """У безусловной диффузии другой стек метрик, и считается он ПРЯМО НА
+    ОБУЧЕНИИ: estimate() гоняет их на каждом eval_freq. Отдельного прогона
+    ради mauve/div/ppl не нужно."""
+    import inspect
+    from diffusion_holder import DiffusionRunner
+
+    c = create_config(make_args("unconditional", dataset_name="wikipedia"))
+    metrics = c.data.datasets.metrics["wikipedia"]["metrics"]
+    assert set(metrics) == {"mauve", "div", "ppl"}
+    assert c.tracked_metric == "mauve"
+
+    # у условных режимов -- метрики соответствия промпту
+    for at in ("genie", "diffuseq", "guidance"):
+        cc = create_config(make_args(at, dataset_name="wikipedia"))
+        assert cc.tracked_metric == "bert-score", at
+
+    # метрики считаются внутри estimate, а estimate зовется из цикла обучения
+    assert "compute_metric" in inspect.getsource(DiffusionRunner.estimate)
+    assert "self.estimate(" in inspect.getsource(DiffusionRunner.train_epoch)
+
+
+def test_unconditional_skips_validation_split_on_eval():
+    """У uncond estimate('validation') пропускается (промпта нет, сравнивать
+    не с чем), считается только test. Значит top-k у него отбирается по test,
+    как и у остальных подходов -- сравнение метрик остается сопоставимым."""
+    import inspect
+    from diffusion_holder import DiffusionRunner
+
+    src = inspect.getsource(DiffusionRunner.train_epoch)
+    i = src.index("is_pipeline_conditional")
+    j = src.index('self.estimate("validation")')
+    assert i < j, "estimate('validation') должен стоять под проверкой режима"
+    assert 'self.estimate("test")' in src

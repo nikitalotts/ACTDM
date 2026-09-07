@@ -284,7 +284,18 @@ def create_config(args):
     config.tracked_dataset = data.datasets.datasets_list[0]
     config.tracked_metric = data.datasets.metrics[config.tracked_dataset]["tracked_metric"]
     config.higher_better = True
-    config.save_top_k = 5
+    # Согласованный бюджет сравнения -- 87500 шагов при checkpoint_freq=12500,
+    # то есть РОВНО 7 точек сохранения. Держим все семь, чтобы последняя точно
+    # пережила отбор.
+    #
+    # Иначе ломается сравнение: у genie и diffuseq трекаемая метрика
+    # (bert-score) росла монотонно, и 87500 попадал в top-5 сам собой, а у
+    # unconditional трекается mauve -- распределенная метрика на 5000 сэмплов,
+    # она скачет. Провались mauve на последнем eval, и 87500.pth просто не
+    # запишется: restore_parameters возьмет max(нумерованных), то есть более
+    # ранний шаг. И это не только про метрики uncond -- guidance переиспользует
+    # этот же чекпоинт, значит и он поехал бы на другой бюджет.
+    config.save_top_k = 7
     return apply_smoke_overrides(config)
 
 

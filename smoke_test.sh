@@ -11,12 +11,24 @@
 #                              diffuseq/genie сами возьмут боевой декодер
 #   ./smoke_test.sh diffuseq   диффузия diffuseq + генерация          ~30 мин
 #   ./smoke_test.sh genie      диффузия genie + генерация             ~30 мин
+#   ./smoke_test.sh uncond     безусловная диффузия + mauve/div/ppl   ~40 мин
 #   ./smoke_test.sh gpt        GPT2-бейзлайн + генерация              ~30 мин
+#   ./smoke_test.sh classifiers  3 классификатора guidance (после uncond)
+#   ./smoke_test.sh guidance     eval guidance = uncond + классификатор
 #   ./smoke_test.sh eval       отдельный прогон eval по smoke-чекпоинтам
 #
 #   ./smoke_test.sh timing-diffuseq   замер скорости шага на 1 GPU с боевыми
 #   ./smoke_test.sh timing-gpt        параметрами; падает по таймауту, artefacts
 #                                     уходят в *-timing1gpu, боевые не трогает
+#
+# Цепочка guidance: uncond -> classifiers -> guidance. Схемы augmented и
+# combined реконструируют x_0 чекпоинтом безусловной диффузии, поэтому им
+# нужен smoke-чекпоинт uncond; guidance сверх этого нужен классификатор.
+#
+# У uncond ДРУГОЙ стек метрик -- mauve/div/ppl вместо bleu/rouge/bert-score,
+# и другая нарезка данных (таргет без промпта). На wikipedia этот путь еще ни
+# разу не исполнялся, а падение в метриках всплыло бы только на первом eval
+# боевого прогона -- то есть через часы. Поэтому smoke тут не формальность.
 #
 # gpt ни от чего не зависит -- можно пускать сразу.
 # diffuseq и genie требуют посчитанных статистик (./run_wikipedia.sh stats) и
@@ -56,6 +68,31 @@ case "$1" in
     diffuseq)
         ARCH_TYPE=diffuseq sbatch --time=${SMOKE_TIME} \
             --job-name=smoke_diffuseq train_diffusion.sh
+        ;;
+    uncond|unconditional)
+        # Безусловная диффузия -- она же основа guidance (общий чекпоинт).
+        # Учится на ПРОДОЛЖЕНИЯХ, а метрики у нее mauve/div/ppl: mauve тянет
+        # gpt2-large, ppl -- gpt-neo-1.3B, div -- spacy. Все три должны быть в
+        # прогретом кэше (python prefetch_offline.py), иначе offline-режим
+        # уронит eval.
+        ARCH_TYPE=unconditional sbatch --time=${SMOKE_TIME} \
+            --job-name=smoke_uncond train_diffusion.sh
+        echo "==> дальше: ./smoke_test.sh classifiers"
+        ;;
+    classifiers)
+        # augmented и combined загружают smoke-чекпоинт uncond, shuffled нет
+        sbatch --time=${SMOKE_TIME} --job-name=smoke_cls-shuffled  train_conditional_encoder_shuffled.sh
+        sbatch --time=${SMOKE_TIME} --job-name=smoke_cls-augmented train_conditional_encoder_augmented.sh
+        sbatch --time=${SMOKE_TIME} --job-name=smoke_cls-combined  train_conditional_encoder_combined.sh
+        echo "==> дальше: ./smoke_test.sh guidance"
+        ;;
+    guidance)
+        # guidance не обучается: это smoke-чекпоинт uncond плюс градиент
+        # классификатора на генерации. Проверяем все три схемы сразу.
+        for AUG in shuffled augmented combined; do
+            ARCH_TYPE=guidance AUG_SCHEME=${AUG} sbatch --time=${SMOKE_TIME} \
+                --job-name=smoke_guidance-${AUG} eval_diffusion.sh
+        done
         ;;
     genie)
         # у genie свой код: условие идет через cross-attention, а декодер
@@ -111,7 +148,7 @@ case "$1" in
             --job-name=smoke_eval_gpt eval_gpt2.sh
         ;;
     *)
-        sed -n '2,29p' "$0"
+        sed -n '2,40p' "$0"
         exit 1
         ;;
 esac
