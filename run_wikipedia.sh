@@ -12,7 +12,7 @@
 #   ./run_wikipedia.sh decoders     условный + безусловный декодер (после stats)
 #   ./run_wikipedia.sh diffusion    диффузии genie/diffuseq/uncond (после decoders)
 #   ./run_wikipedia.sh diffuseq     то же, но по одной модели за раз:
-#   ./run_wikipedia.sh genie        genie | diffuseq | unconditional
+#   ./run_wikipedia.sh genie        genie | diffuseq | unconditional (=uncond)
 #   ./run_wikipedia.sh unconditional
 #   ./run_wikipedia.sh gpt          GPT2-бейзлайн                  (после data)
 #   ./run_wikipedia.sh classifiers  3 классификатора для guidance  (после diffusion:
@@ -87,15 +87,27 @@ case "$1" in
         done
         echo "==> когда обучится unconditional: ./run_wikipedia.sh classifiers"
         ;;
-    genie|diffuseq|unconditional)
+    genie|diffuseq|uncond|unconditional)
         # одна диффузия отдельным заданием -- когда нужно занять карты не всеми
-        # тремя сразу или перезапустить только одну после обрыва
-        ARCH_TYPE="$1" sbatch --job-name=train_diffusion-"$1" train_diffusion.sh
+        # тремя сразу или перезапустить только одну после обрыва.
+        # uncond -- сокращение для unconditional, как и в smoke_test.sh:
+        # два скрипта должны понимать одни и те же имена стадий
+        AT="$1"
+        [ "${AT}" = uncond ] && AT=unconditional
+        ARCH_TYPE="${AT}" sbatch --job-name=train_diffusion-"${AT}" train_diffusion.sh
         ;;
     gpt)
         ARCH_TYPE=gpt sbatch train_gpt2.sh
         ;;
     classifiers)
+        # Схемы augmented и combined реконструируют x_0 чекпоинтом безусловной
+        # диффузии. Без него все три задания отстоят очередь, поднимут модели и
+        # только тогда упадут по FileNotFoundError -- проверяем сразу здесь.
+        if ! ls checkpoints/*-uncond/[0-9]*.pth >/dev/null 2>&1; then
+            echo "Нет чекпоинта безусловной диффузии: checkpoints/*-uncond/<шаг>.pth" >&2
+            echo "Классификаторы обучаются ПОСЛЕ нее: ./run_wikipedia.sh unconditional" >&2
+            exit 1
+        fi
         # каждая схема пишет свой файл conditional-encoder-*-64x64-*-<схема>*.pth
         sbatch train_conditional_encoder_shuffled.sh
         sbatch train_conditional_encoder_augmented.sh

@@ -1938,12 +1938,21 @@ def test_pipeline_has_per_model_diffusion_stages():
     with open(os.path.join(root, "run_wikipedia.sh"), encoding="utf-8") as f:
         script = f.read()
 
-    assert re.search(r"^\s*genie\|diffuseq\|unconditional\)", script, re.M), (
-        "нет стадий для запуска диффузий по одной")
+    # проверяем не точную строку case, а то, что каждую диффузию действительно
+    # можно назвать отдельной стадией: список альтернатив может пополняться
+    # синонимами (uncond), и тест не должен на этом ломаться
+    branch = re.search(r"^\s*([a-z|]*genie[a-z|]*)\)\s*$", script, re.M)
+    assert branch, "нет стадий для запуска диффузий по одной"
+    alternatives = branch.group(1).split("|")
+    for at in ("genie", "diffuseq", "unconditional"):
+        assert at in alternatives, (
+            f"диффузию {at} нельзя запустить отдельной стадией")
+
     # стадия обязана прокидывать architecture_type, иначе обучится не то
-    stage = script[script.index("genie|diffuseq|unconditional)"):]
+    stage = script[branch.end():]
     stage = stage[:stage.index(";;")]
-    assert 'ARCH_TYPE="$1"' in stage, "стадия не передает architecture_type"
+    assert re.search(r'ARCH_TYPE="\$\{?(AT|1)\}?"', stage), (
+        "стадия не передает architecture_type")
     assert "train_diffusion.sh" in stage
 
     # справка по стадиям не должна обрезаться посреди списка
@@ -2349,3 +2358,35 @@ def test_unconditional_skips_validation_split_on_eval():
     j = src.index('self.estimate("validation")')
     assert i < j, "estimate('validation') должен стоять под проверкой режима"
     assert 'self.estimate("test")' in src
+
+
+def test_both_pipelines_understand_the_same_stage_names():
+    """smoke_test.sh и run_wikipedia.sh должны понимать одни и те же имена стадий.
+
+    Иначе привычная по смоуку команда молча уходит в ветку справки и НИЧЕГО не
+    запускает -- выглядит как «скрипт что-то напечатал», а задание в очередь не
+    ушло. Отловить это можно только заметив, что squeue пуст.
+    """
+    import io as _io
+
+    smoke = _io.open("smoke_test.sh", encoding="utf-8").read()
+    real = _io.open("run_wikipedia.sh", encoding="utf-8").read()
+    for alias in ("uncond", "unconditional", "genie", "diffuseq"):
+        assert alias in smoke, f"smoke_test.sh не знает стадию {alias}"
+        assert alias in real, f"run_wikipedia.sh не знает стадию {alias}"
+    assert "uncond|unconditional)" in real, (
+        "run_wikipedia.sh должен принимать uncond так же, как smoke_test.sh")
+
+
+def test_classifier_stage_refuses_to_start_without_unconditional():
+    """Схемы augmented и combined реконструируют x_0 чекпоинтом безусловной
+    диффузии. Без него три задания отстоят очередь, поднимут модели и только
+    тогда упадут -- проверка должна стоять до sbatch."""
+    import io as _io
+
+    real = _io.open("run_wikipedia.sh", encoding="utf-8").read()
+    stage = real[real.index("    classifiers)"):real.index("    eval)")]
+    assert "checkpoints/*-uncond/" in stage, "нет проверки чекпоинта uncond"
+    assert stage.index("exit 1") < stage.index("sbatch"), (
+        "проверка должна отсекать до отправки заданий в очередь"
+    )
