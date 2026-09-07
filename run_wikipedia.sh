@@ -15,9 +15,13 @@
 #   ./run_wikipedia.sh genie        genie | diffuseq | unconditional (=uncond)
 #   ./run_wikipedia.sh unconditional
 #   ./run_wikipedia.sh gpt          GPT2-бейзлайн                  (после data)
-#   ./run_wikipedia.sh classifiers  3 классификатора для guidance  (после diffusion:
-#                                   augmented и combined реконструируют x_0
-#                                   чекпоинтом безусловной диффузии)
+#   ./run_wikipedia.sh classifiers  3 классификатора для guidance  (после
+#                                   unconditional: augmented и combined
+#                                   реконструируют x_0 ее чекпоинтом)
+#   ./run_wikipedia.sh classifier-shuffled  только схема shuffled -- она строит
+#                                   негативы перестановкой пар и диффузию не
+#                                   трогает, поэтому идет сразу после data,
+#                                   параллельно чему угодно
 #   ./run_wikipedia.sh eval         финальная оценка всех подходов (после всего)
 #
 # Порядок целиком: data -> stats -> decoders -> diffusion -> classifiers -> eval,
@@ -99,6 +103,15 @@ case "$1" in
     gpt)
         ARCH_TYPE=gpt sbatch train_gpt2.sh
         ;;
+    classifier-shuffled)
+        # Единственная схема, не зависящая от диффузии: негативы получаются
+        # перестановкой пар промпт/продолжение внутри батча, чекпоинт
+        # безусловной модели ей не нужен (в отличие от augmented и combined,
+        # которые реконструируют x_0). Значит ее можно обучать параллельно
+        # с самой диффузией, не дожидаясь ее конца.
+        sbatch train_conditional_encoder_shuffled.sh
+        echo "==> augmented и combined -- отдельно, после unconditional:        ./run_wikipedia.sh classifiers"
+        ;;
     classifiers)
         # Схемы augmented и combined реконструируют x_0 чекпоинтом безусловной
         # диффузии. Без него все три задания отстоят очередь, поднимут модели и
@@ -127,7 +140,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,27p' "$0"
+        sed -n '2,31p' "$0"
         exit 1
         ;;
 esac

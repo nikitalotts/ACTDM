@@ -2390,3 +2390,41 @@ def test_classifier_stage_refuses_to_start_without_unconditional():
     assert stage.index("exit 1") < stage.index("sbatch"), (
         "проверка должна отсекать до отправки заданий в очередь"
     )
+
+
+def test_shuffled_classifier_is_independent_of_the_diffusion():
+    """Схема shuffled строит негативы перестановкой пар промпт/продолжение
+    внутри батча -- диффузия ей не нужна. augmented и combined, наоборот,
+    реконструируют x_0 чекпоинтом безусловной модели.
+
+    Из этого следует порядок запуска: shuffled можно учить параллельно с самой
+    диффузией, а две другие схемы -- только после нее. Если бы shuffled
+    незаметно обзавелась зависимостью от чекпоинта, отдельная стадия
+    run_wikipedia.sh classifier-shuffled начала бы падать.
+    """
+    import io as _io
+
+    shuffled = _io.open("train_conditional_encoder_shuffled.py", encoding="utf-8").read()
+    for marker in ("ScoreEstimatorEMB", "score_estimator", "checkpoints_prefix"):
+        assert marker not in shuffled, (
+            f"shuffled стала зависеть от диффузии ({marker}) -- "
+            f"стадию classifier-shuffled больше нельзя пускать до unconditional")
+
+    for name in ("train_conditional_encoder_augmented.py",
+                 "train_conditional_encoder_combined.py"):
+        src = _io.open(name, encoding="utf-8").read()
+        assert "ScoreEstimatorEMB" in src, f"{name} обязана реконструировать x_0"
+
+
+def test_standalone_shuffled_stage_bypasses_the_unconditional_guard():
+    """Стадия classifier-shuffled не должна упираться в проверку чекпоинта
+    безусловной диффузии -- иначе теряется весь смысл отдельной стадии."""
+    import io as _io
+
+    real = _io.open("run_wikipedia.sh", encoding="utf-8").read()
+    stage = real[real.index("    classifier-shuffled)"):real.index("    classifiers)")]
+    assert "train_conditional_encoder_shuffled.sh" in stage
+    assert "checkpoints/*-uncond/" not in stage, (
+        "у отдельной стадии не должно быть проверки на чекпоинт uncond")
+    assert "augmented" not in stage.replace("augmented и combined", ""), (
+        "стадия обязана запускать только shuffled")
