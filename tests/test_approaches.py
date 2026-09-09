@@ -2428,3 +2428,76 @@ def test_standalone_shuffled_stage_bypasses_the_unconditional_guard():
         "у отдельной стадии не должно быть проверки на чекпоинт uncond")
     assert "augmented" not in stage.replace("augmented и combined", ""), (
         "стадия обязана запускать только shuffled")
+
+
+# --- бюджет классификаторов guidance ---------------------------------------------
+
+def test_classifier_epoch_budget_fits_the_job_time_limit():
+    """13 эпох -- рецепт rocstories, на wikipedia он не считается за отведенное время.
+
+    Одна эпоха на wikipedia это 47313 батчей по 32 (весь шард на одной карте),
+    6.6 часа при замеренных 1.98 it/s. Тринадцать эпох -- 86 часов при лимите
+    задания 24. Прогон умирал бы по таймауту, а guidance молча забирал бы
+    недоученный классификатор: он ищет файл по имени, а число эпох входит в имя.
+    """
+    import io as _io
+    import re as _re
+
+    HOURS_PER_EPOCH = {"wikipedia": 6.6}
+
+    for name in ("train_conditional_encoder_shuffled.sh",
+                 "train_conditional_encoder_augmented.sh",
+                 "train_conditional_encoder_combined.sh"):
+        sh = _io.open(name, encoding="utf-8").read()
+        m = _re.search(r"#SBATCH --time=(\d+):", sh)
+        assert m, f"{name}: не найден лимит времени"
+        limit = int(m.group(1))
+
+        c = create_config(make_args("guidance", dataset_name="wikipedia"))
+        need = c.cond_encoder.epochs * HOURS_PER_EPOCH["wikipedia"]
+        assert need <= limit, (
+            f"{name}: {c.cond_encoder.epochs} эпох это {need:.0f} ч при лимите {limit} ч")
+
+
+def test_classifier_epochs_depend_on_dataset():
+    """Бюджет считается в увиденных примерах, а не в эпохах: шард wikipedia на
+    порядок больше rocstories, и одна эпоха тут дает больше данных, чем 13 там.
+    Рецепт диплома для rocstories при этом обязан сохраниться."""
+    wiki = create_config(make_args("guidance", dataset_name="wikipedia"))
+    roc = create_config(make_args("guidance", dataset_name="rocstories"))
+    assert wiki.cond_encoder.epochs == 1
+    assert roc.cond_encoder.epochs == 13, "рецепт rocstories из ВКР менять нельзя"
+    # число эпох входит в имя -- значит имена схем на разных датасетах не совпадут
+    assert "-epochs-1-" in wiki.cond_encoder.name
+    assert "-epochs-13-" in roc.cond_encoder.name
+
+
+def test_classifier_saves_inside_the_epoch():
+    """Сохранение только в конце эпохи означало, что задание, снятое по лимиту
+    времени посреди шестичасовой эпохи, не оставляло вообще ничего."""
+    import io as _io
+
+    for name in ("train_conditional_encoder_shuffled.py",
+                 "train_conditional_encoder_augmented.py",
+                 "train_conditional_encoder_combined.py"):
+        src = _io.open(name, encoding="utf-8").read()
+        assert "SAVE_EVERY_N_BATCHES" in src, f"{name}: нет сохранения внутри эпохи"
+        assert "if step % SAVE_EVERY_N_BATCHES == 0:" in src
+
+
+def test_checkpointing_restores_training_mode():
+    """save_checkpoint переводит модель в eval. Пока он звался только в конце
+    эпохи, это было безвредно -- следом шла валидация. При сохранении ВНУТРИ
+    эпохи невозвращенный режим оставил бы дропаут выключенным до конца обучения.
+    """
+    import io as _io
+
+    for name in ("train_conditional_encoder_shuffled.py",
+                 "train_conditional_encoder_augmented.py",
+                 "train_conditional_encoder_combined.py"):
+        src = _io.open(name, encoding="utf-8").read()
+        body = src[src.index("def save_checkpoint(model, config):"):]
+        body = body[:body.index("\ndef ")]
+        assert "was_training = model.training" in body, f"{name}: режим не запоминается"
+        assert "model.train(was_training)" in body, f"{name}: режим не возвращается"
+        assert body.index("model.eval()") < body.index("model.train(was_training)")

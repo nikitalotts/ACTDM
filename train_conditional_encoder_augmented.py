@@ -54,8 +54,15 @@ def get_datasets(config):
     )
     return train_dataset, test_dataset
 
+# Как часто сохранять классификатор ВНУТРИ эпохи. Раньше сохранение стояло
+# только в конце эпохи, а на wikipedia одна эпоха -- это 47313 батчей, часы
+# счета: задание, снятое по лимиту времени, не оставляло вообще ничего.
+SAVE_EVERY_N_BATCHES = 2000
+
+
 def save_checkpoint(model, config):
     os.makedirs(os.path.dirname(config.cond_encoder.cond_encoder_path), exist_ok=True)
+    was_training = model.training
     model.eval()
     torch.save(
         {
@@ -64,6 +71,11 @@ def save_checkpoint(model, config):
         },
         config.cond_encoder.cond_encoder_path
     )
+    # Режим обязательно возвращаем. Пока сохранение было только в конце эпохи,
+    # оставленный eval был безвреден -- следом шла валидация. Но при сохранении
+    # ВНУТРИ эпохи модель осталась бы в eval до конца обучения: дропаут
+    # выключен, и обучение молча поехало бы не по той схеме.
+    model.train(was_training)
     print(f"Save model to: {config.cond_encoder.cond_encoder_path}")
 
 @torch.no_grad()
@@ -362,6 +374,9 @@ def train(config, encoder, cond_encoder, score_estimator, tokenizer, device):
             })
 
             step += 1
+
+            if step % SAVE_EVERY_N_BATCHES == 0:
+                save_checkpoint(cond_encoder, config)
 
         print('Starting evaluation')
         cond_encoder.eval()

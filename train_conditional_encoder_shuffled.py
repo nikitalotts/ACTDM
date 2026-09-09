@@ -53,9 +53,21 @@ def get_datasets(config):
     )
     return train_dataset, test_dataset
 
+# Как часто сохранять классификатор ВНУТРИ эпохи. Раньше сохранение стояло
+# только в конце эпохи, а на wikipedia одна эпоха -- это 47313 батчей, часы
+# счета: задание, снятое по лимиту времени, не оставляло вообще ничего.
+SAVE_EVERY_N_BATCHES = 2000
+
+# Отладочная печать на КАЖДЫЙ батч (около 20 строк) при 47313 батчах давала бы
+# под миллион строк в slurm-логе за прогон. Хуже того, печать тензоров и .item()
+# синхронизируют GPU на каждом шаге. Оставляем редкие срезы.
+LOG_EVERY_N_BATCHES = 500
+
+
 def save_checkpoint(model, config):
     os.makedirs(os.path.dirname(config.cond_encoder.cond_encoder_path), exist_ok=True)
 
+    was_training = model.training
     model.eval()
     torch.save(
         {
@@ -64,6 +76,11 @@ def save_checkpoint(model, config):
         },
         config.cond_encoder.cond_encoder_path
     )
+    # Режим обязательно возвращаем. Пока сохранение было только в конце эпохи,
+    # оставленный eval был безвреден -- следом шла валидация. Но при сохранении
+    # ВНУТРИ эпохи модель осталась бы в eval до конца обучения: дропаут
+    # выключен, и обучение молча поехало бы не по той схеме.
+    model.train(was_training)
     print(f"Save model to: {config.cond_encoder.cond_encoder_path}")
 
 def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, eval=False, batch_idx=0):
@@ -215,7 +232,7 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, config, device, ev
     preds = (probs > 0.5).float()
     acc = torch.mean((preds == labels_all).float())
 
-    if not eval:
+    if not eval and batch_idx % LOG_EVERY_N_BATCHES == 0:
         probs_pos = probs[:batch_size]
         probs_neg = probs[batch_size:]
 
@@ -306,10 +323,11 @@ def train(config, encoder, cond_encoder, tokenizer, device):
         print("Starting batch loop...")
 
         for batch_idx, batch in enumerate(train_bar):
-            print(f"\n--- Batch {batch_idx} ---")
-            print(f"Batch keys: {batch.keys()}")
-            print(f"text_src length: {len(batch['text_src'])}")
-            print(f"text_trg length: {len(batch['text_trg'])}")
+            if batch_idx % LOG_EVERY_N_BATCHES == 0:
+                print(f"\n--- Batch {batch_idx} ---")
+                print(f"Batch keys: {batch.keys()}")
+                print(f"text_src length: {len(batch['text_src'])}")
+                print(f"text_trg length: {len(batch['text_trg'])}")
 
             loss, acc = loss_step(
                 epoch=epoch,
@@ -341,6 +359,9 @@ def train(config, encoder, cond_encoder, tokenizer, device):
             })
 
             step += 1
+
+            if step % SAVE_EVERY_N_BATCHES == 0:
+                save_checkpoint(cond_encoder, config)
 
         cond_encoder.eval()
         with torch.no_grad():
