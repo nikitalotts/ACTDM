@@ -2867,3 +2867,58 @@ def test_only_the_schemes_that_read_diffusion_resolve_its_folder():
     shuffled = open("train_conditional_encoder_shuffled.py", encoding="utf-8").read()
     assert "checkpoints_prefix" not in shuffled, (
         "shuffled не должна зависеть от чекпоинта диффузии")
+
+
+def test_validation_noise_range_matches_the_thesis():
+    """Диапазон шума НА ВАЛИДАЦИИ намеренно оставлен таким, как в ВКР.
+
+    Там схемы расходились: shuffled валидировался при t = eps на чистых
+    эмбеддингах, augmented и combined -- на полном диапазоне (current_T = T).
+    Решение Никиты 09.09.2026: не трогать, иначе пришлось бы пересчитывать
+    rocstories ради числа, которое в статью не идет.
+
+    ВАЖНО, если соберешься сравнивать: valid accuracy трех схем меряет РАЗНЫЕ
+    задачи и в одну таблицу не ставится -- у shuffled она завышена. Результаты
+    подхода дает eval_diffusion (bleu / rouge / bert-score), а не эта метрика.
+
+    ОБУЧЕНИЕ при этом одинаковое у всех трех и совпадает с ВКР: t берется из
+    U(eps, current_T), current_T растет по curriculum до T = 1.0. Это стережет
+    test_curriculum_schedule_identical_across_schemes.
+    """
+    shuffled = open("train_conditional_encoder_shuffled.py", encoding="utf-8").read()
+    body = shuffled[shuffled.index("def loss_step"):shuffled.index("def train(")]
+    tail = body[body.index("    if not eval:"):]
+    tail = tail[tail.index("\n    else:"):]
+    assert "torch.ones(total_batch_size, device=device) * config.cond_encoder.eps" in tail, (
+        "валидация shuffled уехала с t=eps -- числа разойдутся с rocstories")
+    assert "noisy_trg_embeds = trg_embeds_all" in tail, (
+        "валидация shuffled начала зашумлять таргет -- расхождение с rocstories")
+
+    for scheme in ("augmented", "combined"):
+        src = open(f"train_conditional_encoder_{scheme}.py", encoding="utf-8").read()
+        body = src[src.index("def loss_step"):src.index("def train(")]
+        head = body[body.index("if eval:"):]
+        head = head[:head.index("    else:")]
+        assert "current_T = dynamic.T" in head, (
+            f"{scheme}: валидация уехала с полного диапазона")
+
+
+def test_curriculum_applies_only_to_training():
+    """Расписание curriculum -- свойство ОБУЧЕНИЯ. Если бы прогресс протек в
+    валидацию, метрика ехала бы вместе с обучением и перестала быть
+    неподвижной точкой отсчета между эпохами."""
+    for scheme in ("shuffled", "augmented", "combined"):
+        src = open(f"train_conditional_encoder_{scheme}.py", encoding="utf-8").read()
+        body = src[src.index("def loss_step"):src.index("def train(")]
+        # ветка валидации -- та, что после последнего else на верхнем уровне
+        # блока выбора диапазона; curriculum_progress в ней быть не должно
+        marker = "    if not eval:" if scheme == "shuffled" else "    if eval:"
+        assert marker in body, f"{scheme}: не найдена развилка eval"
+        if scheme == "shuffled":
+            tail = body[body.index(marker):]
+            eval_branch = tail[tail.index("\n    else:"):]
+        else:
+            head = body[body.index(marker):]
+            eval_branch = head[:head.index("    else:")]
+        assert "curriculum_progress" not in eval_branch, (
+            f"{scheme}: расписание обучения протекло в валидацию")
