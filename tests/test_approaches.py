@@ -26,6 +26,12 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
 from create_config import create_config                      # noqa: E402
+from create_config import (                                  # noqa: E402
+    CLASSIFIER_BATCH_SIZE, CLASSIFIER_STEP_BUDGET, CLASSIFIER_SUBSET_SEED,
+    CLASSIFIER_TRAIN_EXAMPLES, ROCSTORIES_CLASSIFIER_EPOCHS,
+    ROCSTORIES_CLASSIFIER_STEPS_PER_EPOCH,
+)
+from data.dataset import take_fixed_subset                    # noqa: E402
 from utils.schemes import ARCHITECTURE_TYPES                 # noqa: E402
 
 CUDA = torch.cuda.is_available()
@@ -424,32 +430,50 @@ SCHEME_FILES = {
 def test_curriculum_schedule_identical_across_schemes():
     """ВКР: 'расписание одно и то же для всех трех схем'.
 
-    Диапазон t' растет от почти нулевого на первой эпохе до полного к 10-й.
-    Формула обязана быть (epoch + 1) / warmup: при epoch / warmup первая эпоха
-    вырождается (t' у всех примеров равен eps), а полный диапазон наступает на 11-й.
+    Расписание переехало с номера эпохи на долю пройденных шагов (иначе при
+    бюджете в одну эпоху оно застревало на 10% диапазона), но требование
+    единственности осталось: все три схемы обязаны считать его одинаково.
     """
-    for scheme, fn in SCHEME_FILES.items():
-        src = open(fn, encoding="utf-8").read()
-        assert "warmup_epochs = 10" in src, scheme
-        assert "progress = (epoch + 1) / warmup_epochs" in src, (
-            f"{scheme}: расписание curriculum отличается от остальных схем")
-        assert "if (epoch + 1) < warmup_epochs:" in src, scheme
+    import importlib
+
+    progresses = []
+    for scheme in SCHEME_FILES:
+        mod = importlib.import_module(f"train_conditional_encoder_{scheme}")
+        assert mod.CURRICULUM_WARMUP_FRACTION == pytest.approx(10 / 13, abs=1e-9), scheme
+        progresses.append([mod.curriculum_progress_at(s, 20_000)
+                           for s in (0, 1_000, 10_000, 15_385, 20_000)])
+    assert all(p == progresses[0] for p in progresses), (
+        "расписание curriculum разошлось между схемами")
 
 
 def test_curriculum_reaches_full_range_at_tenth_epoch():
-    """Проверка самой формулы: 1-я эпоха -- узкий диапазон, 10-я -- полный."""
-    warmup, T, eps = 10, 1.0, 0.001
+    """Рецепт ВКР обязан воспроизводиться шаг-в-шаг.
 
-    def current_T(epoch):
-        if (epoch + 1) < warmup:
-            return eps + (T - eps) * ((epoch + 1) / warmup)
-        return T
+    Там 13 эпох, и диапазон t расширялся до полного к концу 10-й. Новое
+    расписание считает ту же долю от ШАГОВ: 10/13 обучения. На бюджете в 13
+    эпох это ровно та же точка, значит прогоны на rocstories не поедут.
+    """
+    import importlib
 
-    assert current_T(0) == pytest.approx(0.1009, abs=1e-3)   # близко к нулевому, но не ноль
-    assert current_T(0) > eps, "первая эпоха не должна вырождаться в точку"
-    assert current_T(8) == pytest.approx(0.9001, abs=1e-3)
-    assert current_T(9) == T, "полный диапазон обязан наступать на 10-й эпохе"
-    assert current_T(12) == T
+    mod = importlib.import_module("train_conditional_encoder_shuffled")
+    T, eps = 1.0, 0.001
+    per_epoch = 2_800                      # неважно сколько, лишь бы одинаково
+    total = per_epoch * 13
+
+    def current_T_steps(step):
+        progress = mod.curriculum_progress_at(step, total)
+        return eps + (T - eps) * progress if progress < 1.0 else T
+
+    def current_T_epochs(epoch):           # формула из ВКР
+        return eps + (T - eps) * ((epoch + 1) / 10) if (epoch + 1) < 10 else T
+
+    for epoch in range(13):
+        step_at_epoch_end = per_epoch * (epoch + 1)
+        assert current_T_steps(step_at_epoch_end) == pytest.approx(
+            current_T_epochs(epoch), abs=1e-3), f"эпоха {epoch}: расписание разошлось с ВКР"
+
+    assert current_T_steps(0) < 0.01, "в начале обучения диапазон почти вырожден"
+    assert current_T_steps(per_epoch * 10) == T, "полный диапазон -- к концу 10-й эпохи"
 
 
 def test_classifier_loaders_drop_last():
@@ -1029,6 +1053,39 @@ def test_smoke_shrinks_warmup_below_training_length(at, monkeypatch):
     assert c.optim.linear_warmup < c.training.training_iters
     assert c.training.eval_freq <= c.training.training_iters
     assert c.training.checkpoint_freq <= c.training.training_iters
+
+
+@pytest.mark.parametrize("dataset", ["wikipedia", "rocstories"])
+def test_smoke_shrinks_the_classifier_budget(dataset, monkeypatch):
+    """Бюджет классификатора эпохами не ограничен, поэтому SMOKE обязан резать
+    его отдельно.
+
+    На wikipedia боевой бюджет -- 35815 шагов, то есть 5-7 часов на схему.
+    Стадия smoke_test.sh classifiers идет с --time=2:00:00: без урезания она
+    снималась бы по лимиту, оставляя после себя чекпоинт, сохраненный на
+    середине обучения, -- и guidance молча вставал бы на недоученные веса.
+    """
+    monkeypatch.delenv("SMOKE", raising=False)
+    real = create_config(make_args("guidance", dataset_name=dataset))
+    real_steps = real.cond_encoder.max_train_steps
+    real_epoch_bound = real_steps or float("inf")
+
+    monkeypatch.setenv("SMOKE", "1")
+    smoke = create_config(make_args("guidance", dataset_name=dataset))
+
+    assert smoke.cond_encoder.max_train_steps == 200
+    assert smoke.cond_encoder.max_train_steps < real_epoch_bound
+    assert smoke.cond_encoder.max_train_examples == 2000
+    # число эпох smoke не трогает: маленький пул при тех же 13 эпохах дает
+    # больше 200 шагов, значит проверка проходит и границу эпохи, и валидацию
+    assert smoke.cond_encoder.epochs == real.cond_encoder.epochs
+    smoke_steps_available = (smoke.cond_encoder.max_train_examples
+                             // smoke.cond_encoder.batch_size) * smoke.cond_encoder.epochs
+    assert smoke_steps_available > smoke.cond_encoder.max_train_steps, (
+        "smoke обязан упереться в потолок по шагам, а не в конец пула -- "
+        "иначе граница эпохи не проверяется")
+    if real_steps:
+        assert real_steps > 200, "боевой бюджет не должен схлопываться до smoke"
 
 
 def test_gpt_skips_ddp_sync_only_between_accumulation_steps():
@@ -2432,44 +2489,47 @@ def test_standalone_shuffled_stage_bypasses_the_unconditional_guard():
 
 # --- бюджет классификаторов guidance ---------------------------------------------
 
-def test_classifier_epoch_budget_fits_the_job_time_limit():
-    """13 эпох -- рецепт rocstories, на wikipedia он не считается за отведенное время.
+def test_classifier_epoch_is_the_pool_and_not_the_whole_shard():
+    """Ключевой инвариант рецепта: на wikipedia эпоха -- это проход по пулу.
 
-    Одна эпоха на wikipedia это 47313 батчей по 32 (весь шард на одной карте),
-    6.6 часа при замеренных 1.98 it/s. Тринадцать эпох -- 86 часов при лимите
-    задания 24. Прогон умирал бы по таймауту, а guidance молча забирал бы
-    недоученный классификатор: он ищет файл по имени, а число эпох входит в имя.
+    Если эпохой снова станет весь шард (47313 батчей, 6.6 ч при замеренных
+    1.98 it/s), тринадцать эпох -- это 86 часов при лимите задания 12. Прогон
+    умирал бы по таймауту, а guidance молча забирал бы недоученный
+    классификатор: он ищет файл по имени, а имя от длины эпохи не зависит.
     """
-    import io as _io
-    import re as _re
+    c = create_config(make_args("guidance", dataset_name="wikipedia"))
+    ce = c.cond_encoder
 
-    HOURS_PER_EPOCH = {"wikipedia": 6.6}
+    assert ce.max_train_examples, "пул не задан -- эпохой станет весь шард"
+    steps_per_epoch = ce.max_train_examples // ce.batch_size
+    assert steps_per_epoch == ROCSTORIES_CLASSIFIER_STEPS_PER_EPOCH == 2755
+    assert steps_per_epoch < WIKIPEDIA_CLASSIFIER_STEPS_PER_EPOCH
 
+    hours = ce.epochs * steps_per_epoch / min(CLASSIFIER_ITERS_PER_SEC.values()) / 3600
     for name in ("train_conditional_encoder_shuffled.sh",
                  "train_conditional_encoder_augmented.sh",
                  "train_conditional_encoder_combined.sh"):
-        sh = _io.open(name, encoding="utf-8").read()
-        m = _re.search(r"#SBATCH --time=(\d+):", sh)
+        sh = open(name, encoding="utf-8").read()
+        m = re.search(r"#SBATCH --time=(\d+):", sh)
         assert m, f"{name}: не найден лимит времени"
-        limit = int(m.group(1))
-
-        c = create_config(make_args("guidance", dataset_name="wikipedia"))
-        need = c.cond_encoder.epochs * HOURS_PER_EPOCH["wikipedia"]
-        assert need <= limit, (
-            f"{name}: {c.cond_encoder.epochs} эпох это {need:.0f} ч при лимите {limit} ч")
+        assert hours <= int(m.group(1)), (
+            f"{name}: {ce.epochs} эпох по {steps_per_epoch} шагов это "
+            f"{hours:.0f} ч при лимите {m.group(1)} ч")
 
 
-def test_classifier_epochs_depend_on_dataset():
-    """Бюджет считается в увиденных примерах, а не в эпохах: шард wikipedia на
-    порядок больше rocstories, и одна эпоха тут дает больше данных, чем 13 там.
-    Рецепт диплома для rocstories при этом обязан сохраниться."""
+def test_classifier_recipe_is_the_same_on_both_datasets():
+    """Рецепт ВКР (13 проходов по 88160 парам) обязан выполняться на обоих
+    датасетах. Различается только способ получить пул: на rocstories это весь
+    датасет, на wikipedia -- отобранная часть шарда, и она входит в имя."""
     wiki = create_config(make_args("guidance", dataset_name="wikipedia"))
     roc = create_config(make_args("guidance", dataset_name="rocstories"))
-    assert wiki.cond_encoder.epochs == 1
-    assert roc.cond_encoder.epochs == 13, "рецепт rocstories из ВКР менять нельзя"
-    # число эпох входит в имя -- значит имена схем на разных датасетах не совпадут
-    assert "-epochs-1-" in wiki.cond_encoder.name
+
+    assert wiki.cond_encoder.epochs == roc.cond_encoder.epochs == 13, (
+        "рецепт из ВКР менять нельзя")
+    assert "-epochs-13-" in wiki.cond_encoder.name
     assert "-epochs-13-" in roc.cond_encoder.name
+    # имена все равно не совпадают: разная геометрия и отбор пула
+    assert wiki.cond_encoder.name != roc.cond_encoder.name
 
 
 def test_classifier_saves_inside_the_epoch():
@@ -2501,3 +2561,241 @@ def test_checkpointing_restores_training_mode():
         assert "was_training = model.training" in body, f"{name}: режим не запоминается"
         assert "model.train(was_training)" in body, f"{name}: режим не возвращается"
         assert body.index("model.eval()") < body.index("model.train(was_training)")
+
+
+def test_noise_curriculum_reaches_full_range_within_the_budget():
+    """Диапазон шума t обязан дойти до полного ВНУТРИ отведенного бюджета.
+
+    Расписание было привязано к номеру эпохи и достигало полного диапазона на
+    10-й. Как только бюджет перестал измеряться десятками эпох (на wikipedia
+    одна), progress навсегда застревал на 0.1: классификатор видел бы t только
+    до 0.10, тогда как guidance применяет его на всей траектории до 1.0 --
+    девять десятых шагов расшумления пришлись бы на необученную область.
+    """
+    import importlib
+
+    for mod_name in ("train_conditional_encoder_shuffled",
+                     "train_conditional_encoder_augmented",
+                     "train_conditional_encoder_combined"):
+        mod = importlib.import_module(mod_name)
+        total = 20_000
+        assert mod.curriculum_progress_at(0, total) == 0.0
+        assert mod.curriculum_progress_at(total, total) == 1.0, (
+            f"{mod_name}: полный диапазон не достигается к концу бюджета")
+        # форма из ВКР: полный диапазон на последней четверти обучения
+        full_at = mod.CURRICULUM_WARMUP_FRACTION
+        assert full_at == pytest.approx(10 / 13, abs=1e-6)
+        assert mod.curriculum_progress_at(int(full_at * total), total) == pytest.approx(1.0, abs=1e-3)
+        # и середина обучения все еще на неполном диапазоне
+        assert mod.curriculum_progress_at(total // 2, total) < 1.0
+
+
+def test_curriculum_no_longer_depends_on_epoch_count():
+    """Один и тот же прогресс при любом числе эпох: расписание считается от
+    доли пройденных шагов, а не от индекса эпохи."""
+    import importlib
+
+    mod = importlib.import_module("train_conditional_encoder_shuffled")
+    # бюджет вдвое короче -- прогресс на середине тот же
+    assert mod.curriculum_progress_at(5_000, 20_000) == pytest.approx(
+        mod.curriculum_progress_at(2_500, 10_000))
+
+
+# Замеренная скорость обучения классификаторов на wikipedia (V100, батч 32).
+CLASSIFIER_ITERS_PER_SEC = {"shuffled": 1.98, "augmented": 1.80, "combined": 1.38}
+# Часы, отведенные на ОДИН классификатор: три схемы считаются параллельно,
+# каждая своим заданием на своей карте.
+CLASSIFIER_HOURS_BUDGET = 10.0
+# Длина шарда wikipedia в батчах по 32 с drop_last.
+WIKIPEDIA_CLASSIFIER_STEPS_PER_EPOCH = 47313
+# Размер holdout-сплита test, на котором считается валидация (data/load.py).
+WIKIPEDIA_TEST_SPLIT = 7000
+
+
+def test_classifier_budget_equals_the_rocstories_recipe():
+    """На wikipedia классификатор обязан увидеть СТОЛЬКО ЖЕ пар, сколько видел
+    на rocstories, и увидеть их так же: тот же пул, то же число проходов.
+
+    Рецепт rocstories: 88160 пар (2755 батчей по 32 с drop_last) и 13 эпох по
+    ним -- 1.15 млн увиденных пар. Совпадать обязаны все три числа: объем, пул
+    и повторы. Считать в эпохах шарда нельзя -- шард wikipedia в 17 раз больше.
+    """
+    roc = create_config(make_args("guidance", dataset_name="rocstories"))
+    wiki = create_config(make_args("guidance", dataset_name="wikipedia"))
+
+    assert roc.cond_encoder.epochs == wiki.cond_encoder.epochs, (
+        "число проходов по пулу обязано совпадать с рецептом rocstories")
+    assert wiki.cond_encoder.epochs == ROCSTORIES_CLASSIFIER_EPOCHS == 13
+    assert roc.cond_encoder.batch_size == wiki.cond_encoder.batch_size == CLASSIFIER_BATCH_SIZE, (
+        "объем пересчитывается в пары через общий батч; при разных батчах "
+        "равенство шагов перестает означать равенство данных")
+
+    # объем: пул x эпохи
+    roc_pool = ROCSTORIES_CLASSIFIER_STEPS_PER_EPOCH * roc.cond_encoder.batch_size
+    wiki_pool = wiki.cond_encoder.max_train_examples
+
+    assert wiki_pool == roc_pool == CLASSIFIER_TRAIN_EXAMPLES == 88160, (
+        f"пул wikipedia {wiki_pool} вместо {roc_pool}")
+    assert wiki_pool * wiki.cond_encoder.epochs == roc_pool * roc.cond_encoder.epochs == 1_146_080
+
+    # на rocstories пул не урезается -- там он и есть весь датасет
+    assert roc.cond_encoder.max_train_examples is None
+    assert roc.cond_encoder.max_train_steps is None
+
+
+def test_step_cap_agrees_with_the_pool_and_epochs():
+    """Рецепт записан дважды -- пулом с эпохами и потолком по шагам. Числа
+    обязаны сойтись, иначе одна запись молча победит вторую: либо обучение
+    оборвется раньше конца последней эпохи, либо потолок никогда не сработает
+    и пул будет пройден лишний раз."""
+    wiki = create_config(make_args("guidance", dataset_name="wikipedia"))
+    ce = wiki.cond_encoder
+
+    steps_from_pool = (ce.max_train_examples // ce.batch_size) * ce.epochs
+    assert steps_from_pool == ce.max_train_steps == CLASSIFIER_STEP_BUDGET == 35815, (
+        f"пул дает {steps_from_pool} шагов, а потолок {ce.max_train_steps}")
+
+
+def test_classifier_pool_fits_into_a_wikipedia_shard():
+    """Пул отбирается из ОДНОГО шарда (get_data отдает по файлу за раз). Если
+    он не помещается, take_fixed_subset вернет шард целиком, и объем разойдется
+    с rocstories молча -- только с строкой WARNING в логе."""
+    wiki = create_config(make_args("guidance", dataset_name="wikipedia"))
+    assert wiki.cond_encoder.max_train_examples <= (
+        WIKIPEDIA_CLASSIFIER_STEPS_PER_EPOCH * CLASSIFIER_BATCH_SIZE), (
+        "пул больше шарда wikipedia")
+
+
+@pytest.mark.parametrize("scheme", sorted(CLASSIFIER_ITERS_PER_SEC))
+def test_classifier_budget_fits_the_time_limit(scheme):
+    """Каждая схема обязана уложиться в отведенные часы и в лимит sbatch.
+
+    Считаем и валидацию: пул проходится 13 раз, и валидация идет в конце
+    КАЖДОЙ эпохи, то есть 13 раз по 218 батчей. Скорость берем обучающую --
+    на валидации нет backward, так что оценка заведомо сверху.
+    """
+    c = create_config(make_args("guidance", dataset_name="wikipedia"))
+    steps = c.cond_encoder.max_train_steps
+    assert steps, "на wikipedia бюджет обязан быть ограничен шагами"
+
+    valid_batches = WIKIPEDIA_TEST_SPLIT // c.cond_encoder.batch_size
+    batches = steps + valid_batches * c.cond_encoder.epochs
+
+    hours = batches / CLASSIFIER_ITERS_PER_SEC[scheme] / 3600
+    assert hours <= CLASSIFIER_HOURS_BUDGET, (
+        f"{scheme}: {hours:.1f} ч при отведенных {CLASSIFIER_HOURS_BUDGET} ч")
+
+    sh = open(f"train_conditional_encoder_{scheme}.sh", encoding="utf-8").read()
+    limit = re.search(r"#SBATCH --time=(\d+):", sh)
+    assert limit, f"{scheme}: в .sh нет --time"
+    assert hours <= int(limit.group(1)), (
+        f"{scheme}: {hours:.1f} ч обучения при лимите задания {limit.group(1)} ч")
+
+
+def test_training_pool_is_encoded_in_the_checkpoint_name():
+    """Пул и сид задают саму обучающую выборку, поэтому обязаны быть в имени:
+    иначе прогон с другим пулом молча переиспользовал бы чужой чекпоинт, а имя
+    обещало бы обучение по всему датасету."""
+    wiki = create_config(make_args("guidance", dataset_name="wikipedia"))
+    roc = create_config(make_args("guidance", dataset_name="rocstories"))
+
+    assert f"-pool-{wiki.cond_encoder.max_train_examples}" in wiki.cond_encoder.name
+    assert f"-seed-{wiki.cond_encoder.subset_seed}" in wiki.cond_encoder.name
+    assert roc.cond_encoder.max_train_examples is None
+    assert "-pool-" not in roc.cond_encoder.name, "рецепт rocstories не меняем"
+
+
+def test_step_budget_also_shortens_the_lr_schedule():
+    """Косинусный шедулер расписан на num_training_steps. Если ограничение по
+    шагам туда не попадет, lr будет рассчитан на полную эпоху и при досрочной
+    остановке не дойдет до минимума."""
+    import io as _io
+
+    for name in ("train_conditional_encoder_shuffled.py",
+                 "train_conditional_encoder_augmented.py",
+                 "train_conditional_encoder_combined.py"):
+        src = _io.open(name, encoding="utf-8").read()
+        i = src.index("num_training_steps = len(train_loader)")
+        j = src.index("num_warmup_steps = num_training_steps // 10")
+        assert "max_train_steps" in src[i:j], (
+            f"{name}: ограничение по шагам не влияет на расписание lr")
+        assert "if step >= num_training_steps:" in src, f"{name}: нет остановки по бюджету"
+
+
+# =====================================================================
+# Фиксированный пул: одни и те же примеры каждую эпоху и каждый запуск
+# =====================================================================
+
+def _fake_shard(n):
+    from datasets import Dataset
+    return Dataset.from_dict({"text_src": [f"src{i}" for i in range(n)],
+                              "text_trg": [f"trg{i}" for i in range(n)]})
+
+
+def test_fixed_subset_is_deterministic_across_calls():
+    """Тот же сид -- тот же набор примеров. Это и есть требование «каждый раз
+    одни и те же»: три схемы и любой перезапуск обучаются на одном пуле."""
+    shard = _fake_shard(5000)
+
+    a = take_fixed_subset(shard, 800, seed=CLASSIFIER_SUBSET_SEED)
+    b = take_fixed_subset(shard, 800, seed=CLASSIFIER_SUBSET_SEED)
+
+    assert len(a) == len(b) == 800
+    assert a["text_src"] == b["text_src"]
+    # и это действительно подвыборка, а не первые 800 подряд
+    assert a["text_src"] != shard["text_src"][:800]
+
+
+def test_fixed_subset_changes_only_with_the_seed():
+    """Сид -- единственная ручка, меняющая выборку; поэтому он и в имени файла."""
+    shard = _fake_shard(5000)
+    a = take_fixed_subset(shard, 800, seed=0)
+    c = take_fixed_subset(shard, 800, seed=1)
+    assert a["text_src"] != c["text_src"]
+
+
+def test_fixed_subset_keeps_shard_order():
+    """Индексы возвращаются по возрастанию: набор тот же, а чтение arrow-файла
+    остается последовательным. Перемешивает потом DataLoader."""
+    shard = _fake_shard(1000)
+    sub = take_fixed_subset(shard, 100, seed=0)
+    nums = [int(t[3:]) for t in sub["text_src"]]
+    assert nums == sorted(nums)
+
+
+def test_fixed_subset_returns_everything_when_pool_exceeds_shard(capsys):
+    """Если пул больше шарда, объем разойдется с rocstories -- об этом обязано
+    быть сказано в логе, молча уменьшать обучение нельзя."""
+    shard = _fake_shard(100)
+    out = take_fixed_subset(shard, 500, seed=0)
+    assert len(out) == 100
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_fixed_subset_is_a_noop_without_a_limit():
+    """На rocstories пул не задан -- датасет обязан дойти до загрузчика целиком."""
+    shard = _fake_shard(100)
+    assert take_fixed_subset(shard, None, seed=0) is shard
+
+
+@pytest.mark.parametrize("scheme", ["shuffled", "augmented", "combined"])
+def test_loaders_fix_both_the_pool_and_the_batch_order(scheme):
+    """Все три схемы обязаны брать пул и порядок батчей из конфига.
+
+    Пул -- это КАКИЕ примеры видит модель, порядок батчей -- КАК они разбиты;
+    у shuffled и combined негативы строятся внутри батча, поэтому разбиение --
+    часть обучающей задачи. Без сида три схемы решали бы на одном пуле разные
+    задачи, а перезапуск не воспроизводил бы прогон.
+    """
+    src = open(f"train_conditional_encoder_{scheme}.py", encoding="utf-8").read()
+    body = src[src.index("def get_loaders"):src.index("def get_datasets")]
+
+    assert "take_fixed_subset(" in body, f"{scheme}: пул не фиксируется"
+    assert "max_train_examples" in body, f"{scheme}: размер пула не из конфига"
+    assert "subset_seed" in body, f"{scheme}: сид не из конфига"
+    assert "generator=shuffle_generator" in body, f"{scheme}: порядок батчей не засеян"
+    assert "manual_seed" in body, f"{scheme}: генератор не засеян"
+    # валидация не перемешивается и не урезается -- метрика должна быть сравнима
+    valid = body[body.index("valid_loader = DataLoader"):]
+    assert "take_fixed_subset" not in valid, f"{scheme}: валидация урезана пулом"
+    assert "shuffle=True" not in valid, f"{scheme}: валидация перемешивается"

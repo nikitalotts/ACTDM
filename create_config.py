@@ -53,6 +53,48 @@ TRAINING_RECIPE = {
 }
 
 
+# --- бюджет классификаторов guidance ---------------------------------------------
+# Рецепт калиброван на rocstories: 88160 обучающих пар (2755 батчей по 32 с
+# drop_last) и 13 проходов по ним -- 35815 оптимизаторных шагов, 1.15 млн
+# увиденных пар.
+#
+# На wikipedia повторяем его буквально: берем ФИКСИРОВАННЫЙ пул из тех же 88160
+# пар и проходим его те же 13 раз. Совпадает не только итоговый объем, но и
+# число различных примеров, и число повторов каждого.
+#
+# Почему фиксированный пул, а не свежая случайная выборка на каждую эпоху.
+# Wikipedia отдается шардами примерно по 1.5 млн пар, бюджет покрывает лишь
+# часть шарда, и без явного отбора эта часть определялась бы перемешиванием
+# DataLoader-а -- своим у каждой из трех схем и своим при каждом перезапуске.
+# Три классификатора обучались бы на разных данных, и разница между схемами
+# перестала бы быть разницей между схемами. Пул отбирается по фиксированному
+# сиду (CLASSIFIER_SUBSET_SEED), им же засеян порядок батчей: у shuffled и
+# combined негативы строятся ВНУТРИ батча, то есть разбиение на батчи -- часть
+# обучающей задачи, а не деталь загрузчика.
+#
+# Обратная сторона решения: те же 88160 абзацев проходятся 13 раз, и
+# переобучение здесь вероятнее, чем на свежих данных. Поэтому валидация
+# считается в конце КАЖДОЙ эпохи -- расхождение train/valid accuracy видно.
+#
+# Время по замеренным 1.98 / 1.80 / 1.38 it/s плюс 13 валидаций по 218 батчей:
+# около 5.3 / 5.9 / 7.7 ч на схему. Три схемы идут параллельно, каждая своим
+# заданием, лимит .sh -- 12 ч.
+ROCSTORIES_CLASSIFIER_STEPS_PER_EPOCH = 2755
+ROCSTORIES_CLASSIFIER_EPOCHS = 13
+CLASSIFIER_BATCH_SIZE = 32
+# Размер фиксированного пула и полный бюджет в шагах -- одно и то же число,
+# записанное с двух сторон: пул / батч * эпохи == бюджет.
+CLASSIFIER_TRAIN_EXAMPLES = (
+    ROCSTORIES_CLASSIFIER_STEPS_PER_EPOCH * CLASSIFIER_BATCH_SIZE
+)
+CLASSIFIER_STEP_BUDGET = (
+    ROCSTORIES_CLASSIFIER_STEPS_PER_EPOCH * ROCSTORIES_CLASSIFIER_EPOCHS
+)
+# Сид отбора пула и порядка батчей. Он определяет саму обучающую выборку,
+# поэтому входит в имя чекпоинта.
+CLASSIFIER_SUBSET_SEED = 0
+
+
 def training_budget(training, architecture_type):
     """Раскладывает рецепт на батч, накопление и число микрошагов."""
     r = TRAINING_RECIPE.get(architecture_type, TRAINING_RECIPE["default"])
@@ -231,19 +273,14 @@ def create_config(args):
 
     cond_encoder = config.cond_encoder = create_cond_encoder_config()
     cond_encoder.dataset = data.datasets.datasets_list[0]
-    # Число эпох было захардкожено (13) и не зависело от датасета -- рецепт
-    # калиброван на rocstories. На wikipedia одна эпоха это 47313 батчей по 32,
-    # то есть 1.51 млн примеров и 6.6 часа счета: тринадцать эпох требуют 86
-    # часов при лимите задания 24. Прогон умирал бы по таймауту, а guidance
-    # молча забирал бы недоученный классификатор.
-    #
-    # Считаем не эпохи, а увиденные примеры: одна эпоха wikipedia дает больше
-    # данных, чем все 13 эпох rocstories. Схема shuffled на 21% первой эпохи
-    # уже показывала accuracy 1.00/0.97 при лоссе 0.05.
+    # Эпох столько же, сколько было на rocstories, но на wikipedia эпохой
+    # считается проход по ФИКСИРОВАННОМУ пулу (max_train_examples ниже), а не
+    # по шарду целиком: шард -- 47313 батчей, тринадцать проходов по нему это
+    # 86 часов при лимите задания 12.
     #
     # ВАЖНО: значение входит в имя чекпоинта (-epochs-N-), и guidance ищет файл
     # по тому же имени. Менять только здесь -- обе стороны считают его из конфига.
-    cond_encoder.epochs = 1 if cond_encoder.dataset == "wikipedia" else 13
+    cond_encoder.epochs = ROCSTORIES_CLASSIFIER_EPOCHS
     # Классификатор токенизирует src/trg длинами данных (max_context_len /
     # max_sequence_len) -- ровно та геометрия, что на guidance-инференсе.
     # Длины входят в имя: классификатор, обученный старым кодом с фиксированной
@@ -253,7 +290,29 @@ def create_config(args):
     cond_encoder.mode = config.mode
     if cond_encoder.empty_trg_prob > 0:
         cond_encoder.name += f'-empty_trg_prob={cond_encoder.empty_trg_prob}'
+    # Пул обучающих примеров. На rocstories он и так весь датасет (88161 пара),
+    # ограничивать нечего; на wikipedia отбирается детерминированно из шарда --
+    # см. take_fixed_subset в data/dataset.py.
+    is_wikipedia = cond_encoder.dataset == "wikipedia"
+    cond_encoder.max_train_examples = CLASSIFIER_TRAIN_EXAMPLES if is_wikipedia else None
+    cond_encoder.subset_seed = CLASSIFIER_SUBSET_SEED
+    # Страховка поверх пула: сколько бы батчей ни дал загрузчик, дальше бюджета
+    # обучение не уйдет. Число обязано совпасть с эпохами по пулу, иначе одна из
+    # двух записей рецепта молча победила бы вторую -- это проверяют тесты.
+    cond_encoder.max_train_steps = CLASSIFIER_STEP_BUDGET if is_wikipedia else None
+    if is_wikipedia and cond_encoder.batch_size != CLASSIFIER_BATCH_SIZE:
+        raise Exception(
+            f"Пул классификатора посчитан для батча {CLASSIFIER_BATCH_SIZE}, "
+            f"а в конфиге {cond_encoder.batch_size}: равенство объема данных с "
+            f"rocstories нарушится. Пересчитайте CLASSIFIER_TRAIN_EXAMPLES"
+        )
     cond_encoder.name += f'-epochs-{cond_encoder.epochs}'
+    # Пул и сид входят в имя: они задают саму обучающую выборку. Без этого
+    # прогон с другим пулом молча переиспользовал бы чужой чекпоинт, а имя
+    # обещало бы обучение по всему датасету.
+    if cond_encoder.max_train_examples:
+        cond_encoder.name += (f'-pool-{cond_encoder.max_train_examples}'
+                              f'-seed-{cond_encoder.subset_seed}')
     # схема негативов входит в имя: иначе три схемы обучения писали бы
     # классификатор в один и тот же файл и затирали друг друга
     cond_encoder.augmentation_scheme = args.augmentation_scheme
@@ -522,7 +581,22 @@ def apply_smoke_overrides(config):
     # классификатор guidance переименовываем тоже: иначе короткий прогон
     # затер бы боевой чекпоинт классификатора недоученными весами
     if "cond_encoder" in config:
-        config.cond_encoder.epochs = 1
+        # Бюджет классификатора -- 35815 шагов и часы счета. Smoke обязан
+        # пройти те же кодовые пути, а не обучить классификатор: без урезания
+        # стадия classifiers не укладывалась в SMOKE_TIME, снималась по лимиту
+        # и оставляла недоученный чекпоинт, на который молча вставал guidance.
+        #
+        # Число эпох НЕ трогаем: маленький пул (2000 пар -- 62 батча) при тех же
+        # 13 эпохах дает 806 шагов, из которых берутся первые 200. Так smoke
+        # проходит и границу эпохи, и валидацию между эпохами, и расширение
+        # диапазона шума -- то, ради чего он и нужен.
+        config.cond_encoder.max_train_examples = 2000
+        config.cond_encoder.max_train_steps = 200
+        # Имя собрано выше и обещает боевой пул. Правим: smoke-файл не должен
+        # выглядеть обученным по полному рецепту, даже глядя на имя.
+        config.cond_encoder.name = re.sub(
+            r"-pool-\d+", f"-pool-{config.cond_encoder.max_train_examples}",
+            config.cond_encoder.name)
         config.cond_encoder.name += "-smoke"
         config.cond_encoder.cond_encoder_path = f"{artifacts_dir}/{config.cond_encoder.name}.pth"
 

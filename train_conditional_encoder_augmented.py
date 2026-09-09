@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from transformers import get_linear_schedule_with_warmup
 from copy import deepcopy
 
-from data.dataset import get_dataset_iter
+from data.dataset import get_dataset_iter, take_fixed_subset
 from model.encoder import Encoder
 from create_config import create_config
 from model.enc_normalizer import EncNormalizer
@@ -20,14 +20,31 @@ from utils.util import parse
 from model.conditional_encoder import ConditionalEncoder
 from model.score_estimator import ScoreEstimatorEMB
 
-def get_loaders(train_dataset, valid_dataset, batch_size):
+def get_loaders(train_dataset, valid_dataset, batch_size, config):
+    # Пул обучающих примеров фиксирован: одни и те же пары на каждой эпохе, при
+    # каждом перезапуске и у всех трех схем. Иначе «столько же данных, сколько
+    # на rocstories» означало бы каждый раз ДРУГИЕ данные.
+    train_data = take_fixed_subset(
+        next(train_dataset),
+        num_examples=getattr(config.cond_encoder, 'max_train_examples', None),
+        seed=getattr(config.cond_encoder, 'subset_seed', 0),
+    )
+
+    # Порядок батчей тоже засеян. Негативы у shuffled и combined строятся ВНУТРИ
+    # батча, то есть разбиение пула на батчи -- часть обучающей задачи, а не
+    # деталь загрузчика: с несеяным перемешиванием две схемы решали бы на одном
+    # пуле разные задачи, а перезапуск не воспроизводил бы прогон.
+    shuffle_generator = torch.Generator()
+    shuffle_generator.manual_seed(int(getattr(config.cond_encoder, 'subset_seed', 0)))
+
     # drop_last обязателен: negative-ы строятся перестановкой внутри батча,
     # и на хвостовом батче из 1 примера подбор перестановки без неподвижных
     # точек зацикливается навсегда
     train_loader = DataLoader(
-        next(train_dataset),
+        train_data,
         batch_size=batch_size,
         shuffle=True,
+        generator=shuffle_generator,
         num_workers=0,
         pin_memory=False,
         drop_last=True
@@ -55,9 +72,30 @@ def get_datasets(config):
     return train_dataset, test_dataset
 
 # Как часто сохранять классификатор ВНУТРИ эпохи. Раньше сохранение стояло
-# только в конце эпохи, а на wikipedia одна эпоха -- это 47313 батчей, часы
-# счета: задание, снятое по лимиту времени, не оставляло вообще ничего.
+# только в конце эпохи, и на wikipedia, где эпохой был весь шард (47313 батчей,
+# часы счета), задание, снятое по лимиту времени, не оставляло вообще ничего.
+# Сейчас эпоха -- проход по пулу, 2755 батчей, но прогон целиком это 35815
+# шагов и 5-8 часов, так что сохранение внутри эпохи по-прежнему нужно.
 SAVE_EVERY_N_BATCHES = 2000
+
+# Доля обучения, за которую диапазон шума t расширяется от eps до T.
+# В ВКР расширение шло по НОМЕРУ ЭПОХИ и полный диапазон наступал на 10-й из
+# 13, то есть последняя четверть обучения шла на полном диапазоне. Сохраняем
+# ту же форму, но считаем от пройденных ШАГОВ.
+CURRICULUM_WARMUP_FRACTION = 10.0 / 13.0
+
+
+def curriculum_progress_at(step, num_training_steps):
+    """Прогресс расширения диапазона шума, от 0 до 1.
+
+    Привязка к номеру эпохи ломалась, как только бюджет переставал измеряться
+    десятками эпох: при обучении в одну эпоху progress навсегда застывал на
+    0.1, классификатор видел t только до 0.10, а guidance применяет его на всей
+    траектории до 1.0 -- девять десятых шагов расшумления пришлись бы на
+    область, где классификатор не обучался.
+    """
+    warmup = max(1, int(CURRICULUM_WARMUP_FRACTION * num_training_steps))
+    return min(1.0, step / warmup)
 
 
 def save_checkpoint(model, config):
@@ -104,7 +142,7 @@ def predict_x0_from_xt(x_t, t, score_estimator, cond=None, cond_mask=None, use_a
     return x_0_pred
 
 def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, score_estimator,
-              config, device, eval=False, batch_idx=0):
+              config, device, eval=False, batch_idx=0, curriculum_progress=None):
 
     if not eval and batch_idx == 0:
         print(f"\n=== RAW TEXT CHECK ===", file=sys.stderr, flush=True)
@@ -238,9 +276,9 @@ def loss_step(epoch, batch, tokenizer, encoder, cond_encoder, score_estimator,
     if eval:
         current_T = dynamic.T
     else:
-        warmup_epochs = 10
-        if (epoch + 1) < warmup_epochs:
-            progress = (epoch + 1) / warmup_epochs
+        progress = (curriculum_progress if curriculum_progress is not None
+                    else min(1.0, (epoch + 1) / 10.0))
+        if progress < 1.0:
             current_T = dynamic.eps + (dynamic.T - dynamic.eps) * progress
         else:
             current_T = dynamic.T
@@ -311,13 +349,33 @@ def train(config, encoder, cond_encoder, score_estimator, tokenizer, device):
     train_loader, valid_loader = get_loaders(
         train_dataset=train_dataset,
         valid_dataset=valid_dataset,
-        batch_size=batch_size
+        batch_size=batch_size,
+        config=config
     )
     print(f"Train loader length: {len(train_loader)}")
     print(f"Valid loader length: {len(valid_loader)}")
 
     num_training_steps = len(train_loader) * config.cond_encoder.epochs
+    # Эпоха здесь -- проход по ФИКСИРОВАННОМУ пулу (см. get_loaders), поэтому
+    # число шагов уже равно бюджету рецепта. max_train_steps -- страховка на
+    # случай, когда пул оказался больше заказанного: например, шард меньше
+    # запрошенного, и take_fixed_subset вернул его целиком. Ограничение обязано
+    # попасть и сюда: иначе шедулер lr расписан на другую длину и при досрочной
+    # остановке не доводит lr до минимума.
+    max_steps = getattr(config.cond_encoder, 'max_train_steps', None)
+    if max_steps:
+        if int(max_steps) > num_training_steps:
+            # Обучиться меньше бюджета молча нельзя: готовый файл на месте,
+            # имя то же, и guidance заберет недоученный классификатор.
+            print(f"WARNING: бюджет {int(max_steps)} шагов не помещается в "
+                  f"{config.cond_encoder.epochs} эпохи по {len(train_loader)} батчей -- "
+                  f"обучение остановится на {num_training_steps}", flush=True)
+        num_training_steps = min(num_training_steps, int(max_steps))
     num_warmup_steps = num_training_steps // 10
+    print(f"Training budget: {num_training_steps} steps x "
+          f"{config.cond_encoder.batch_size} = "
+          f"{num_training_steps * config.cond_encoder.batch_size} pairs, "
+          f"warmup {num_warmup_steps}", flush=True)
 
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -336,6 +394,8 @@ def train(config, encoder, cond_encoder, score_estimator, tokenizer, device):
     print("="*80 + "\n")
 
     for epoch in range(config.cond_encoder.epochs):
+        if step >= num_training_steps:
+            break
         print(f"\n=== EPOCH {epoch + 1}/{config.cond_encoder.epochs} ===")
 
         cond_encoder.train()
@@ -351,7 +411,8 @@ def train(config, encoder, cond_encoder, score_estimator, tokenizer, device):
                 score_estimator=score_estimator,
                 config=config,
                 device=device,
-                batch_idx=batch_idx
+                batch_idx=batch_idx,
+                curriculum_progress=curriculum_progress_at(step, num_training_steps)
             )
 
             optimizer.zero_grad()
@@ -377,6 +438,9 @@ def train(config, encoder, cond_encoder, score_estimator, tokenizer, device):
 
             if step % SAVE_EVERY_N_BATCHES == 0:
                 save_checkpoint(cond_encoder, config)
+
+            if step >= num_training_steps:
+                break
 
         print('Starting evaluation')
         cond_encoder.eval()
