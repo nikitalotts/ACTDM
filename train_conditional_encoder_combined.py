@@ -16,7 +16,7 @@ from model.encoder import Encoder
 from create_config import create_config
 from model.enc_normalizer import EncNormalizer
 from diffusion_utils.dynamic import DynamicSDE
-from utils.util import parse
+from utils.util import parse, diffusion_checkpoint_folder
 from model.conditional_encoder import ConditionalEncoder
 from model.score_estimator import ScoreEstimatorEMB
 
@@ -528,9 +528,9 @@ def main():
     se_config.use_self_cond = config.use_self_cond
     score_estimator = ScoreEstimatorEMB(config=se_config)
 
-    prefix_folder = os.path.join(config.training.checkpoints_folder, config.training.checkpoints_prefix)
-    if not os.path.exists(prefix_folder):
-        raise FileNotFoundError(f"Checkpoint folder not found: {prefix_folder}")
+    # В smoke-режиме каталог получает суффикс -smoke; если smoke-чекпоинта
+    # диффузии нет, читается боевой. Классификатор диффузию только читает.
+    prefix_folder = diffusion_checkpoint_folder(config)
 
     checkpoint_names = [
         int(t.replace(".pth", ""))

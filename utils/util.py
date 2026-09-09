@@ -294,6 +294,45 @@ def gpu_stats(util_every_sec: float = 60.0):
 
 
 # --- выбор чекпоинта для дозапуска ----------------------------------------------
+def diffusion_checkpoint_folder(config):
+    """Каталог чекпоинтов диффузии для того, кто их только ЧИТАЕТ.
+
+    Классификаторы augmented/combined реконструируют x_0 замороженной
+    безусловной диффузией: score_estimator переводится в eval и в
+    requires_grad=False, в этот каталог не пишется ничего.
+
+    Поэтому в SMOKE-режиме, где к prefix добавляется -smoke, разрешаем откат на
+    боевой каталог, когда smoke-каталога нет. Иначе короткая проверка требовала
+    бы сначала обучить безусловную диффузию отдельным smoke-заданием -- часы
+    ради 200 шагов проверки классификатора, при том что проверяться на том
+    самом файле, который возьмет боевой прогон, даже честнее. Ровно та же
+    логика, что у smoke-декодера в create_config.apply_smoke_overrides.
+
+    Обратный откат невозможен по построению: суффикс -smoke появляется только
+    в smoke-режиме, так что боевой прогон никогда не прочитает smoke-веса.
+    """
+    import os as _os
+
+    prefix = config.training.checkpoints_prefix
+    folder = _os.path.join(config.training.checkpoints_folder, prefix)
+    if _os.path.exists(folder):
+        return folder
+
+    suffix = "-smoke"
+    if prefix.endswith(suffix):
+        real = _os.path.join(config.training.checkpoints_folder, prefix[:-len(suffix)])
+        if _os.path.exists(real):
+            print(f"SMOKE: smoke-чекпоинта диффузии нет, читаем боевой {real}",
+                  flush=True)
+            return real
+
+    raise FileNotFoundError(
+        f"Checkpoint folder not found: {folder}\n"
+        f"Классификаторы augmented/combined реконструируют x_0 безусловной "
+        f"диффузией -- ее нужно обучить раньше: ./run_wikipedia.sh unconditional"
+    )
+
+
 def resume_checkpoint_path(prefix_folder: str, checkpoint_name=None):
     """Путь к чекпоинту, с которого продолжается обучение. None -- продолжать нечего.
 

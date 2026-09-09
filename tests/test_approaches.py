@@ -2799,3 +2799,71 @@ def test_loaders_fix_both_the_pool_and_the_batch_order(scheme):
     valid = body[body.index("valid_loader = DataLoader"):]
     assert "take_fixed_subset" not in valid, f"{scheme}: валидация урезана пулом"
     assert "shuffle=True" not in valid, f"{scheme}: валидация перемешивается"
+
+
+# =====================================================================
+# smoke переиспользует боевой чекпоинт диффузии
+# =====================================================================
+
+def _diffusion_folder(tmp_path, prefix, existing):
+    """Что вернет resolver при данном prefix и наборе существующих каталогов."""
+    from types import SimpleNamespace
+    from utils.util import diffusion_checkpoint_folder
+
+    for name in existing:
+        (tmp_path / name).mkdir(parents=True, exist_ok=True)
+
+    cfg = SimpleNamespace(training=SimpleNamespace(
+        checkpoints_folder=str(tmp_path), checkpoints_prefix=prefix))
+    return os.path.basename(diffusion_checkpoint_folder(cfg))
+
+
+REAL_PREFIX = "tencdm-bert-base-cased-512-0.0002-wikipedia-cfg=0.0-uncond"
+
+
+def test_smoke_classifier_reuses_the_trained_diffusion_checkpoint(tmp_path):
+    """Классификатор диффузию только ЧИТАЕТ (score_estimator в eval, без
+    градиентов). Требовать под него отдельный smoke-прогон безусловной
+    диффузии -- часы счета ради 200 шагов проверки; проверяться на том самом
+    файле, который возьмет боевой прогон, к тому же честнее."""
+    assert _diffusion_folder(
+        tmp_path, REAL_PREFIX + "-smoke", existing=[REAL_PREFIX]) == REAL_PREFIX
+
+
+def test_smoke_diffusion_checkpoint_wins_when_it_exists(tmp_path):
+    """Если smoke-чекпоинт диффузии обучен, берется он: цепочка
+    smoke uncond -> classifiers должна работать как раньше."""
+    assert _diffusion_folder(
+        tmp_path, REAL_PREFIX + "-smoke",
+        existing=[REAL_PREFIX, REAL_PREFIX + "-smoke"]) == REAL_PREFIX + "-smoke"
+
+
+def test_real_run_never_falls_back_to_smoke_checkpoint(tmp_path):
+    """САМОЕ ВАЖНОЕ в этой подмене: она обязана быть односторонней. Боевой
+    классификатор, взявший 200-шаговые smoke-веса диффузии, реконструировал бы
+    x_0 мусором, а лог выглядел бы успешным."""
+    with pytest.raises(FileNotFoundError):
+        _diffusion_folder(tmp_path, REAL_PREFIX, existing=[REAL_PREFIX + "-smoke"])
+
+
+def test_missing_diffusion_checkpoint_names_the_stage_to_run(tmp_path):
+    """Сообщение об ошибке обязано говорить, что запускать: иначе непонятно,
+    почему классификатор требует чужой артефакт."""
+    with pytest.raises(FileNotFoundError, match="unconditional"):
+        _diffusion_folder(tmp_path, REAL_PREFIX, existing=[])
+
+
+def test_only_the_schemes_that_read_diffusion_resolve_its_folder():
+    """augmented и combined реконструируют x_0 диффузией -- они обязаны идти
+    через resolver. shuffled ее не трогает вовсе: негативы получаются
+    перестановкой пар внутри батча."""
+    for scheme in ("augmented", "combined"):
+        src = open(f"train_conditional_encoder_{scheme}.py", encoding="utf-8").read()
+        assert "diffusion_checkpoint_folder(config)" in src, (
+            f"{scheme}: каталог чекпоинтов собирается вручную, отката не будет")
+        assert "prefix_folder = os.path.join(" not in src, (
+            f"{scheme}: остался ручной os.path.join мимо resolver")
+
+    shuffled = open("train_conditional_encoder_shuffled.py", encoding="utf-8").read()
+    assert "checkpoints_prefix" not in shuffled, (
+        "shuffled не должна зависеть от чекпоинта диффузии")
