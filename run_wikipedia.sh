@@ -22,6 +22,10 @@
 #                                   негативы перестановкой пар и диффузию не
 #                                   трогает, поэтому идет сразу после data,
 #                                   параллельно чему угодно
+#   ./run_wikipedia.sh guidance     оценка ТОЛЬКО guidance, три схемы
+#                                   (после classifiers). Отдельная стадия нужна,
+#                                   потому что eval переоценивает и уже
+#                                   посчитанные genie/diffuseq/uncond/gpt
 #   ./run_wikipedia.sh eval         финальная оценка всех подходов (после всего)
 #
 # Порядок целиком: data -> stats -> decoders -> diffusion -> classifiers -> eval,
@@ -127,6 +131,30 @@ case "$1" in
         sbatch train_conditional_encoder_combined.sh
         echo "==> когда обучатся: ./run_wikipedia.sh eval"
         ;;
+    guidance)
+        # guidance = чекпоинт безусловной диффузии + градиент классификатора на
+        # генерации, обучать нечего. Три схемы отличаются только тем, каким
+        # классификатором ведут, и пишут разные json -- имена берут
+        # augmentation_scheme, поэтому друг друга не затирают.
+        #
+        # Стадия отдельная от eval: там переоцениваются и genie/diffuseq/uncond,
+        # у которых результаты уже посчитаны, и запускается gpt, который может
+        # быть еще не обучен.
+        for AUG in shuffled augmented combined; do
+            CLS=$(ls datasets/wikipedia/conditional-encoder-*-"${AUG}".pth 2>/dev/null | head -1)
+            if [ -z "${CLS}" ]; then
+                echo "Нет классификатора схемы ${AUG}: datasets/wikipedia/conditional-encoder-*-${AUG}.pth" >&2
+                echo "Классификаторы обучаются раньше: ./run_wikipedia.sh classifiers" >&2
+                exit 1
+            fi
+        done
+        for AUG in shuffled augmented combined; do
+            ARCH_TYPE=guidance AUG_SCHEME=${AUG} sbatch \
+                --job-name=eval_diffusion-guidance-${AUG} eval_diffusion.sh
+        done
+        echo "==> сила guidance по умолчанию CG_SCALE=10.0, поменять: CG_SCALE=5.0 ./run_wikipedia.sh guidance"
+        echo "==> метрики в логах slurm, тексты в generated_texts/<checkpoints_prefix>/"
+        ;;
     eval)
         ARCH_TYPE=genie         sbatch --job-name=eval_diffusion-genie         eval_diffusion.sh
         ARCH_TYPE=diffuseq      sbatch --job-name=eval_diffusion-diffuseq      eval_diffusion.sh
@@ -140,7 +168,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,31p' "$0"
+        sed -n '2,35p' "$0"
         exit 1
         ;;
 esac

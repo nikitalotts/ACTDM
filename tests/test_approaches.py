@@ -2922,3 +2922,42 @@ def test_curriculum_applies_only_to_training():
             eval_branch = head[:head.index("    else:")]
         assert "curriculum_progress" not in eval_branch, (
             f"{scheme}: расписание обучения протекло в валидацию")
+
+
+def test_guidance_stage_evaluates_only_guidance():
+    """Отдельная стадия guidance нужна, чтобы не переоценивать посчитанное.
+
+    ./run_wikipedia.sh eval гоняет еще genie, diffuseq, unconditional и gpt.
+    У первых трех результаты уже есть, а gpt может быть не обучен -- его
+    задание тогда просто упадет. Стадия guidance пускает ровно три оценки.
+    """
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    body = sh[sh.index("    guidance)"):sh.index("    eval)")]
+
+    assert body.count("sbatch") == 1 and "for AUG in shuffled augmented combined" in body, (
+        "три схемы обязаны пускаться одним циклом по AUG")
+    assert "ARCH_TYPE=guidance" in body
+    assert "AUG_SCHEME=${AUG}" in body
+
+    for other in ("ARCH_TYPE=genie", "ARCH_TYPE=diffuseq", "ARCH_TYPE=unconditional",
+                  "ARCH_TYPE=gpt", "eval_gpt2.sh"):
+        assert other not in body, f"стадия guidance тянет лишнее: {other}"
+
+
+def test_guidance_stage_checks_classifiers_exist():
+    """Без классификатора все три задания отстоят очередь, поднимут модели и
+    только тогда упадут -- проверяем наличие сразу, как в стадии classifiers."""
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    body = sh[sh.index("    guidance)"):sh.index("    eval)")]
+
+    assert "conditional-encoder-" in body, "нет проверки наличия классификатора"
+    assert "exit 1" in body, "отсутствие классификатора не останавливает стадию"
+    assert "./run_wikipedia.sh classifiers" in body, (
+        "сообщение не говорит, какую стадию запускать")
+
+
+def test_guidance_stage_is_documented_in_the_header():
+    """Шапка печатается при неизвестной стадии -- она и есть справка."""
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    header = sh[:sh.index("set -e")]
+    assert "./run_wikipedia.sh guidance" in header
