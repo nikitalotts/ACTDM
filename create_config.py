@@ -239,6 +239,12 @@ def create_config(args):
         raise Exception(
             "architecture_type=guidance требует --classifier_guidance_scale > 0"
         )
+    # guidance на каждом шаге солвера считает градиент через BERT-классификатор
+    # по всему батчу: активации хранятся для backward, и батч 500 не влезает
+    # в V100-32GB (OOM на первом шаге). На метрики батч не влияет.
+    if config.classifier_guidance:
+        validation.batch_size = int(os.environ.get("GUIDANCE_EVAL_BS", "128"))
+        print(f"[CONFIG] guidance: validation.batch_size={validation.batch_size}")
     if not config.classifier_guidance and config.guidance_scale != 0:
         print(
             "[CONFIG] WARNING: --classifier_guidance_scale задан при "

@@ -9,11 +9,11 @@
 #SBATCH --time=40:00:00
 
 source ~/.bashrc
-eval "$(conda shell.bash hook)"
 module purge
 module load Python
+source ~/anaconda3/etc/profile.d/conda.sh
 conda deactivate
-conda activate pgwtd
+conda activate /home/amshabalin/anaconda3/envs/pgwtd
 
 export WANDB_MODE=offline
 

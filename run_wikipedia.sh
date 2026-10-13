@@ -36,6 +36,7 @@
 
 set -e
 export DATASET=wikipedia
+export PATH="$HOME/anaconda3/condabin:$PATH"
 # Боевой прогон обязан быть боевым. sbatch наследует окружение целиком, поэтому
 # любая переменная проверочных/замерочных режимов, случайно оставшаяся в шелле
 # (например, после `source smoke_test.sh`), молча испортила бы обучение:
@@ -68,8 +69,8 @@ case "$1" in
         # моделей: python prefetch_offline.py
         # Через sbatch эту стадию пускать нельзя: на compute-нодах нет интернета.
         # Активируем окружение сами -- иначе возьмется системный python2.7
-        eval "$(conda shell.bash hook)" 2>/dev/null || true
-        conda activate pgwtd
+        source ~/anaconda3/etc/profile.d/conda.sh
+        conda activate /home/amshabalin/anaconda3/envs/pgwtd
         python -m data.load --dataset_name wikipedia \
             ${NUM_TEXTS:+--num_texts ${NUM_TEXTS}}
         echo "==> обучение читает только datasets/wikipedia; сырой кэш можно удалить:"

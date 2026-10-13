@@ -9,13 +9,13 @@
 #SBATCH --time=12:00:00
 
 source ~/.bashrc
-eval "$(conda shell.bash hook)"
 
 module purge
 module load Python
+source ~/anaconda3/etc/profile.d/conda.sh
 
 conda deactivate
-conda activate pgwtd
+conda activate /home/amshabalin/anaconda3/envs/pgwtd
 
 # на compute-нодах нет интернета: без offline wandb.init виснет на ретраях
 export WANDB_MODE=offline

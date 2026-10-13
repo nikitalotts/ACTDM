@@ -11,11 +11,11 @@
 #SBATCH --time=75:00:00
 
 source ~/.bashrc
-eval "$(conda shell.bash hook)"
 module purge
 module load Python
+source ~/anaconda3/etc/profile.d/conda.sh
 conda deactivate
-conda activate pgwtd
+conda activate /home/amshabalin/anaconda3/envs/pgwtd
 export WANDB_MODE=offline
 ARCH_TYPE="${ARCH_TYPE:-gpt}"
 # число процессов torchrun = число GPU; для замерочных прогонов NPROC=1

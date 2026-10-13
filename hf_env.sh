@@ -13,6 +13,6 @@
 # Вне кластера ничего не трогаем. Заданные снаружи значения не перекрываются.
 if [ -d "/scratch/${USER:-}" ]; then
     [ -z "${HF_HOME:-}" ] && export HF_HOME="${HOME}/hf_cache"
-    [ -z "${HF_DATASETS_CACHE:-}" ] && export HF_DATASETS_CACHE="/scratch/${USER}/hf_datasets"
+    [ -z "${HF_DATASETS_CACHE:-}" ] && export HF_DATASETS_CACHE="/scratch/ws/${USER}-hf_datasets"
 fi
 echo "HF_HOME=${HF_HOME:-<не задан: ~/.cache/huggingface>}  HF_DATASETS_CACHE=${HF_DATASETS_CACHE:-<не задан: HF_HOME/datasets>}"

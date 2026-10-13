@@ -17,11 +17,11 @@
 # Результат -- таблица в slurm_logs/<jobid>-find_max_batch.log
 
 source ~/.bashrc
-eval "$(conda shell.bash hook)" 2>/dev/null || true
 module purge
 module load Python
+source ~/anaconda3/etc/profile.d/conda.sh
 conda deactivate
-conda activate pgwtd
+conda activate /home/amshabalin/anaconda3/envs/pgwtd
 
 source "$(dirname "$0")/hf_env.sh"
 export PYTHONUNBUFFERED=1
