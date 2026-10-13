@@ -3171,3 +3171,44 @@ def test_memory_probe_measures_the_same_precision_as_training():
     assert "resolve_amp_dtype" in probe
     assert "dtype=self.amp_dtype" in probe
     assert "torch.bfloat16" not in probe
+
+
+def test_both_pipelines_pass_a_slurm_account():
+    """sbatch на Харизме требует -A <проект> и дефолта не имеет: без него
+    стадия падает на submit, не доходя до очереди. Стадии зовут sbatch изнутри,
+    поэтому проект обязан задаваться в самих оркестраторах, а не в чужом шелле.
+
+    Значение подставляется только как default (${SBATCH_ACCOUNT:-...}), чтобы
+    прогон по другому проекту делался одним экспортом."""
+    for script in ("run_wikipedia.sh", "smoke_test.sh"):
+        body = open(script, encoding="utf-8").read()
+        assert "SBATCH_ACCOUNT" in body, f"{script}: проект Slurm не задан"
+        assert 'export SBATCH_ACCOUNT="${SBATCH_ACCOUNT:-' in body, (
+            f"{script}: проект обязан быть переопределяемым извне")
+        # проект задается ДО первого ВЫЗОВА sbatch (упоминания в комментариях
+        # не считаются), иначе задания уйдут без него
+        lines = body.splitlines()
+        first_call = next(i for i, ln in enumerate(lines)
+                          if "sbatch " in ln and not ln.lstrip().startswith("#"))
+        set_at = next(i for i, ln in enumerate(lines) if "SBATCH_ACCOUNT" in ln)
+        assert set_at < first_call, (
+            f"{script}: проект задается в строке {set_at + 1}, а первый вызов "
+            f"sbatch -- в строке {first_call + 1}")
+
+
+def test_project_report_and_pipelines_agree_on_the_default_project():
+    """projstat.sh считает расход по одному проекту, а задания уходят в другой --
+    самая обидная из возможных рассинхронизаций: часы кончатся не там, где их
+    смотрят."""
+    import re
+    stat = open("projstat.sh", encoding="utf-8").read()
+    reported = re.search(r"PROJ=\$\{1:-(proj_\d+)\}", stat)
+    assert reported, "projstat.sh не задает проект по умолчанию"
+
+    for script in ("run_wikipedia.sh", "smoke_test.sh"):
+        body = open(script, encoding="utf-8").read()
+        used = re.search(r"SBATCH_ACCOUNT:-(proj_\d+)", body)
+        assert used, f"{script}: не разобрать проект"
+        assert used.group(1) == reported.group(1), (
+            f"{script} считает в {used.group(1)}, а projstat.sh смотрит "
+            f"{reported.group(1)}")

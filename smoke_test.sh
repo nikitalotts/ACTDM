@@ -47,6 +47,13 @@ export SMOKE=1
 mkdir -p "$(dirname "$0")/slurm_logs"
 source "$(dirname "$0")/hf_env.sh"
 
+# Проект Slurm: на Харизме sbatch требует -A <проект> и дефолта не имеет, а
+# стадии зовут sbatch сами, изнутри. Значение по умолчанию -- тот же проект,
+# по которому считает projstat.sh. Переопределяется извне:
+#   SBATCH_ACCOUNT=proj_1795 ./smoke_test.sh gpt
+export SBATCH_ACCOUNT="${SBATCH_ACCOUNT:-proj_1891}"
+
+
 # smoke-заданиям не нужны боевые лимиты времени
 SMOKE_TIME="${SMOKE_TIME:-2:00:00}"
 

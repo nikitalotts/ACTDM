@@ -56,6 +56,13 @@ mkdir -p "$(dirname "$0")/slurm_logs"
 # sbatch), поэтому настройка кэша нужна и здесь, а не только в run_flags.sh
 source "$(dirname "$0")/hf_env.sh"
 
+# Проект Slurm: на Харизме sbatch требует -A <проект> и дефолта не имеет, а
+# стадии зовут sbatch сами, изнутри. Значение по умолчанию -- тот же проект,
+# по которому считает projstat.sh. Переопределяется извне:
+#   SBATCH_ACCOUNT=proj_1795 ./run_wikipedia.sh gpt
+export SBATCH_ACCOUNT="${SBATCH_ACCOUNT:-proj_1891}"
+
+
 # сила guidance и масштаб времени классификатора на финальной оценке
 CG_SCALE="${CG_SCALE:-10.0}"
 TIME_SCALE="${TIME_SCALE:-1.0}"

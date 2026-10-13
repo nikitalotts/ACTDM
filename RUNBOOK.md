@@ -43,6 +43,18 @@
 git pull && chmod +x run_wikipedia.sh disk_report.sh
 ```
 
+**Проект Slurm.** `sbatch` на Харизме требует `-A <проект>` и дефолта не имеет:
+без него задание падает на submit. `run_wikipedia.sh` и `smoke_test.sh`
+подставляют `SBATCH_ACCOUNT` сами (default — `proj_1891`, тот же, по которому
+считает `projstat.sh`). Для ручных `sbatch` (`find_max_batch.sh`,
+`eval_*_stat.sh`) — либо `-A proj_1891` в команде, либо один раз:
+
+```bash
+echo 'export SBATCH_ACCOUNT=proj_1891' >> ~/.bashrc && export SBATCH_ACCOUNT=proj_1891
+```
+
+Список проектов — команда `mp`; расход и остаток — `bash projstat.sh <проект>`.
+
 ```bash
 ./disk_report.sh          # посмотреть, что реально ест место
 ```
