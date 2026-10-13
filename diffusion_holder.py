@@ -669,8 +669,14 @@ class DiffusionRunner:
 
                 total_time = time.time() - total_start
                 print(f'#INFO finished estimation, total time: {total_time:.2f} seconds')
-            
-            if self.step % self.config.training.checkpoint_freq == 0:
+
+                # Нумерованный чекпоинт отбирается по tracked_metric, а она
+                # появляется только что -- в estimate("test"), поэтому он
+                # привязан к eval_freq. У диффузий checkpoint_freq == eval_freq,
+                # так что поведение не меняется; но если частоты разойдутся
+                # (как у gpt, где last.pth пишется чаще), на шагах без eval
+                # save_checkpoint уходил бы в ветку "шага нет в
+                # tracked_test_metric" и писал файлы ВНЕ учета top-k.
                 self.save_checkpoint()
 
             if self.step % self.config.training.accum_batch_steps == 0:

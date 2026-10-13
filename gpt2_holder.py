@@ -32,6 +32,28 @@ from utils.util import set_seed, reduce_tensor, gpu_stats, resume_checkpoint_pat
 LM_LOSS_CHUNK_TOKENS = 512
 
 
+# Тип autocast-а. bf16 -- то, с чем обучались три диффузии, и значение по
+# умолчанию: ничего не меняется, пока AMP_DTYPE не задан явно.
+#
+# Зачем переключатель. V100 -- это Volta (sm_70), а bf16 в тензорных ядрах
+# появился только с Ampere (sm_80). На V100 bf16-матмул идет без тензорных
+# ядер, то есть примерно со скоростью fp32, тогда как fp16 тензорные ядра на
+# этой карте есть. По замеренному шагу gpt (5.24 с на батч 512 длины 128)
+# выходит около 9 TFLOPS на карту -- это уровень fp32 (пик 15.7), а не fp16
+# (пик 125). Значит у fp16 есть запас, и его надо ЗАМЕРИТЬ пробником
+# (find_max_batch.sh), а не брать на веру. GradScaler уже создается всегда,
+# так что fp16 поддержан полностью.
+AMP_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16}
+
+
+def resolve_amp_dtype(config):
+    name = str(getattr(config.training, "amp_dtype", "bf16")).lower()
+    if name not in AMP_DTYPES:
+        raise ValueError(
+            f"amp_dtype={name!r}: ожидается одно из {sorted(AMP_DTYPES)}")
+    return AMP_DTYPES[name]
+
+
 def _chunk_loss(hidden, labels, lm_head):
     logits = lm_head(hidden)
     return torch.nn.functional.cross_entropy(
@@ -141,9 +163,20 @@ class GPT2Runner:
         self.printed_example_estimate = False
         self.printed_initial_examples = False
 
+        if get_rank() == 0:
+            print(f"[GPT2] autocast dtype: {resolve_amp_dtype(config)}")
+
         self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2-medium")
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = "left"
+        # Промпт режется СЛЕВА. Нарезка на пары идет BERT-токенизатором (ровно
+        # 64 + 64 токена), а здесь текст кодируется заново BPE-словарем gpt2, и
+        # число токенов не совпадает: там, где BPE дает больше 64, промпт не
+        # влезает в max_context_len. Отрезать хвост нельзя -- это ровно те
+        # токены, что стоят перед продолжением, и без них задача продолжения
+        # промпта превращается в продолжение другого текста. Теряем начало.
+        # Тем же концом режет и генерация на eval (там truncation=True).
+        self.tokenizer.truncation_side = "left"
 
         gpt2_config = GPT2Config.from_pretrained("gpt2-medium")
         gpt2_config.bos_token_id = self.tokenizer.bos_token_id
@@ -223,6 +256,16 @@ class GPT2Runner:
                 self.estimate("test")
                 self.validate()
 
+    @property
+    def amp_dtype(self):
+        """Тип autocast-а, разрешенный из конфига (AMP_DTYPE, по умолчанию bf16).
+
+        Свойство, а не поле: раннер в тестах собирается через __new__, минуя
+        __init__, и поле там взялось бы неоткуда. Стоимость -- поиск в словаре
+        раз в шаг обучения.
+        """
+        return resolve_amp_dtype(self.config)
+
     def collate_fn(self, batch):
         texts_trg = [t["text_trg"] for t in batch]
         texts_src = [t["text_src"] for t in batch]
@@ -237,9 +280,12 @@ class GPT2Runner:
         all_labels = []
 
         for src_text, trg_text in zip(texts_src, texts_trg):
+            # промпт -- последние max_src_len токенов (см. truncation_side в
+            # __init__), продолжение -- первые max_trg_len: и там и там
+            # сохраняется стык между промптом и продолжением
             src_ids = self.tokenizer.encode(
                 src_text, add_special_tokens=False
-            )[:max_src_len]
+            )[-max_src_len:]
             trg_ids = self.tokenizer.encode(
                 trg_text, add_special_tokens=False
             )[:max_trg_len]
@@ -431,7 +477,12 @@ class GPT2Runner:
                 print(f'#INFO validation time: {time.time() - validate_start:.2f} seconds')
                 print(f'#INFO finished estimation, total time: {time.time() - total_start:.2f} seconds')
 
-            if self.step % self.config.training.checkpoint_freq == 0:
+                # Нумерованный чекпоинт отбирается по tracked_metric, а она
+                # появляется только что -- в estimate("test"). Поэтому он
+                # привязан к eval_freq, а не к checkpoint_freq: иначе на шагах
+                # между eval-ами save_checkpoint уходил бы в ветку
+                # "шага нет в tracked_test_metric" и писал файлы ВНЕ учета
+                # top-k, которые никто потом не удаляет.
                 self.save_checkpoint()
 
             if self.step % self.config.training.accum_batch_steps == 0:
@@ -460,7 +511,7 @@ class GPT2Runner:
 
         device_type = "cuda" if torch.cuda.is_available() else "cpu"
         with sync_ctx:
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+            with torch.autocast(device_type=device_type, dtype=self.amp_dtype, enabled=torch.cuda.is_available()):
                 raw_loss = self.ddp_model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
@@ -508,7 +559,7 @@ class GPT2Runner:
         for batch in self.valid_loader:
             batch = batch.to(self.device)
             device_type = "cuda" if torch.cuda.is_available() else "cpu"
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+            with torch.autocast(device_type=device_type, dtype=self.amp_dtype, enabled=torch.cuda.is_available()):
                 loss = self.ddp_model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
@@ -550,13 +601,20 @@ class GPT2Runner:
 
         if decoding == "greedy":
             gen_kwargs = dict(do_sample=False)
-        else: 
+        else:
             gen_kwargs = dict(
                 do_sample=True,
                 temperature=sampling_cfg.get("temperature", 1.0),
                 top_p=sampling_cfg.get("top_p", 0.95),
                 top_k=sampling_cfg.get("top_k", 0),
             )
+        # KV-кэш задается явно. В __init__ вместе с пересчетом активаций
+        # выставляется model.config.use_cache = False (на обучении кэш не
+        # нужен), и хотя generate берет use_cache из своего generation_config,
+        # собранного ДО этой правки, зависеть от порядка инициализации тут
+        # нельзя: без кэша каждый из 64 новых токенов прогоняет всю
+        # последовательность заново -- генерация дороже в десятки раз.
+        gen_kwargs["use_cache"] = True
 
         print(f"Loader size: {len(loader)}  |  decoding: {decoding}  |  kwargs: {gen_kwargs}")
 
@@ -580,7 +638,7 @@ class GPT2Runner:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             _t0 = time.time()
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16,
+            with torch.autocast(device_type=device_type, dtype=self.amp_dtype,
                                 enabled=torch.cuda.is_available()):
                 generated = self.model.generate(
                     input_ids=tok_src["input_ids"],

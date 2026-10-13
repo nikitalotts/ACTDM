@@ -21,6 +21,19 @@ from utils.schemes import (
 # V100-32GB (find_max_batch.py, предел: gpt 82, diffuseq 426, genie 629,
 # unconditional 960). Где 512 не влезает за один шаг, добирается накоплением.
 WORLD_SIZE = 4
+# Шаг, на котором подходы сравниваются в статье. Изначально бюджет был 150k, но
+# diffuseq вышел на плато и ресурсов проекта на 150k не осталось; genie,
+# diffuseq и unconditional остановлены на 87500 и именно эти числа посчитаны.
+# Обрезка законна потому, что lr = min_lr = 2e-4 у всех четырех подходов:
+# косинус выродился в константу, и траектория первых 87500 шагов не зависит от
+# того, обещал ли конфиг 150k или 87500.
+#
+# У трех диффузий конфиг намеренно НЕ правился -- они уже были досчитаны, и
+# прогон снимался руками после строки "Save model to: .../87500.pth". У gpt
+# обучения еще не было, поэтому бюджет записан в конфиг: при лимите задания
+# 75 ч прогон требует трех дозапусков, и ловить момент остановки руками
+# означало бы либо недобрать шаги, либо сжечь лишние часы.
+COMPARISON_STEPS = 87_500
 TRAINING_RECIPE = {
     "gpt": {
         # Батч 512 набирается за ОДИН шаг, как у диффузий: 128 на карту x 4
@@ -36,18 +49,32 @@ TRAINING_RECIPE = {
         #   * gradient_as_bucket_view в DDP -- градиенты живут прямо в буферах
         #     обмена, без второй копии (~1.3 ГБ для 355M параметров).
         # Цена -- около 30% скорости на пересчете активаций.
-        # 150k шагов -- столько же, сколько у диффузий, поэтому все подходы
-        # видят одни и те же 76.8 млн примеров. В ВКР было 50k при батче 128;
-        # батч вырос вчетверо, число шагов доведено до диффузионного.
+        # Шагов -- ровно столько, на сколько остановлены три диффузии
+        # (COMPARISON_STEPS): все подходы сравниваются на 44.8 млн примеров.
+        # В ВКР было 50k при батче 128; батч вырос вчетверо.
         "effective_batch": 512,
-        "optimizer_steps": 150_000,
-        "eval_every": 2_500,
+        "optimizer_steps": COMPARISON_STEPS,
+        # eval_every было 2500 -- 35 точек на бюджете сравнения. Приведено к
+        # диффузионным 12500 по двум причинам. Во-первых, нумерованный чекпоинт
+        # пишется только там, где посчитана метрика: 35 точек при save_top_k=2
+        # означали, что чекпоинт шага 87500 почти наверняка вытеснят с диска, и
+        # сравнивать было бы нечего. Во-вторых, каждая точка -- это две
+        # генерации по 5000 текстов плюс bleu/rouge/bert-score, порядка 20 мин;
+        # 28 лишних точек стоили примерно 8-10 ч GPU.
+        "eval_every": 12_500,
+        # last.pth (только для дозапуска, без отбора по метрике) пишется чаще
+        # eval: при 75-часовом лимите задания и ~7 с на шаг 12500 шагов -- это
+        # сутки, и снятое по лимиту задание теряло бы до суток счета. 2500
+        # шагов -- около 5 ч, цена записи 4.3 ГБ раз в 5 ч пренебрежима.
+        "save_every": 2_500,
         "per_gpu": 128,
     },
     "default": {                      # genie, diffuseq, guidance, unconditional
         "effective_batch": 512,
         "optimizer_steps": 150_000,
         "eval_every": 12_500,
+        # у диффузий частота сохранения и eval совпадают, как и было
+        "save_every": 12_500,
         "per_gpu": 128,
     },
 }
@@ -104,7 +131,9 @@ def training_budget(training, architecture_type):
     training.accum_batch_steps = accum
     training.batch_size = micro_batch
     training.training_iters = r["optimizer_steps"] * accum
-    training.checkpoint_freq = r["eval_every"] * accum
+    # checkpoint_freq -- частота last.pth (дозапуск), eval_freq -- частота eval
+    # и нумерованных чекпоинтов. У диффузий они равны, у gpt сохранение чаще.
+    training.checkpoint_freq = r.get("save_every", r["eval_every"]) * accum
     training.eval_freq = r["eval_every"] * accum
     return training
 
@@ -392,6 +421,10 @@ def create_gpt_config(args):
     training.ode_sampling = False
     training.checkpoints_folder = f"{config.work_dir}/checkpoints/"
     training.checkpoint_name = ""
+    # bf16 -- как у трех диффузий, значение по умолчанию. fp16 включается
+    # только явно, через AMP_DTYPE: на V100 тензорных ядер для bf16 нет, и
+    # выигрыш fp16 стоит сначала замерить пробником (см. gpt2_holder.AMP_DTYPES)
+    training.amp_dtype = os.environ.get("AMP_DTYPE", "bf16").strip().lower()
 
     optim = config.optim = ml_collections.ConfigDict()
     optim.grad_clip_norm = 1.
@@ -461,7 +494,13 @@ def create_gpt_config(args):
     config.tracked_dataset = data.datasets.datasets_list[0]
     config.tracked_metric = data.datasets.metrics[config.tracked_dataset]["tracked_metric"]
     config.higher_better = True
-    config.save_top_k = 2
+    # Столько же, сколько у диффузий: при eval_freq=12500 бюджет сравнения
+    # дает РОВНО 7 точек сохранения, и все семь остаются на диске. Иначе шаг
+    # 87500 (тот самый, по которому идет сравнение) вытеснялся бы по метрике, а
+    # eval берет max(нумерованных) -- сравнивали бы разные бюджеты.
+    # Цена -- 7 x 4.3 ГБ плюс last.pth, порядка 34 ГБ в home на время прогона.
+    config.save_top_k = COMPARISON_STEPS // (
+        training.eval_freq // training.accum_batch_steps)
 
     print(f"[CONFIG] architecture_type=gpt (GPT2-medium from scratch)")
     print(f"[CONFIG] dataset={data.datasets.datasets_list[0]}, split_scheme={data.split_scheme}")

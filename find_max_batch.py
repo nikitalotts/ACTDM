@@ -34,7 +34,7 @@ import time
 
 import torch
 
-from gpt2_holder import chunked_lm_loss
+from gpt2_holder import chunked_lm_loss, resolve_amp_dtype
 
 
 def free_all():
@@ -91,6 +91,10 @@ class GPTProbe(Probe):
             betas=(self.config.optim.beta_1, self.config.optim.beta_2),
             eps=self.config.optim.eps,
         )
+        # тот же autocast, что в обучении (AMP_DTYPE, по умолчанию bf16) --
+        # пробник для того и нужен, чтобы сравнить bf16 и fp16 по скорости шага
+        self.amp_dtype = resolve_amp_dtype(self.config)
+        print(f"  autocast dtype: {self.amp_dtype}")
         self.total_len = self.config.data.max_context_len + self.config.data.max_sequence_len
         self.vocab = cfg.vocab_size
         self.params = sum(p.numel() for p in self.model.parameters())
@@ -102,7 +106,7 @@ class GPTProbe(Probe):
         labels[:, : self.config.data.max_context_len] = -100  # промпт вне лосса
         pos = (attn.cumsum(dim=-1) - 1).clamp(min=0)
 
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
             # тот же путь, что в обучении: логиты считаются чанками и только
             # для позиций продолжения (см. gpt2_holder.chunked_lm_loss)
             hidden = self.model.transformer(

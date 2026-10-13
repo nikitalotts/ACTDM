@@ -28,7 +28,7 @@ os.chdir(ROOT)
 from create_config import create_config                      # noqa: E402
 from create_config import (                                  # noqa: E402
     CLASSIFIER_BATCH_SIZE, CLASSIFIER_STEP_BUDGET, CLASSIFIER_SUBSET_SEED,
-    CLASSIFIER_TRAIN_EXAMPLES, ROCSTORIES_CLASSIFIER_EPOCHS,
+    CLASSIFIER_TRAIN_EXAMPLES, COMPARISON_STEPS, ROCSTORIES_CLASSIFIER_EPOCHS,
     ROCSTORIES_CLASSIFIER_STEPS_PER_EPOCH,
 )
 from data.dataset import take_fixed_subset                    # noqa: E402
@@ -1525,7 +1525,11 @@ def test_env_overrides_absent_by_default(monkeypatch):
 # шагов, диффузию тоже останавливали раньше. Значения зафиксированы, чтобы не
 # разъезжались молча: любое изменение обязано попасть и в текст статьи.
 DIFFUSION_BUDGET = {"effective_batch": 512, "optimizer_steps": 150_000}
-GPT_BUDGET = {"effective_batch": 512, "optimizer_steps": 150_000}
+# У gpt бюджет сравнения записан прямо в конфиг: обучения еще не было, а при
+# лимите задания 75 ч прогон идет в три дозапуска, и останавливать его руками
+# на 87500 (как останавливали диффузии) означало бы либо недобрать шаги, либо
+# сжечь лишние часы. У диффузий конфиг остался 150k -- они уже досчитаны.
+GPT_BUDGET = {"effective_batch": 512, "optimizer_steps": COMPARISON_STEPS}
 
 
 def _budget(at):
@@ -1592,18 +1596,23 @@ def test_diffusion_batch_fits_measured_memory_limit():
             f"{at}: батч влезает целиком, накопление не нужно")
 
 
-@pytest.mark.parametrize("at,every_opt_steps", [("diffuseq", 12_500), ("gpt", 2_500)])
+@pytest.mark.parametrize("at,every_opt_steps", [("diffuseq", 12_500), ("gpt", 12_500)])
 def test_checkpoint_cadence_is_measured_in_optimizer_steps(at, every_opt_steps):
-    """Частота eval и чекпоинтов задана в ОПТИМИЗАТОРНЫХ шагах и не менялась
-    относительно ВКР. Это важно при остановке по сходимости: gpt выходит на
-    плато рано, и точки кривой должны попадать в этот район, иначе выбирать
-    лучший чекпоинт будет не из чего."""
+    """Частота eval задана в ОПТИМИЗАТОРНЫХ шагах и одинакова у всех подходов:
+    точки кривой у gpt и у диффузий должны стоять на одних шагах, иначе
+    "лучший чекпоинт" у них выбирается из разных наборов.
+
+    checkpoint_freq (last.pth для дозапуска) может быть ЧАЩЕ eval_freq и у gpt
+    действительно чаще -- см. test_resume_loss_is_bounded_by_the_time_limit.
+    Нумерованный чекпоинт при этом все равно пишется только на шаге eval, где
+    есть метрика; за это отвечает
+    test_numbered_checkpoint_is_written_only_where_the_metric_exists."""
     cfg = create_config(make_args(at, dataset_name="wikipedia"))
     accum = cfg.training.accum_batch_steps
     assert cfg.training.eval_freq // accum == every_opt_steps
-    assert cfg.training.checkpoint_freq == cfg.training.eval_freq, (
-        "чекпоинт обязан сохраняться на том же шаге, где посчитан tracked_metric, "
-        "иначе save_top_k не сможет выбрать лучший")
+    assert cfg.training.eval_freq % cfg.training.checkpoint_freq == 0, (
+        "частота eval обязана быть кратна частоте сохранения: иначе на шаге "
+        "eval не окажется свежего last.pth")
 
 
 def test_best_checkpoint_selection_is_what_makes_comparison_fair():
@@ -1806,14 +1815,26 @@ def test_finished_run_warns_instead_of_silently_skipping_training():
 
 @pytest.mark.parametrize("at", ["genie", "diffuseq", "guidance", "unconditional", "gpt"])
 def test_all_approaches_see_identical_amount_of_data(at):
-    """Теперь совпадает не только батч, но и число шагов, а значит и объем
-    увиденных данных -- 76.8 млн примеров у каждого подхода. Это то, на чем
-    держится сравнение в статье."""
+    """Сравнение в статье идет на ОДНОМ шаге -- COMPARISON_STEPS -- при одном и
+    том же эффективном батче, то есть на 44.8 млн увиденных примеров у каждого
+    подхода. Это то, на чем держится сравнение.
+
+    Конфигурированные бюджеты при этом разные: у диффузий остался 150k (их
+    снимали руками на 87500), у gpt в конфиге ровно 87500. Поэтому проверяется
+    не равенство бюджетов, а то, что точка сравнения ДОСТИЖИМА у каждого
+    подхода и попадает на шаг eval -- иначе в ней нет ни метрики, ни
+    нумерованного чекпоинта, и сравнивать было бы нечего.
+    """
+    cfg = create_config(make_args(at, dataset_name="wikipedia"))
+    accum = cfg.training.accum_batch_steps
     b = _budget(at)
     assert b["effective_batch"] == 512
-    assert b["optimizer_steps"] == 150_000
-    assert b["examples_seen"] == 512 * 150_000, (
-        f"{at}: {b['examples_seen'] / 1e6:.1f} млн примеров вместо 76.8")
+    assert b["optimizer_steps"] >= COMPARISON_STEPS, (
+        f"{at}: бюджет {b['optimizer_steps']} не дотягивает до точки сравнения")
+    assert COMPARISON_STEPS % (cfg.training.eval_freq // accum) == 0, (
+        f"{at}: шаг {COMPARISON_STEPS} не попадает на eval "
+        f"(каждые {cfg.training.eval_freq // accum} оптимизаторных шагов)")
+    assert 512 * COMPARISON_STEPS == 44_800_000
 
 
 def test_full_production_path_matches_reference_implementation():
@@ -2372,10 +2393,12 @@ def test_final_checkpoint_survives_top_k_at_agreed_budget():
     последнем eval выкинул бы 87500.pth с диска. Guidance переиспользует ровно
     этот чекпоинт, так что промах утащил бы за собой и его.
     """
-    AGREED_STEPS = 87_500
-    for at in ("genie", "diffuseq", "unconditional", "guidance"):
+    AGREED_STEPS = COMPARISON_STEPS
+    # gpt тоже: у него было 35 точек eval при save_top_k=2, то есть чекпоинт
+    # шага сравнения почти наверняка вытеснялся бы с диска
+    for at in ("genie", "diffuseq", "unconditional", "guidance", "gpt"):
         c = create_config(make_args(at, dataset_name="wikipedia"))
-        events = AGREED_STEPS // c.training.checkpoint_freq
+        events = AGREED_STEPS // c.training.eval_freq
         assert c.save_top_k >= events, (
             f"{at}: {events} точек сохранения при save_top_k={c.save_top_k} -- "
             f"последний чекпоинт может быть вытеснен")
@@ -2961,3 +2984,190 @@ def test_guidance_stage_is_documented_in_the_header():
     sh = open("run_wikipedia.sh", encoding="utf-8").read()
     header = sh[:sh.index("set -e")]
     assert "./run_wikipedia.sh guidance" in header
+
+
+# =====================================================================
+# GPT: подготовка боевого прогона на wikipedia
+# =====================================================================
+
+def test_numbered_checkpoint_is_written_only_where_the_metric_exists():
+    """Нумерованный чекпоинт отбирается по tracked_metric, а она появляется в
+    estimate("test"). Значит save_checkpoint() без last=True обязан вызываться
+    ВНУТРИ ветки eval_freq, а не по checkpoint_freq.
+
+    Пока частоты совпадали, разницы не было. У gpt last.pth пишется в пять раз
+    чаще eval, и по старому коду на шагах между eval-ами save_checkpoint уходил
+    бы в ветку "шага нет в tracked_test_metric" и писал нумерованные файлы ВНЕ
+    учета top-k -- 35 файлов по 4.3 ГБ, которые никто не удаляет."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner.train_epoch)
+        eval_branch = src.index("self.config.training.eval_freq == 0")
+        numbered = src.index("self.save_checkpoint()")
+        assert numbered > eval_branch, (
+            f"{runner.__name__}: нумерованный чекпоинт пишется вне ветки eval")
+        # отступ у вызова обязан быть глубже, чем у самой ветки eval:
+        # значит сохранение вложено в нее, а не идет следом
+        line = src[:numbered].rsplit(chr(10), 1)[-1]
+        assert len(line) >= 16, (
+            f"{runner.__name__}: сохранение вынесено из ветки eval "
+            f"(отступ {len(line)})")
+
+
+def test_resume_loss_is_bounded_by_the_time_limit():
+    """last.pth -- единственная страховка от снятия задания по лимиту, и терять
+    с ним можно не больше нескольких часов счета.
+
+    У gpt шаг около 7 с по стене: 12500 шагов -- это сутки, а при бюджете 87500
+    и лимите задания 75 ч дозапусков минимум три. Поэтому сохранение разведено
+    с eval и идет каждые 2500 шагов (примерно 5 ч)."""
+    seconds_per_step = {"gpt": 7.0, "diffuseq": 2.2, "genie": 1.7,
+                        "unconditional": 1.3}
+    for at, sec in seconds_per_step.items():
+        cfg = create_config(make_args(at, dataset_name="wikipedia"))
+        accum = cfg.training.accum_batch_steps
+        hours = cfg.training.checkpoint_freq // accum * sec / 3600
+        assert hours <= 8, (
+            f"{at}: между чекпоинтами {hours:.1f} ч -- снятое по лимиту "
+            f"задание потеряет столько счета")
+
+
+def test_gpt_run_ends_by_itself_at_the_comparison_step():
+    """Диффузии останавливали руками; у gpt так не получится -- прогон идет в
+    три дозапуска, и момент надо было бы ловить в чужом логе. Бюджет записан в
+    конфиг, поэтому последний шаг прогона и есть шаг сравнения."""
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    accum = cfg.training.accum_batch_steps
+    assert cfg.training.training_iters // accum == COMPARISON_STEPS
+    assert cfg.training.training_iters % cfg.training.eval_freq == 0, (
+        "последний шаг обязан попасть на eval: иначе на нем не будет ни "
+        "метрики, ни нумерованного чекпоинта")
+
+
+def test_lr_schedule_is_flat_so_truncating_the_budget_is_legal():
+    """Обрезка бюджета со 150k до 87500 законна только потому, что lr
+    постоянен: при min_lr == lr косинус выродился в константу, и первые 87500
+    шагов идут по той же траектории, что шли бы при t_initial=150000. Если
+    кто-то вернет убывающий lr, обрезку придется пересматривать."""
+    for at in ("gpt", "genie", "diffuseq", "unconditional"):
+        cfg = create_config(make_args(at, dataset_name="wikipedia"))
+        assert cfg.optim.min_lr == cfg.optim.lr, (
+            f"{at}: lr убывает ({cfg.optim.lr} -> {cfg.optim.min_lr}), "
+            f"бюджет сравнения больше нельзя обрезать молча")
+
+
+@needs_cuda
+def test_gpt_keeps_the_end_of_the_prompt_when_it_does_not_fit():
+    """Пары нарезаны BERT-токенизатором ровно по 64 токена, а collate кодирует
+    текст заново словарем gpt2 -- и там, где BPE дает больше 64 токенов, промпт
+    не влезает. Отрезать надо НАЧАЛО: хвост промпта -- это токены прямо перед
+    продолжением, без них задача перестает быть продолжением промпта."""
+    from gpt2_holder import GPT2Runner
+    from transformers import GPT2Tokenizer
+
+    cfg = create_config(make_args("gpt"))
+    r = GPT2Runner.__new__(GPT2Runner)
+    r.config = cfg
+    r.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    r.tokenizer.pad_token = r.tokenizer.eos_token
+
+    ctx = cfg.data.max_context_len
+    # промпт заведомо длиннее бюджета, с опознаваемым хвостом
+    long_src = " ".join(f"w{i}" for i in range(ctx * 2)) + " FINALMARKER"
+    out = r.collate_fn([{"text_src": long_src, "text_trg": "tail text"}])
+
+    ids, labels, attn = out["input_ids"][0], out["labels"][0], out["attention_mask"][0]
+    prompt_ids = ids[(labels == -100) & (attn == 1)]
+    decoded = r.tokenizer.decode(prompt_ids)
+    assert "FINALMARKER" in decoded, (
+        "обрезан хвост промпта -- стык с продолжением потерян")
+    assert "w0 " not in decoded, "начало промпта должно уйти под нож"
+
+
+def test_gpt_eval_truncates_the_prompt_from_the_same_end():
+    """На eval промпт кодируется не collate-ом, а вызовом токенизатора с
+    truncation=True. Сторона обрезки там берется из tokenizer.truncation_side,
+    и она обязана совпадать с обучением -- иначе модель учится на хвостах
+    промпта, а генерирует по началам."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+
+    init = inspect.getsource(GPT2Runner.__init__)
+    assert 'truncation_side = "left"' in init, (
+        "GPT2Runner.__init__ обязан выставлять tokenizer.truncation_side='left'")
+
+    collate = inspect.getsource(GPT2Runner.collate_fn)
+    assert "[-max_src_len:]" in collate, (
+        "collate обязан брать ПОСЛЕДНИЕ max_src_len токенов промпта")
+
+    gen = inspect.getsource(GPT2Runner.generate_text_conditional)
+    assert "truncation=True" in gen
+    assert "max_length=self.config.data.max_context_len" in gen
+
+
+def test_gpt_generation_uses_the_kv_cache():
+    """В __init__ вместе с пересчетом активаций выставляется
+    model.config.use_cache = False. generate() берет use_cache из своего
+    generation_config, собранного раньше этой правки, но зависеть от порядка
+    инициализации нельзя: без кэша каждый новый токен прогоняет всю
+    последовательность заново, и eval дорожает в десятки раз."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    src = inspect.getsource(GPT2Runner.generate_text_conditional)
+    marker = 'gen_kwargs["use_cache"] = True'
+    assert marker in src, "генерация не задает use_cache явно"
+    assert src.index(marker) < src.index("self.model.generate")
+
+
+@pytest.mark.parametrize("env,expected", [(None, "bfloat16"), ("bf16", "bfloat16"),
+                                          ("fp16", "float16")])
+def test_amp_dtype_defaults_to_bf16_and_switches_by_env(env, expected, monkeypatch):
+    """bf16 -- то, с чем обучены три диффузии, и значение по умолчанию. fp16
+    включается только явно: на V100 (sm_70) тензорных ядер для bf16 нет, и
+    выигрыш надо замерить пробником, а не включать молча."""
+    from gpt2_holder import resolve_amp_dtype
+
+    monkeypatch.delenv("AMP_DTYPE", raising=False)
+    if env is not None:
+        monkeypatch.setenv("AMP_DTYPE", env)
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    assert str(resolve_amp_dtype(cfg)) == f"torch.{expected}"
+
+
+def test_unknown_amp_dtype_is_rejected_not_silently_ignored(monkeypatch):
+    """Опечатка в AMP_DTYPE не должна молча давать bf16: прогон на сотни часов
+    обязан падать сразу, а не выясняться по логу через неделю."""
+    from gpt2_holder import resolve_amp_dtype
+
+    monkeypatch.setenv("AMP_DTYPE", "fp8")
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    with pytest.raises(ValueError, match="amp_dtype"):
+        resolve_amp_dtype(cfg)
+
+
+def test_amp_dtype_reaches_every_autocast_in_training():
+    """Переключатель бесполезен, если какой-то из autocast-ов остался
+    захардкоженным: обучение шло бы в fp16, а генерация на eval -- в bf16."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+
+    for method in (GPT2Runner.train_step, GPT2Runner.validate,
+                   GPT2Runner.generate_text_conditional):
+        src = inspect.getsource(method)
+        assert "torch.bfloat16" not in src, (
+            f"{method.__name__}: autocast захардкожен в bf16")
+        assert "dtype=self.amp_dtype" in src, (
+            f"{method.__name__}: autocast не использует self.amp_dtype")
+
+
+def test_memory_probe_measures_the_same_precision_as_training():
+    """Пробник нужен именно для сравнения bf16 и fp16 по скорости шага --
+    значит он обязан слушать тот же AMP_DTYPE, что и обучение."""
+    src = open("find_max_batch.py", encoding="utf-8").read()
+    probe = src[src.index("class GPTProbe"):src.index("class DiffusionProbe")]
+    assert "resolve_amp_dtype" in probe
+    assert "dtype=self.amp_dtype" in probe
+    assert "torch.bfloat16" not in probe
