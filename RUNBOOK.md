@@ -172,14 +172,15 @@ bf16-матмул идёт примерно со скоростью fp32, тог
 пробником, двумя заданиями по ~20 мин:
 
 ```bash
-AMP_DTYPE=bf16 NPROC=1 ARCH_TYPE=gpt sbatch find_max_batch.sh
+AMP_DTYPE=bf16 ARCHS=gpt MAX_BATCH=128 sbatch find_max_batch.sh
 ```
 
 ```bash
-AMP_DTYPE=fp16 NPROC=1 ARCH_TYPE=gpt sbatch find_max_batch.sh
+AMP_DTYPE=fp16 ARCHS=gpt MAX_BATCH=128 sbatch find_max_batch.sh
 ```
 
-Сравнить время шага в таблицах `slurm_logs/<jobid>-find_max_batch.log`. Если
+Сравнить строку батча 128 в таблицах `slurm_logs/<jobid>-find_max_batch.log`
+(`max_batch_report.json` второе задание перезапишет — смотреть лог). Если
 fp16 быстрее — запускать обучение с `AMP_DTYPE=fp16 ./run_wikipedia.sh gpt`
 (`sbatch` экспортирует окружение целиком). `GradScaler` в `gpt2_holder`
 создаётся всегда, так что fp16 поддержан полностью; значение попадает в лог
