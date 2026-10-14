@@ -23,7 +23,10 @@ source ~/anaconda3/etc/profile.d/conda.sh
 conda deactivate
 conda activate /home/amshabalin/anaconda3/envs/pgwtd
 
-source "$(dirname "$0")/hf_env.sh"
+# $0 под sbatch -- это копия скрипта в /var/spool/slurm, а не файл в репозитории,
+# поэтому dirname "$0" ведет мимо hf_env.sh. Рабочий каталог задания --
+# SLURM_SUBMIT_DIR; вне кластера его нет, и остается обычный dirname.
+source "${SLURM_SUBMIT_DIR:-$(dirname "$0")}/hf_env.sh"
 export PYTHONUNBUFFERED=1
 
 # смотрим ровно ту карту, что дал slurm

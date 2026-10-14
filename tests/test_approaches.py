@@ -3212,3 +3212,26 @@ def test_project_report_and_pipelines_agree_on_the_default_project():
         assert used.group(1) == reported.group(1), (
             f"{script} считает в {used.group(1)}, а projstat.sh смотрит "
             f"{reported.group(1)}")
+
+
+def test_sbatch_scripts_find_hf_env_from_the_repository():
+    """Под sbatch $0 -- это копия скрипта в /var/spool/slurm, а не файл в
+    репозитории: `source "$(dirname "$0")/hf_env.sh"` там молча не находит
+    файл, и задание считает с ненастроенными кэшами HuggingFace. На пробнике
+    это стоило строки No such file or directory в шапке лога; в боевом
+    задании с HF_HUB_OFFLINE=1 это падение на первом from_pretrained.
+
+    Скрипты-отправители (run_wikipedia.sh, smoke_test.sh) сами в очередь не
+    уходят -- у них $0 настоящий, и проверка их не касается."""
+    import glob
+
+    for script in sorted(glob.glob("*.sh")):
+        body = open(script, encoding="utf-8").read()
+        if "#SBATCH" not in body:
+            continue
+        for line in body.splitlines():
+            if "hf_env.sh" not in line or line.lstrip().startswith("#"):
+                continue
+            assert 'dirname "$0"' not in line or "SLURM_SUBMIT_DIR" in line, (
+                f"{script}: hf_env.sh подключается через dirname $0 -- "
+                f"под sbatch этот путь ведет в /var/spool/slurm")
