@@ -1056,6 +1056,21 @@ class GPT2Runner:
             self.all_checkpoints = [tuple(t) for t in load["tracked_metrics"]["all_checkpoints"]]
             heapq.heapify(self.all_checkpoints)
 
+        # Дозапуск без AMP_DTYPE в окружении молча вернул бы bf16: конфиг из
+        # чекпоинта не применяется, а на V100 это 3.4x по скорости (5.27 против
+        # 1.63 с на шаг) -- прогон вырос бы с ~50 до ~170 ч, то есть вышел бы
+        # за бюджет проекта. Не падаем: осознанный переход назад на bf16 -- это
+        # запасной план на случай, если fp16 поедет.
+        was = getattr(load.get("config", None), "training", None)
+        was = str(getattr(was, "amp_dtype", "")) if was is not None else ""
+        now = str(getattr(self.config.training, "amp_dtype", ""))
+        if was and was != now and get_rank() == 0:
+            print("=" * 70)
+            print(f"[WARNING] чекпоинт обучался в {was}, сейчас {now}.")
+            print(f"[WARNING] если это не нарочно -- снимите задание и "
+                  f"запустите с AMP_DTYPE={was}")
+            print("=" * 70)
+
         self.model.load_state_dict(load["model"])
         self.optimizer.load_state_dict(load["optimizer"])
         self.scheduler.load_state_dict(load["scheduler"])

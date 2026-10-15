@@ -3235,3 +3235,74 @@ def test_sbatch_scripts_find_hf_env_from_the_repository():
             assert 'dirname "$0"' not in line or "SLURM_SUBMIT_DIR" in line, (
                 f"{script}: hf_env.sh подключается через dirname $0 -- "
                 f"под sbatch этот путь ведет в /var/spool/slurm")
+
+
+def test_resume_warns_when_precision_changed(tmp_path, capsys):
+    """Дозапуск без AMP_DTYPE в окружении молча вернул бы bf16: load_checkpoint
+    поднимает веса и шаг, но НЕ применяет конфиг из чекпоинта. На V100 это 3.4x
+    по скорости -- прогон вырос бы с ~50 до ~170 ч и вышел за бюджет проекта.
+
+    Не падаем, а предупреждаем: осознанный переход назад на bf16 -- это
+    запасной план на случай, если fp16 поедет."""
+    import torch as _torch
+    from gpt2_holder import GPT2Runner
+
+    cfg_saved = create_config(make_args("gpt", dataset_name="wikipedia"))
+    cfg_saved.training.amp_dtype = "fp16"
+
+    folder = tmp_path / cfg_saved.training.checkpoints_prefix
+    folder.mkdir(parents=True)
+    _torch.save({"model": {}, "optimizer": {}, "scheduler": {}, "scaler": None,
+                 "step": 2500, "config": cfg_saved, "tracked_metrics": None},
+                folder / "last.pth")
+
+    cfg_now = create_config(make_args("gpt", dataset_name="wikipedia"))
+    cfg_now.training.amp_dtype = "bf16"
+    cfg_now.training.checkpoints_folder = str(tmp_path) + os.sep
+
+    r = GPT2Runner.__new__(GPT2Runner)
+    r.config = cfg_now
+    r.grad_scaler = None
+
+    class _Stub:
+        def load_state_dict(self, *a, **k):
+            pass
+
+    r.model = r.optimizer = r.scheduler = _Stub()
+    assert r.load_checkpoint() is True
+    out = capsys.readouterr().out
+    assert "fp16" in out and "bf16" in out, (
+        "смена точности на дозапуске проходит молча")
+    assert "AMP_DTYPE" in out, "предупреждение не говорит, что делать"
+
+
+def test_resume_is_quiet_when_precision_matches(tmp_path, capsys):
+    """Обратная сторона: при совпадающей точности лишнего шума быть не должно,
+    иначе предупреждение перестанут читать."""
+    import torch as _torch
+    from gpt2_holder import GPT2Runner
+
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    cfg.training.amp_dtype = "fp16"
+
+    folder = tmp_path / cfg.training.checkpoints_prefix
+    folder.mkdir(parents=True)
+    _torch.save({"model": {}, "optimizer": {}, "scheduler": {}, "scaler": None,
+                 "step": 2500, "config": cfg, "tracked_metrics": None},
+                folder / "last.pth")
+
+    cfg_now = create_config(make_args("gpt", dataset_name="wikipedia"))
+    cfg_now.training.amp_dtype = "fp16"
+    cfg_now.training.checkpoints_folder = str(tmp_path) + os.sep
+
+    r = GPT2Runner.__new__(GPT2Runner)
+    r.config = cfg_now
+    r.grad_scaler = None
+
+    class _Stub:
+        def load_state_dict(self, *a, **k):
+            pass
+
+    r.model = r.optimizer = r.scheduler = _Stub()
+    assert r.load_checkpoint() is True
+    assert "WARNING" not in capsys.readouterr().out
