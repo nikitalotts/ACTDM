@@ -266,6 +266,23 @@ class GPT2Runner:
         """
         return resolve_amp_dtype(self.config)
 
+    def decoding_tag(self):
+        """Короткая подпись режима генерации для имён файлов.
+
+        Без неё свип по температуре писал бы все прогоны в ОДИН файл: имя
+        различается только шагом и сидом, а в свипе они одинаковые, меняется
+        ровно декодинг. У диффузий такой ручки нет, поэтому подпись только
+        здесь.
+        """
+        decoding = getattr(self.config, "decoding", "greedy")
+        if decoding != "sampling":
+            return decoding
+        s = getattr(self.config, "sampling", {}) or {}
+        tag = (f"sampling-t{float(s.get('temperature', 1.0)):g}"
+               f"-p{float(s.get('top_p', 0.95)):g}")
+        k = float(s.get("top_k", 0) or 0)
+        return tag + (f"-k{k:g}" if k else "")
+
     def collate_fn(self, batch):
         texts_trg = [t["text_trg"] for t in batch]
         texts_src = [t["text_src"] for t in batch]
@@ -756,7 +773,8 @@ class GPT2Runner:
             prefix_folder = os.path.join(self.config.validation.texts_path, self.config.training.checkpoints_prefix)
             if not os.path.exists(prefix_folder):
                 os.makedirs(prefix_folder)
-            file_name = f"{self.step}-seed={self.config.seed}-len={len(result_list)}.json"
+            file_name = (f"{self.step}-seed={self.config.seed}"
+                         f"-len={len(result_list)}-{self.decoding_tag()}.json")
             save_path = os.path.join(prefix_folder, file_name)
             json.dump(result_list, open(save_path, "w"), indent=4)
             print(f"Texts are saved in {save_path}")
@@ -971,7 +989,8 @@ class GPT2Runner:
             "timing": timing_aggregated,
         }
         file_name = (f"statistical_eval-{split}-num_seeds={num_seeds}"
-                     f"-base_seed={base_seed}-step={self.step}.json")
+                     f"-base_seed={base_seed}-step={self.step}"
+                     f"-{self.decoding_tag()}.json")
         save_path = os.path.join(prefix_folder, file_name)
         with open(save_path, "w") as f:
             json.dump(payload, f, indent=4)

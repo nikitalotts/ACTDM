@@ -32,6 +32,11 @@
 #                                   заданий -- genie, diffuseq, guidance x3, gpt.
 #                                   NUM_SEEDS=20 по умолчанию,
 #                                   CHECKPOINT_STEP=87500 -- шаг сравнения.
+#   ./run_wikipedia.sh sweep-gpt    свип декодинга авторегрессионного
+#                                   бейзлайна: greedy плюс сэмплинг с разными
+#                                   температурой/top_p/top_k. Нужен, чтобы в
+#                                   статье сравнивать с ЛУЧШИМ gpt, а не со
+#                                   случайно выбранным декодингом
 #   ./run_wikipedia.sh stat-uncond  то же для unconditional, отдельно: у него
 #                                   метрики mauve/div/ppl, он не попадает в одну
 #                                   таблицу с условными, и считается дольше всех
@@ -188,6 +193,27 @@ case "$1" in
         echo "==> метрики в логах slurm, тексты в generated_texts/<checkpoints_prefix>/"
         echo "==> для std и 95% CI по сидам: ./run_wikipedia.sh stat"
         ;;
+    sweep-gpt)
+        # У gpt есть температура и top_p, у диффузий таких ручек нет. Если взять
+        # один наугад выбранный декодинг, рецензент справедливо скажет, что
+        # бейзлайн ослаблен. Свип дешёвый -- одна карта, минуты на конфигурацию --
+        # и закрывает вопрос: в статью идёт ЛУЧШИЙ gpt.
+        export CHECKPOINT_STEP="${_CKPT_STEP:-87500}"
+        echo "==> CHECKPOINT_STEP=${CHECKPOINT_STEP}"
+        ARCH_TYPE=gpt DECODING=greedy \
+            sbatch --job-name=sweep-gpt-greedy eval_gpt2.sh
+        for T in 0.7 0.8 0.9 1.0; do
+            ARCH_TYPE=gpt DECODING=sampling TEMPERATURE=${T} TOP_P=0.95 TOP_K=0 \
+                sbatch --job-name=sweep-gpt-t${T} eval_gpt2.sh
+        done
+        ARCH_TYPE=gpt DECODING=sampling TEMPERATURE=1.0 TOP_P=0.9 TOP_K=0 \
+            sbatch --job-name=sweep-gpt-p0.9 eval_gpt2.sh
+        ARCH_TYPE=gpt DECODING=sampling TEMPERATURE=1.0 TOP_P=1.0 TOP_K=50 \
+            sbatch --job-name=sweep-gpt-k50 eval_gpt2.sh
+        echo "==> семь конфигураций, каждая пишет свой json (режим входит в имя)"
+        echo "==> собрать метрики:"
+        echo "==>   for f in slurm_logs/*sweep-gpt*.log; do echo \"== \$f\"; grep -aE '^(bleu|bert-score|rouge1|rouge2|rougeL):' \"\$f\" | tail -5; done"
+        ;;
     stat|stat-uncond)
         # Статистическая оценка для статьи: NUM_SEEDS независимых прогонов
         # генерации, из них mean +- std и 95% CI.
@@ -225,7 +251,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,43p' "$0"
+        sed -n '2,48p' "$0"
         exit 1
         ;;
 esac

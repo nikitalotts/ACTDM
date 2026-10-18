@@ -26,9 +26,11 @@ source run_flags.sh
 # числа обучения и eval честно, нужен одинаковый декодинг с обеих сторон.
 DECODING="${DECODING:-greedy}"
 
-TEMPERATURE=1.0
-TOP_P=0.95
-TOP_K=0
+# Параметры сэмплинга -- из окружения: свип декодинга гоняет один и тот же
+# чекпоинт с разными значениями, и править ради этого файл нельзя.
+TEMPERATURE="${TEMPERATURE:-1.0}"
+TOP_P="${TOP_P:-0.95}"
+TOP_K="${TOP_K:-0}"
 
 echo "Starting GPT-2 evaluation (decoding=${DECODING})..."
 

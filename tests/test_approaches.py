@@ -3479,3 +3479,112 @@ def test_gpt_decoding_is_overridable_from_the_environment(script, default):
     body = open(script, encoding="utf-8").read()
     assert f'DECODING="${{DECODING:-{default}}}"' in body, (
         f"{script}: декодинг зашит намертво, проверить разницу нечем")
+
+
+# =====================================================================
+# Свип декодинга и метрика копирования промпта
+# =====================================================================
+
+@pytest.mark.parametrize("script", ["eval_gpt2.sh", "eval_gpt2_stat.sh"])
+def test_sampling_parameters_come_from_the_environment(script):
+    """Свип гоняет один чекпоинт с разными температурой/top_p/top_k. Если они
+    зашиты в файл, каждый прогон свипа -- это правка скрипта, то есть гонка
+    между заданиями за содержимое файла."""
+    body = open(script, encoding="utf-8").read()
+    for var in ("TEMPERATURE", "TOP_P", "TOP_K"):
+        assert f'{var}="${{{var}:-' in body, f"{script}: {var} зашит намертво"
+
+
+def test_generated_texts_are_separated_by_decoding_mode():
+    """Имя json у gpt различается только шагом и сидом. В свипе они одинаковые,
+    меняется ровно декодинг -- без подписи режима семь прогонов записали бы
+    один файл, и остался бы последний."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+
+    tag = inspect.getsource(GPT2Runner.decoding_tag)
+    assert "temperature" in tag and "top_p" in tag and "top_k" in tag, (
+        "подпись режима не различает параметры сэмплинга")
+
+    for method in (GPT2Runner.estimate, GPT2Runner._aggregate_and_save):
+        src = inspect.getsource(method)
+        assert "decoding_tag()" in src, (
+            f"{method.__name__}: имя файла не зависит от режима генерации")
+
+
+def test_decoding_tag_distinguishes_the_swept_grid():
+    """Сетка свипа обязана давать семь РАЗНЫХ подписей, иначе развязка имён
+    бесполезна."""
+    from gpt2_holder import GPT2Runner
+
+    grid = [("greedy", {}),
+            ("sampling", {"temperature": 0.7, "top_p": 0.95, "top_k": 0}),
+            ("sampling", {"temperature": 0.8, "top_p": 0.95, "top_k": 0}),
+            ("sampling", {"temperature": 0.9, "top_p": 0.95, "top_k": 0}),
+            ("sampling", {"temperature": 1.0, "top_p": 0.95, "top_k": 0}),
+            ("sampling", {"temperature": 1.0, "top_p": 0.9, "top_k": 0}),
+            ("sampling", {"temperature": 1.0, "top_p": 1.0, "top_k": 50})]
+    tags = set()
+    r = GPT2Runner.__new__(GPT2Runner)
+    for decoding, sampling in grid:
+        cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+        cfg.decoding = decoding
+        cfg.sampling = sampling
+        r.config = cfg
+        tags.add(r.decoding_tag())
+    assert len(tags) == len(grid), f"подписи схлопнулись: {sorted(tags)}"
+
+
+def test_sweep_stage_covers_greedy_and_sampling():
+    """В статью должен идти ЛУЧШИЙ gpt, а не случайно выбранный декодинг: у
+    диффузий температуры и top_p нет, и сравнение с одним наугад взятым
+    режимом рецензент назовёт ослабленным бейзлайном."""
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    start = sh.index("    sweep-gpt)")
+    body = sh[start:sh.index("\n        ;;", start)]
+    assert "DECODING=greedy" in body, "в свипе нет жадного декодинга"
+    assert "DECODING=sampling" in body
+    assert "TEMPERATURE=${T}" in body and "0.7 0.8 0.9 1.0" in body
+    assert "TOP_K=50" in body and "TOP_P=0.9 " in body
+    assert "CHECKPOINT_STEP" in body, "свип не пинит шаг сравнения"
+    assert "eval_gpt2.sh" in body and "eval_diffusion" not in body
+
+
+def test_copy_rate_needs_the_reference_floor():
+    """Доля скопированных n-грамм без пола по TRG не интерпретируется: референс
+    тоже переиспользует слова промпта. Ровно та же ошибка, что с div и ppl у
+    unconditional, где абсолютные числа не с чем сравнивать."""
+    import copy_rate
+
+    src = "the cat sat on the mat in the kitchen".split()
+    gen = "the cat sat on the mat".split()          # копирует целиком
+    trg = "it fell asleep right there".split()      # не копирует
+
+    assert copy_rate.copy_rate(gen, src, 4) == 1.0
+    assert copy_rate.copy_rate(trg, src, 4) == 0.0
+    assert copy_rate.longest_copied_span(gen, src) == len(gen)
+    assert copy_rate.longest_copied_span(trg, src) == 0
+
+    res = copy_rate.analyse([{"SRC": " ".join(src), "GEN": " ".join(gen),
+                              "TRG": " ".join(trg)}])
+    assert res["GEN"]["copy_4gram"] == 1.0
+    assert res["TRG"]["copy_4gram"] == 0.0
+    assert res["excess"]["copy_4gram"] == 1.0
+
+
+def test_copy_rate_ignores_unconditional_files():
+    """У безусловной диффузии в json нет SRC -- считать копирование не из чего,
+    и такие файлы должны пропускаться, а не падать."""
+    import copy_rate
+    res = copy_rate.analyse([{"TRG": "a b c d e", "GEN": "f g h i j"}])
+    assert res["n_examples"] == 0
+    assert res["GEN"]["copy_4gram"] is None
+
+
+def test_longest_span_stops_at_the_first_miss():
+    """Если k-граммы нет в промпте, то и (k+1)-граммы быть не может -- она её
+    содержит. На этом держится ранний выход, иначе цикл квадратичный."""
+    import copy_rate
+    src = "alpha beta gamma".split()
+    gen = "beta gamma delta epsilon".split()
+    assert copy_rate.longest_copied_span(gen, src) == 2

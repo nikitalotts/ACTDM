@@ -26,9 +26,9 @@ source run_flags.sh
 # иначе разные сиды дали бы одинаковый текст и std=0. Чтобы сравнить
 # числа обучения и eval честно, нужен одинаковый декодинг с обеих сторон.
 DECODING="${DECODING:-sampling}"
-TEMPERATURE=0.8
-TOP_P=0.95
-TOP_K=0
+TEMPERATURE="${TEMPERATURE:-0.8}"
+TOP_P="${TOP_P:-0.95}"
+TOP_K="${TOP_K:-0}"
 
 BASE_SEED=0
 NUM_SEEDS="${NUM_SEEDS:-20}"
