@@ -20,7 +20,11 @@ export WANDB_MODE=offline
 ARCH_TYPE="${ARCH_TYPE:-gpt}"
 source run_flags.sh
 
-DECODING="greedy"
+# Декодинг переопределяется из окружения: обучение считает eval ЖАДНО
+# (config.decoding там не задаётся), а статистическая оценка -- sampling-ом,
+# иначе разные сиды дали бы одинаковый текст и std=0. Чтобы сравнить
+# числа обучения и eval честно, нужен одинаковый декодинг с обеих сторон.
+DECODING="${DECODING:-greedy}"
 
 TEMPERATURE=1.0
 TOP_P=0.95

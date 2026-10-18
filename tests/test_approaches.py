@@ -3462,3 +3462,20 @@ def test_stat_stages_are_documented_in_the_header():
     header = sh[:sh.index("set -e")]
     assert "./run_wikipedia.sh stat" in header
     assert "./run_wikipedia.sh stat-uncond" in header
+
+
+@pytest.mark.parametrize("script,default", [
+    ("eval_gpt2.sh", "greedy"), ("eval_gpt2_stat.sh", "sampling")])
+def test_gpt_decoding_is_overridable_from_the_environment(script, default):
+    """Обучение считает eval ЖАДНО: config.decoding задаётся только в
+    eval_gpt2.py и eval_gpt2_stat.py, а в train_gpt2.py его нет, и getattr
+    отдаёт "greedy". Статистическая оценка при этом обязана быть sampling-ом --
+    иначе разные сиды дают одинаковый текст и std=0.
+
+    Из-за этого числа обучения и стат-оценки у gpt НЕ сравнимы напрямую: при
+    greedy слабая модель уходит в повторы, а bert-score наказывает их сильнее,
+    чем bleu и rouge. Чтобы это можно было проверить одной командой, а не
+    правкой файла, декодинг читается из окружения."""
+    body = open(script, encoding="utf-8").read()
+    assert f'DECODING="${{DECODING:-{default}}}"' in body, (
+        f"{script}: декодинг зашит намертво, проверить разницу нечем")
