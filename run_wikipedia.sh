@@ -27,6 +27,14 @@
 #                                   потому что eval переоценивает и уже
 #                                   посчитанные genie/diffuseq/uncond/gpt
 #   ./run_wikipedia.sh eval         финальная оценка всех подходов (после всего)
+#   ./run_wikipedia.sh stat         статистическая оценка: NUM_SEEDS прогонов
+#                                   на подход, mean +- std и 95% CI. Шесть
+#                                   заданий -- genie, diffuseq, guidance x3, gpt.
+#                                   NUM_SEEDS=20 по умолчанию,
+#                                   CHECKPOINT_STEP=87500 -- шаг сравнения.
+#   ./run_wikipedia.sh stat-uncond  то же для unconditional, отдельно: у него
+#                                   метрики mauve/div/ppl, он не попадает в одну
+#                                   таблицу с условными, и считается дольше всех
 #
 # Порядок целиком: data -> stats -> decoders -> diffusion -> classifiers -> eval,
 # gpt можно пускать сразу после data параллельно всему остальному.
@@ -47,6 +55,12 @@ export PATH="$HOME/anaconda3/condabin:$PATH"
 # Гасим все явно: эти режимы запускаются только через smoke_test.sh.
 export SMOKE=0
 unset RUN_TAG BATCH_SIZE NPROC
+
+# CHECKPOINT_STEP пинит файл, который грузит restore_parameters. Для eval это
+# то, что нужно, а вот обучение он заставил бы ДОЗАПУСКАТЬСЯ с указанного шага.
+# Поэтому запоминаем и гасим: стадии stat выставят его себе сами.
+_CKPT_STEP="${CHECKPOINT_STEP:-}"
+unset CHECKPOINT_STEP
 
 # сюда пишут stdout+stderr все sbatch-задания: slurm_logs/<jobid>-<имя>.log;
 # slurm не создает каталог сам, без него задание умирает молча
@@ -172,11 +186,46 @@ case "$1" in
         done
         ARCH_TYPE=gpt sbatch eval_gpt2.sh
         echo "==> метрики в логах slurm, тексты в generated_texts/<checkpoints_prefix>/"
-        echo "==> для std и 95% CI по сидам: те же ARCH_TYPE c eval_diffusion_stat.sh / eval_gpt2_stat.sh"
+        echo "==> для std и 95% CI по сидам: ./run_wikipedia.sh stat"
+        ;;
+    stat|stat-uncond)
+        # Статистическая оценка для статьи: NUM_SEEDS независимых прогонов
+        # генерации, из них mean +- std и 95% CI.
+        #
+        # Шаг сравнения задается ЯВНО. Без этого restore_parameters берет
+        # max(нумерованных), а он разный: genie и unconditional доехали до
+        # 100000, diffuseq и gpt остановлены на 87500 -- подходы сравнивались бы
+        # на разном бюджете, и в логе это выглядело бы нормально.
+        export CHECKPOINT_STEP="${_CKPT_STEP:-87500}"
+        export NUM_SEEDS="${NUM_SEEDS:-20}"
+        echo "==> CHECKPOINT_STEP=${CHECKPOINT_STEP}  NUM_SEEDS=${NUM_SEEDS}"
+        echo "==> пилот перед боевым прогоном: NUM_SEEDS=3 ./run_wikipedia.sh $1"
+
+        if [ "$1" = "stat-uncond" ]; then
+            # Отдельной стадией: у unconditional метрики mauve/div/ppl, а не
+            # bleu/rouge, то есть в одну таблицу с условными подходами он не
+            # ставится. И считается он дольше всех -- mauve и ppl примерно вдвое
+            # дороже bleu/rouge. Пусть его стоимость будет видна отдельно.
+            ARCH_TYPE=unconditional sbatch --job-name=stat-unconditional eval_diffusion_stat.sh
+            echo "==> unconditional: mauve/div/ppl -- это АБСОЛЮТНЫЕ числа,"
+            echo "==> референс по ним не считается (см. заметку в RUNBOOK)"
+        else
+            ARCH_TYPE=genie    sbatch --job-name=stat-genie    eval_diffusion_stat.sh
+            ARCH_TYPE=diffuseq sbatch --job-name=stat-diffuseq eval_diffusion_stat.sh
+            for AUG in shuffled augmented combined; do
+                ARCH_TYPE=guidance AUG_SCHEME=${AUG} \
+                    sbatch --job-name=stat-guidance-${AUG} eval_diffusion_stat.sh
+            done
+            ARCH_TYPE=gpt sbatch --job-name=stat-gpt eval_gpt2_stat.sh
+            echo "==> шесть заданий: genie, diffuseq, guidance x3, gpt"
+            echo "==> unconditional отдельно: ./run_wikipedia.sh stat-uncond"
+        fi
+        echo "==> сверить, что все подходы считаны на одном шаге:"
+        echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,35p' "$0"
+        sed -n '2,43p' "$0"
         exit 1
         ;;
 esac

@@ -270,43 +270,39 @@ for d in checkpoints/*/; do echo "$d: $(ls "$d" | grep -c '^87500.pth')"; done
 
 Число сидов — переменная окружения `NUM_SEEDS` (по умолчанию 20).
 
-**Сначала пилот на 3 сидах**, чтобы померить цену одного сида и не упереться в
-лимит задания на сотом:
+**Сначала пилот на 3 сидах** — шесть коротких заданий, которые дают цену
+одного сида у каждого подхода:
 
 ```bash
-CHECKPOINT_STEP=87500 NUM_SEEDS=3 DATASET=wikipedia ARCH_TYPE=diffuseq sbatch -A proj_1891 eval_diffusion_stat.sh
+NUM_SEEDS=3 ./run_wikipedia.sh stat
 ```
 
-В логе смотреть `[GEN TIMING]` и `ГОТОВО! Время`, поделить на 3 — это цена
-сида. Умножить на нужное число сидов и сверить с `#SBATCH --time` (сейчас
-40 ч) и с остатком квоты (`bash projstat.sh proj_1891`). Диффузии на одной
-карте считают заметно дольше gpt: у gpt генерация 5000 текстов — около 230 с,
-у диффузии работает солвер на 50 шагов.
+Когда досчитают, `ГОТОВО! Время` поделить на 3 и умножить на нужное число
+сидов. Ориентир по gpt: генерация 5000 текстов — около 230 с на одной карте
+плюс ~110 с на метрики, то есть 100 сидов ≈ 9.5 ч. Диффузии дороже: там солвер
+на 50 шагов. Сверить с `#SBATCH --time` (40 ч) и с остатком квоты
+(`bash projstat.sh proj_1891`).
 
-Боевые прогоны (семь заданий, идут параллельно):
+**Боевой прогон — шесть заданий одной командой:**
 
 ```bash
-CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=genie sbatch -A proj_1891 eval_diffusion_stat.sh
+./run_wikipedia.sh stat
 ```
+
+20 сидов по умолчанию; больше — `NUM_SEEDS=50 ./run_wikipedia.sh stat`.
+Шаг сравнения подставляется сам (87500), переопределяется через
+`CHECKPOINT_STEP=...`.
+
+**Unconditional — отдельной стадией:**
 
 ```bash
-CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=diffuseq sbatch -A proj_1891 eval_diffusion_stat.sh
+./run_wikipedia.sh stat-uncond
 ```
 
-```bash
-CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=unconditional sbatch -A proj_1891 eval_diffusion_stat.sh
-```
-
-```bash
-CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=guidance AUG_SCHEME=shuffled sbatch -A proj_1891 eval_diffusion_stat.sh
-```
-
-(то же с `AUG_SCHEME=augmented` и `AUG_SCHEME=combined`; сила guidance —
-через `CG_SCALE=...`)
-
-```bash
-CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=gpt sbatch -A proj_1891 eval_gpt2_stat.sh
-```
+Он меряется mauve/div/ppl, а не bleu/rouge, то есть в одну таблицу с условными
+подходами не ставится, и считается дороже всех. Напоминание: `div` и `ppl` —
+абсолютные числа, референс по ним не считается, без floor по `TRG` они не
+интерпретируются.
 
 Агрегированные mean ± std и CI сохраняются в
 `generated_texts/<prefix>/statistical_eval-*.json`. У guidance в имя файла

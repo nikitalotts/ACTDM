@@ -3405,3 +3405,60 @@ def test_seed_count_is_overridable_from_the_environment(script):
     body = open(script, encoding="utf-8").read()
     assert 'NUM_SEEDS="${NUM_SEEDS:-20}"' in body, (
         f"{script}: число сидов зашито намертво")
+
+
+def _stat_stage_body():
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    start = sh.index('    stat|stat-uncond)')
+    return sh[start:sh.index("\n        ;;", start)]
+
+
+def test_stat_stage_covers_exactly_the_six_compared_configurations():
+    """Сравнение в статье -- шесть условных конфигураций: genie, diffuseq,
+    guidance на трёх схемах классификатора и gpt. Unconditional седьмым НЕ
+    идёт: у него метрики mauve/div/ppl вместо bleu/rouge, в одну таблицу с
+    условными он не ставится, и считается дороже всех."""
+    body = _stat_stage_body()
+    i_if = body.index('if [ "$1" = "stat-uncond" ]')
+    i_else = body.index("\n        else", i_if)
+    uncond_part, main_part = body[i_if:i_else], body[i_else:]
+
+    assert "ARCH_TYPE=unconditional" in uncond_part
+    assert "ARCH_TYPE=unconditional" not in main_part, (
+        "unconditional попал в основную стадию -- он не в той таблице")
+
+    for at in ("genie", "diffuseq", "gpt"):
+        assert f"ARCH_TYPE={at}" in main_part, f"нет {at}"
+    assert "AUG_SCHEME=${AUG}" in main_part and "shuffled augmented combined" in main_part
+    assert "eval_gpt2_stat.sh" in main_part and "eval_diffusion_stat.sh" in main_part
+
+
+def test_stat_stage_pins_the_comparison_step_and_defaults_to_twenty_seeds():
+    """Шаг сравнения -- не то, что стоит каждый раз набирать руками: забыл
+    один раз, и один подход посчитан на другом бюджете. 20 сидов по умолчанию:
+    100 у диффузий выходит за 10 часов на подход."""
+    body = _stat_stage_body()
+    assert 'CHECKPOINT_STEP="${_CKPT_STEP:-87500}"' in body
+    assert 'NUM_SEEDS="${NUM_SEEDS:-20}"' in body
+    assert str(COMPARISON_STEPS) in body, (
+        "дефолтный шаг в стадии разошелся с COMPARISON_STEPS")
+
+
+def test_checkpoint_step_does_not_leak_into_training_stages():
+    """CHECKPOINT_STEP пинит файл для restore_parameters -- это нужно на eval.
+    Но то же имя читает load_checkpoint: с ним стадия обучения ДОЗАПУСТИЛАСЬ бы
+    с указанного шага. Поэтому на входе переменная запоминается и гасится, а
+    стадии stat выставляют её себе сами."""
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    assert '_CKPT_STEP="${CHECKPOINT_STEP:-}"' in sh
+    assert "unset CHECKPOINT_STEP" in sh
+    assert sh.index("unset CHECKPOINT_STEP") < sh.index('    stat|stat-uncond)'), (
+        "гашение должно быть до разбора стадий")
+
+
+def test_stat_stages_are_documented_in_the_header():
+    """Шапка печатается при неизвестной стадии -- она и есть справка."""
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    header = sh[:sh.index("set -e")]
+    assert "./run_wikipedia.sh stat" in header
+    assert "./run_wikipedia.sh stat-uncond" in header
