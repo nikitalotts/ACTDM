@@ -564,6 +564,20 @@ def apply_env_overrides(config):
         config.training.batch_size = int(batch)
         print(f"[CONFIG] BATCH_SIZE={batch} (глобальный батч подменен)")
 
+    # Какой чекпоинт грузить на eval. Без него restore_parameters берет
+    # max(нумерованных), а это РАЗНЫЙ шаг у разных подходов: genie и
+    # unconditional доехали до 100000, diffuseq и gpt остановлены на 87500.
+    # Статистическая оценка сравнивала бы модели на разном бюджете, и в логе
+    # это выглядело бы совершенно нормально.
+    step = os.environ.get("CHECKPOINT_STEP", "").strip()
+    if step:
+        if not step.isdigit():
+            raise ValueError(
+                f"CHECKPOINT_STEP={step!r}: ожидается номер шага, например 87500")
+        config.training.checkpoint_name = step
+        print(f"[CONFIG] CHECKPOINT_STEP={step}: на eval берется "
+              f"{step}.pth, а не последний по номеру")
+
     return config
 
 

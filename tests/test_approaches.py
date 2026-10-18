@@ -3306,3 +3306,102 @@ def test_resume_is_quiet_when_precision_matches(tmp_path, capsys):
     r.model = r.optimizer = r.scheduler = _Stub()
     assert r.load_checkpoint() is True
     assert "WARNING" not in capsys.readouterr().out
+
+
+# =====================================================================
+# Статистическая оценка: все подходы обязаны читаться на одном шаге
+# =====================================================================
+
+def test_checkpoint_step_pins_the_file_to_load(monkeypatch):
+    """Без пина restore_parameters берет max(нумерованных), а это РАЗНЫЙ шаг у
+    разных подходов: genie и unconditional доехали до 100000, diffuseq и gpt
+    остановлены на 87500. Статистическая оценка сравнивала бы модели на разном
+    бюджете, и в логе это выглядело бы нормально."""
+    monkeypatch.setenv("CHECKPOINT_STEP", str(COMPARISON_STEPS))
+    for at in ("genie", "diffuseq", "unconditional", "guidance", "gpt"):
+        cfg = create_config(make_args(at, dataset_name="wikipedia"))
+        assert cfg.training.checkpoint_name == str(COMPARISON_STEPS), (
+            f"{at}: CHECKPOINT_STEP не доехал до конфига")
+
+
+def test_without_the_pin_nothing_changes(monkeypatch):
+    """Поведение по умолчанию прежнее: пустое имя -> max(нумерованных).
+    Пин -- осознанное действие, а не новый дефолт."""
+    monkeypatch.delenv("CHECKPOINT_STEP", raising=False)
+    for at in ("genie", "gpt"):
+        cfg = create_config(make_args(at, dataset_name="wikipedia"))
+        assert cfg.training.checkpoint_name == ""
+
+
+def test_garbage_checkpoint_step_is_rejected(monkeypatch):
+    """Опечатка не должна тихо превращаться в путь вида 87500x.pth."""
+    monkeypatch.setenv("CHECKPOINT_STEP", "87500.pth")
+    with pytest.raises(ValueError, match="CHECKPOINT_STEP"):
+        create_config(make_args("gpt", dataset_name="wikipedia"))
+
+
+def test_missing_pinned_checkpoint_fails_loudly(tmp_path, monkeypatch):
+    """Если запрошенного шага на диске нет -- падаем с перечнем того, что есть.
+    Тихий откат к другому шагу здесь страшнее отсутствия результата."""
+    from gpt2_holder import GPT2Runner
+
+    monkeypatch.setenv("CHECKPOINT_STEP", str(COMPARISON_STEPS))
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    cfg.training.checkpoints_folder = str(tmp_path) + os.sep
+
+    folder = tmp_path / cfg.training.checkpoints_prefix
+    folder.mkdir(parents=True)
+    for step in (12500, 25000):
+        (folder / f"{step}.pth").write_bytes(b"")
+
+    r = GPT2Runner.__new__(GPT2Runner)
+    r.config = cfg
+    with pytest.raises(FileNotFoundError) as e:
+        r.restore_parameters()
+    assert "12500" in str(e.value) and "25000" in str(e.value), (
+        "ошибка не показывает, какие чекпоинты есть")
+
+
+def test_both_runners_report_the_file_they_actually_loaded():
+    """В сводке стат-оценки печаталось config.training.checkpoint_name, то есть
+    по умолчанию пустая строка. Сверить, что все подходы считаны на одном шаге,
+    по такой сводке было невозможно."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner._aggregate_and_save)
+        assert "loaded_checkpoint_path" in src, (
+            f"{runner.__name__}: сводка не печатает реально загруженный файл")
+        restore = inspect.getsource(runner.restore_parameters)
+        assert "self.loaded_checkpoint_path = checkpoint_name" in restore
+
+
+def test_confidence_interval_is_exact_for_a_hundred_seeds():
+    """При 100 сидах df=99, и прежняя заглушка 1.96 занижала интервал примерно
+    на 1.2%. Для статьи интервал должен быть точным, раз уж это возможно."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner._aggregate_and_save)
+        assert "scipy.stats" in src, (
+            f"{runner.__name__}: t-критическая при df>30 осталась приближенной")
+
+    scipy_stats = pytest.importorskip("scipy.stats")
+    exact = float(scipy_stats.t.ppf(0.975, 99))
+    assert 1.98 < exact < 1.99, exact
+    assert abs(exact - 1.96) / exact > 0.01, (
+        "разница с нормальным приближением меньше процента -- "
+        "тогда и чинить было нечего")
+
+
+@pytest.mark.parametrize("script", ["eval_gpt2_stat.sh", "eval_diffusion_stat.sh"])
+def test_seed_count_is_overridable_from_the_environment(script):
+    """100 прогонов вместо 20 -- это переменная окружения, а не правка файла:
+    иначе число сидов разъедется между подходами."""
+    body = open(script, encoding="utf-8").read()
+    assert 'NUM_SEEDS="${NUM_SEEDS:-20}"' in body, (
+        f"{script}: число сидов зашито намертво")

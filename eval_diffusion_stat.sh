@@ -20,7 +20,7 @@ export WANDB_MODE=offline
 source run_flags.sh
 
 BASE_SEED=0
-NUM_SEEDS=20
+NUM_SEEDS="${NUM_SEEDS:-20}"
 SEED_STEP=1000
 
 echo "Starting DIFFUSION STATISTICAL evaluation"

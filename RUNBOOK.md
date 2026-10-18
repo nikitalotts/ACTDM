@@ -254,33 +254,75 @@ fp16 быстрее — запускать обучение с `AMP_DTYPE=fp16 .
 Условные режимы меряются по bleu/bert-score/rouge против референсного
 продолжения, unconditional — по mauve/div/ppl.
 
-### 4.2 Для статьи: статистическая оценка (std и 95% CI по 20 сидам)
+### 4.2 Для статьи: статистическая оценка (std и 95% CI по сидам)
+
+**Шаг сравнения задаётся явно — `CHECKPOINT_STEP=87500`.** Без него
+`restore_parameters` берёт `max(нумерованных)`, а это **разный** шаг у разных
+подходов: genie и unconditional доехали до 100000, diffuseq и gpt остановлены
+на 87500. Сравнение поехало бы, и в логе это выглядело бы нормально. Если
+запрошенного чекпоинта на диске нет — задание падает с перечнем того, что есть.
+
+Сначала убедиться, что шаг 87500 на диске у всех:
 
 ```bash
-DATASET=wikipedia ARCH_TYPE=genie sbatch eval_diffusion_stat.sh
+for d in checkpoints/*/; do echo "$d: $(ls "$d" | grep -c '^87500.pth')"; done
+```
+
+Число сидов — переменная окружения `NUM_SEEDS` (по умолчанию 20).
+
+**Сначала пилот на 3 сидах**, чтобы померить цену одного сида и не упереться в
+лимит задания на сотом:
+
+```bash
+CHECKPOINT_STEP=87500 NUM_SEEDS=3 DATASET=wikipedia ARCH_TYPE=diffuseq sbatch -A proj_1891 eval_diffusion_stat.sh
+```
+
+В логе смотреть `[GEN TIMING]` и `ГОТОВО! Время`, поделить на 3 — это цена
+сида. Умножить на нужное число сидов и сверить с `#SBATCH --time` (сейчас
+40 ч) и с остатком квоты (`bash projstat.sh proj_1891`). Диффузии на одной
+карте считают заметно дольше gpt: у gpt генерация 5000 текстов — около 230 с,
+у диффузии работает солвер на 50 шагов.
+
+Боевые прогоны (семь заданий, идут параллельно):
+
+```bash
+CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=genie sbatch -A proj_1891 eval_diffusion_stat.sh
 ```
 
 ```bash
-DATASET=wikipedia ARCH_TYPE=diffuseq sbatch eval_diffusion_stat.sh
+CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=diffuseq sbatch -A proj_1891 eval_diffusion_stat.sh
 ```
 
 ```bash
-DATASET=wikipedia ARCH_TYPE=unconditional sbatch eval_diffusion_stat.sh
+CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=unconditional sbatch -A proj_1891 eval_diffusion_stat.sh
 ```
 
 ```bash
-DATASET=wikipedia ARCH_TYPE=guidance AUG_SCHEME=shuffled sbatch eval_diffusion_stat.sh
+CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=guidance AUG_SCHEME=shuffled sbatch -A proj_1891 eval_diffusion_stat.sh
 ```
 
 (то же с `AUG_SCHEME=augmented` и `AUG_SCHEME=combined`; сила guidance —
 через `CG_SCALE=...`)
 
 ```bash
-DATASET=wikipedia ARCH_TYPE=gpt sbatch eval_gpt2_stat.sh
+CHECKPOINT_STEP=87500 NUM_SEEDS=100 DATASET=wikipedia ARCH_TYPE=gpt sbatch -A proj_1891 eval_gpt2_stat.sh
 ```
 
 Агрегированные mean ± std и CI сохраняются в
-`generated_texts/<prefix>/statistical_eval-*.json`.
+`generated_texts/<prefix>/statistical_eval-*.json`. У guidance в имя файла
+входят `gs`, схема классификатора и `time_scale` — три схемы делят
+`checkpoints_prefix` с unconditional и иначе перезаписали бы друг друга.
+
+**Проверка после прогона — все подходы обязаны быть на одном шаге:**
+
+```bash
+grep -h -A3 'STATISTICAL EVAL SUMMARY' slurm_logs/*-eval_*_stat.log | grep -E 'checkpoint|step'
+```
+
+Везде должен стоять один и тот же `87500.pth`.
+
+95% доверительный интервал считается по точной t-критической (`scipy.stats.t`);
+прежняя заглушка 1.96 при `df > 30` занижала интервал примерно на 1.2%.
 
 ## Если что-то упало
 

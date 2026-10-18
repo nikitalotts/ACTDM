@@ -265,7 +265,15 @@ class DiffusionRunner:
         name = self.config.training.checkpoint_name
         if not name:
             name = max(checkpoint_names)
+        elif int(name) not in checkpoint_names:
+            # Молчать нельзя: задали шаг сравнения, а его на диске нет -- значит
+            # либо прогон не дошел, либо чекпоинт вытеснен top-k.
+            raise FileNotFoundError(
+                f"Запрошен чекпоинт {name}.pth, но в {prefix_folder} есть "
+                f"только {sorted(checkpoint_names)}. "
+                f"Проверьте CHECKPOINT_STEP.")
         checkpoint_name = f"{prefix_folder}/{name}.pth"
+        self.loaded_checkpoint_path = checkpoint_name
         load = torch.load(checkpoint_name)
         self.step = load["step"]
         print('LOADED Diffusion from', checkpoint_name, self.step)
@@ -1366,7 +1374,14 @@ class DiffusionRunner:
             if df in t_crit_95:
                 return t_crit_95[df]
             if df > 30:
-                return 1.96
+                # 100 сидов -> df=99, и 1.96 занижает интервал примерно на 1.2%.
+                # Точное значение есть в scipy (он тянется за scikit-learn);
+                # без него остается прежнее нормальное приближение.
+                try:
+                    from scipy.stats import t as _t
+                    return float(_t.ppf(0.975, df))
+                except Exception:
+                    return 1.96
             keys = sorted(k for k in t_crit_95.keys() if k <= df)
             return t_crit_95[keys[-1]] if keys else float("inf")
 
@@ -1416,8 +1431,11 @@ class DiffusionRunner:
 
         print("\n" + "=" * 80)
         print(f"STATISTICAL EVAL SUMMARY  —  {num_seeds} runs, base_seed={base_seed}")
-        print(f"  checkpoint : {self.config.training.checkpoints_prefix}"
-              f" / {self.config.training.checkpoint_name}")
+        # печатаем РЕАЛЬНО загруженный файл, а не пустую строку из конфига:
+        # по этой строке потом сверяют, что все подходы считаны на одном шаге
+        print(f"  checkpoint : "
+              f"{getattr(self, 'loaded_checkpoint_path', '<не загружался>')}")
+        print(f"  step       : {self.step}")
         print(f"  split      : {split}")
         print(f"  N (steps)  : {self.config.dynamic.N}")
         print("=" * 80)
