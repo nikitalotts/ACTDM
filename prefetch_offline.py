@@ -53,6 +53,15 @@ def bert():
     AutoModel.from_pretrained("google-bert/bert-base-cased")
 
 
+@step("GPT2-small: только токенизатор и конфиг (веса обучаются с нуля)")
+def gpt2_small():
+    # 124M -- между diffuseq (102M) и genie (130M): бейзлайн, сопоставимый
+    # с диффузиями по числу параметров
+    from transformers import GPT2Tokenizer, GPT2Config
+    GPT2Tokenizer.from_pretrained("gpt2")
+    GPT2Config.from_pretrained("gpt2")
+
+
 @step("GPT2-medium: только токенизатор и конфиг (веса обучаются с нуля)")
 def gpt2_medium():
     from transformers import GPT2Tokenizer, GPT2Config

@@ -14,7 +14,11 @@
 #   ./run_wikipedia.sh diffuseq     то же, но по одной модели за раз:
 #   ./run_wikipedia.sh genie        genie | diffuseq | unconditional (=uncond)
 #   ./run_wikipedia.sh unconditional
-#   ./run_wikipedia.sh gpt          GPT2-бейзлайн                  (после data)
+#   ./run_wikipedia.sh gpt          GPT2-medium-бейзлайн, 355M     (после data)
+#   ./run_wikipedia.sh gpt-small    GPT2-small, 124M: бейзлайн, сопоставимый
+#                                   с диффузиями по числу параметров (102M у
+#                                   diffuseq, 130M у genie). fp16 и без
+#                                   пересчёта активаций -- ему хватает памяти
 #   ./run_wikipedia.sh classifiers  3 классификатора для guidance  (после
 #                                   unconditional: augmented и combined
 #                                   реконструируют x_0 ее чекпоинтом)
@@ -134,6 +138,22 @@ case "$1" in
     gpt)
         ARCH_TYPE=gpt sbatch train_gpt2.sh
         ;;
+    gpt-small)
+        # Зачем второй бейзлайн: у gpt2-medium 355M против 102M у diffuseq и
+        # 130M у genie, и при равном числе увиденных примеров он тратит в
+        # 3.5-5 раз больше FLOPs. Первое, что скажет рецензент, если medium
+        # выигрывает. gpt2-small -- 124M, ровно между диффузиями.
+        #
+        # fp16 -- то же, чем обучен medium (на V100 он втрое быстрее bf16).
+        # Пересчёт активаций выключен: он нужен был, чтобы на medium влез батч
+        # 128 на карту, у small памяти с запасом, а стоит он около четверти
+        # скорости. Перед запуском проверить пробником, что батч действительно
+        # влезает:
+        #   GPT_MODEL=gpt2 GRAD_CKPT=0 AMP_DTYPE=fp16 ARCHS=gpt MAX_BATCH=128         #       sbatch find_max_batch.sh
+        GPT_MODEL=gpt2         AMP_DTYPE="${AMP_DTYPE:-fp16}"         GRAD_CKPT="${GRAD_CKPT:-0}"         ARCH_TYPE=gpt sbatch --job-name=train_gpt2-small train_gpt2.sh
+        echo "==> каталог чекпоинтов: checkpoints/gpt2-512-0.0002-wikipedia"
+        echo "==> medium не затрагивается: у размеров разные префиксы"
+        ;;
     classifier-shuffled)
         # Единственная схема, не зависящая от диффузии: негативы получаются
         # перестановкой пар промпт/продолжение внутри батча, чекпоинт
@@ -251,7 +271,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,48p' "$0"
+        sed -n '2,52p' "$0"
         exit 1
         ;;
 esac

@@ -425,6 +425,12 @@ def create_gpt_config(args):
     # только явно, через AMP_DTYPE: на V100 тензорных ядер для bf16 нет, и
     # выигрыш fp16 стоит сначала замерить пробником (см. gpt2_holder.AMP_DTYPES)
     training.amp_dtype = os.environ.get("AMP_DTYPE", "bf16").strip().lower()
+    # Пересчёт активаций нужен был, чтобы на gpt2-medium поместился батч 128 на
+    # карту. У gpt2-small памяти вдвое-втрое больше чем надо, а пересчёт стоит
+    # около четверти скорости -- для него это выключается. Математически
+    # пересчёт точен (веса совпадают до нуля, есть тест), поэтому на сравнение
+    # он не влияет никак.
+    training.gradient_checkpointing = os.environ.get("GRAD_CKPT", "1") != "0"
 
     optim = config.optim = ml_collections.ConfigDict()
     optim.grad_clip_norm = 1.
@@ -450,7 +456,17 @@ def create_gpt_config(args):
 
     model = config.model = ml_collections.ConfigDict()
     model.ema_rate = 0.9999
-    model.encoder_name = "gpt2-medium"
+    # Размер бейзлайна. gpt2-medium -- 355M, втрое больше диффузионных
+    # denoising-сетей (102M у diffuseq, 130M у genie), и при равном числе
+    # увиденных примеров он тратит в 3.5-5 раз больше FLOPs. gpt2 (small) --
+    # 124M, то есть ровно между diffuseq и genie: сравнение при сопоставимом
+    # числе параметров. Имя входит в checkpoints_prefix, поэтому размеры не
+    # делят каталог чекпоинтов.
+    model.encoder_name = os.environ.get("GPT_MODEL", "gpt2-medium").strip()
+    if model.encoder_name not in ("gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"):
+        raise ValueError(
+            f"GPT_MODEL={model.encoder_name!r}: ожидается gpt2 | gpt2-medium | "
+            f"gpt2-large | gpt2-xl")
     # Этим токенизатором dataset_wiki режет текст на промпт/продолжение.
     # Берется тот же BERT, что у диффузии: граница разбиения обязана совпадать
     # во всех подходах, иначе gpt сравнивается на других парах
@@ -487,9 +503,27 @@ def create_gpt_config(args):
     data.datasets.metrics[dataset_name] = metrics_for_mode(True)
 
     config.project_name = args.project_name
-    training.checkpoints_prefix = f"gpt2-medium-512-{optim.lr}-{data.datasets.datasets_list[0]}"
+    # для gpt2-medium строка та же, что и раньше -- старые чекпоинты остаются
+    # валидными; gpt2 (small) получает свой каталог автоматически
+    training.checkpoints_prefix = (
+        f"{model.encoder_name}-512-{optim.lr}-{data.datasets.datasets_list[0]}")
     training.checkpoints_prefix += artifact_suffix(config)
     config.eval = args.eval or False
+
+    # Декодинг и на обучении тоже: estimate() во время обучения считал метрики
+    # ЖАДНО (config.decoding там никто не задавал), а в статью идут числа
+    # сэмплинга -- кривые обучения и финальные числа были про разное.
+    # Дефолт прежний: кривая уже обученного gpt2-medium снята жадно, и менять
+    # его молча нельзя, иначе кривые разных размеров станут несравнимы.
+    config.decoding = os.environ.get("DECODING", "greedy").strip().lower()
+    if config.decoding not in ("greedy", "sampling"):
+        raise ValueError(
+            f"DECODING={config.decoding!r}: ожидается greedy | sampling")
+    config.sampling = {
+        "temperature": float(os.environ.get("TEMPERATURE", 1.0)),
+        "top_p": float(os.environ.get("TOP_P", 0.95)),
+        "top_k": int(float(os.environ.get("TOP_K", 0))),
+    }
 
     config.tracked_dataset = data.datasets.datasets_list[0]
     config.tracked_metric = data.datasets.metrics[config.tracked_dataset]["tracked_metric"]

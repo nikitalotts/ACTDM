@@ -166,7 +166,8 @@ class GPT2Runner:
         if get_rank() == 0:
             print(f"[GPT2] autocast dtype: {resolve_amp_dtype(config)}")
 
-        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2-medium")
+        model_name = self.config.model.encoder_name
+        self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = "left"
         # Промпт режется СЛЕВА. Нарезка на пары идет BERT-токенизатором (ровно
@@ -178,7 +179,7 @@ class GPT2Runner:
         # Тем же концом режет и генерация на eval (там truncation=True).
         self.tokenizer.truncation_side = "left"
 
-        gpt2_config = GPT2Config.from_pretrained("gpt2-medium")
+        gpt2_config = GPT2Config.from_pretrained(model_name)
         gpt2_config.bos_token_id = self.tokenizer.bos_token_id
         gpt2_config.eos_token_id = self.tokenizer.eos_token_id
         self.device = torch.device(f"cuda:{config.local_rank}" if torch.cuda.is_available() else "cpu")

@@ -3588,3 +3588,142 @@ def test_longest_span_stops_at_the_first_miss():
     src = "alpha beta gamma".split()
     gen = "beta gamma delta epsilon".split()
     assert copy_rate.longest_copied_span(gen, src) == 2
+
+
+# =====================================================================
+# Бейзлайн, сопоставимый с диффузиями по числу параметров
+# =====================================================================
+
+def test_default_gpt_size_keeps_the_trained_checkpoint_reachable(monkeypatch):
+    """gpt2-medium уже обучен, и его каталог чекпоинтов называется
+    gpt2-medium-512-0.0002-wikipedia. Параметризация размера не имеет права
+    менять эту строку, иначе обученная модель станет ненаходимой."""
+    monkeypatch.delenv("GPT_MODEL", raising=False)
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    assert cfg.model.encoder_name == "gpt2-medium"
+    assert cfg.training.checkpoints_prefix == "gpt2-medium-512-0.0002-wikipedia"
+
+
+def test_each_gpt_size_gets_its_own_checkpoint_folder(monkeypatch):
+    """Иначе small дозаписался бы в каталог medium: load_checkpoint поднял бы
+    чужой last.pth, формы весов не совпали бы, и в лучшем случае это падение,
+    а в худшем -- затёртый обученный medium."""
+    seen = {}
+    for name in ("gpt2", "gpt2-medium"):
+        monkeypatch.setenv("GPT_MODEL", name)
+        cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+        seen[name] = cfg.training.checkpoints_prefix
+    assert seen["gpt2"] != seen["gpt2-medium"]
+    assert seen["gpt2"].startswith("gpt2-512-")
+
+
+def test_unknown_gpt_size_is_rejected(monkeypatch):
+    monkeypatch.setenv("GPT_MODEL", "gpt3")
+    with pytest.raises(ValueError, match="GPT_MODEL"):
+        create_config(make_args("gpt", dataset_name="wikipedia"))
+
+
+def test_nothing_hardcodes_the_model_size_any_more():
+    """Раннер и пробник обязаны брать размер из конфига: иначе GPT_MODEL
+    поменяет только имя каталога, а обучаться будет прежняя модель."""
+    for fname in ("gpt2_holder.py", "find_max_batch.py"):
+        body = open(fname, encoding="utf-8").read()
+        assert "gpt2-medium" not in body, (
+            f"{fname}: размер модели всё ещё захардкожен")
+    holder = open("gpt2_holder.py", encoding="utf-8").read()
+    assert "self.config.model.encoder_name" in holder
+
+
+def test_small_model_can_skip_activation_recomputation(monkeypatch):
+    """Пересчёт активаций нужен был, чтобы на medium влез батч 128 на карту.
+    У small памяти с запасом, а пересчёт стоит около четверти скорости --
+    при 150 оставшихся GPU-часах это существенно. Математически он точен
+    (есть тест на совпадение весов), на сравнение не влияет."""
+    monkeypatch.delenv("GRAD_CKPT", raising=False)
+    assert create_config(make_args("gpt", dataset_name="wikipedia")
+                         ).training.gradient_checkpointing is True
+
+    monkeypatch.setenv("GRAD_CKPT", "0")
+    assert create_config(make_args("gpt", dataset_name="wikipedia")
+                         ).training.gradient_checkpointing is False
+
+    import inspect
+    from gpt2_holder import GPT2Runner
+    src = inspect.getsource(GPT2Runner.__init__)
+    assert 'getattr(self.config.training, "gradient_checkpointing"' in src
+    probe = open("find_max_batch.py", encoding="utf-8").read()
+    assert 'gradient_checkpointing", True)' in probe, (
+        "пробник всегда меряет с пересчётом -- оценка времени для small будет врать")
+
+
+def test_training_decoding_defaults_to_greedy(monkeypatch):
+    """Кривая обученного gpt2-medium снята ЖАДНО. Если small снимать
+    сэмплингом, две кривые станут несравнимы между собой -- а нужны они
+    именно в паре, ради сравнения при сопоставимых параметрах."""
+    monkeypatch.delenv("DECODING", raising=False)
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    assert cfg.decoding == "greedy"
+
+    monkeypatch.setenv("DECODING", "sampling")
+    monkeypatch.setenv("TEMPERATURE", "0.9")
+    cfg = create_config(make_args("gpt", dataset_name="wikipedia"))
+    assert cfg.decoding == "sampling"
+    assert cfg.sampling["temperature"] == 0.9
+
+    monkeypatch.setenv("DECODING", "beam")
+    with pytest.raises(ValueError, match="DECODING"):
+        create_config(make_args("gpt", dataset_name="wikipedia"))
+
+
+def test_small_gpt_is_comparable_in_size_to_the_diffusions():
+    """Весь смысл второго бейзлайна: 124M у gpt2 против 102M у diffuseq и
+    130M у genie. У gpt2-medium 355M -- втрое больше, и при равном числе
+    увиденных примеров он тратит в разы больше FLOPs. Это первое, что
+    скажет рецензент, если medium выигрывает."""
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    sizes = {}
+    for name in ("gpt2", "gpt2-medium"):
+        m = GPT2LMHeadModel(GPT2Config.from_pretrained(name))
+        sizes[name] = sum(p.numel() for p in m.parameters())
+
+    assert 100e6 < sizes["gpt2"] < 140e6, sizes["gpt2"]
+    assert sizes["gpt2-medium"] / sizes["gpt2"] > 2.5, (
+        "medium перестал быть кратно крупнее -- проверьте конфиги")
+
+
+def test_offline_cache_covers_the_small_model():
+    """На compute-нодах интернета нет: без прогрева задание упадёт на первом
+    from_pretrained, уже заняв карты."""
+    body = open("prefetch_offline.py", encoding="utf-8").read()
+    assert "def gpt2_small():" in body
+    assert body.index("def gpt2_small():") > body.index("@step(\"GPT2-small"), (
+        "у gpt2_small нет декоратора @step -- шаг не попадёт в прогрев"
+    )
+    small = body[body.index("def gpt2_small():"):body.index("def gpt2_medium():")]
+    assert 'from_pretrained("gpt2")' in small
+    assert "GPT2LMHeadModel" not in small, (
+        "веса gpt обучаются с нуля, качать их незачем")
+
+
+def test_small_gpt_stage_uses_the_fast_settings():
+    """Стадия должна сама ставить то, что проверено: fp16 (втрое быстрее bf16
+    на V100) и отсутствие пересчёта активаций. Набирать три переменные руками
+    при каждом запуске -- это способ однажды забыть одну и потерять часы."""
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    start = sh.index("    gpt-small)")
+    body = sh[start:sh.index("\n        ;;", start)]
+
+    assert "GPT_MODEL=gpt2 " in body or "GPT_MODEL=gpt2\\" in body or \
+           "GPT_MODEL=gpt2\n" in body, "стадия не выбирает размер модели"
+    assert 'AMP_DTYPE="${AMP_DTYPE:-fp16}"' in body
+    assert 'GRAD_CKPT="${GRAD_CKPT:-0}"' in body
+    assert "train_gpt2.sh" in body
+    assert "find_max_batch" in body, (
+        "нет напоминания проверить батч пробником перед многочасовым прогоном")
+
+
+def test_small_gpt_stage_is_documented_in_the_header():
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    header = sh[:sh.index("set -e")]
+    assert "./run_wikipedia.sh gpt-small" in header

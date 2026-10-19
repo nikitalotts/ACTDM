@@ -74,16 +74,19 @@ class GPTProbe(Probe):
     def build(self):
         from transformers import GPT2Config, GPT2LMHeadModel, GPT2Tokenizer
 
-        tok = GPT2Tokenizer.from_pretrained("gpt2-medium")
-        cfg = GPT2Config.from_pretrained("gpt2-medium")
+        model_name = self.config.model.encoder_name
+        print(f"  модель: {model_name}")
+        tok = GPT2Tokenizer.from_pretrained(model_name)
+        cfg = GPT2Config.from_pretrained(model_name)
         self.model = GPT2LMHeadModel(cfg).to(self.device)
         # тот же режим, что в обучении: пересчет активаций блоков
-        try:
-            self.model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False})
-        except TypeError:
-            self.model.gradient_checkpointing_enable()
-        self.model.config.use_cache = False
+        if getattr(self.config.training, "gradient_checkpointing", True):
+            try:
+                self.model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False})
+            except TypeError:
+                self.model.gradient_checkpointing_enable()
+            self.model.config.use_cache = False
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.config.optim.lr,
