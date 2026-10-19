@@ -3727,3 +3727,36 @@ def test_small_gpt_stage_is_documented_in_the_header():
     sh = open("run_wikipedia.sh", encoding="utf-8").read()
     header = sh[:sh.index("set -e")]
     assert "./run_wikipedia.sh gpt-small" in header
+
+
+def test_stages_request_a_time_limit_the_quota_allows():
+    """Кластер проверяет квоту прямо на sbatch: (карты x запрошенное время)
+    не должно превышать остаток проекта. 75 ч из train_gpt2.sh при 4 картах --
+    это 300 GPU-часов, и задание не отправится вообще, если столько не
+    осталось (так и случилось при остатке 148).
+
+    Запрашиваем столько, сколько реально нужно по замеру, а не "с запасом":
+    снятое по лимиту задание теряет максимум интервал между last.pth и
+    продолжается тем же запуском.
+    """
+    import re
+
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+
+    # (стадия, карт в задании, потолок GPU-часов на задание)
+    for stage, gpus, budget in (("gpt-small", 4, 100), ("stat|stat-uncond", 1, 20)):
+        start = sh.index(f"    {stage})")
+        body = sh[start:sh.index("\n        ;;", start)]
+        limits = re.findall(r'--time="\$\{TIME_LIMIT:-(\d+):', body)
+        assert limits, f"стадия {stage} не задаёт --time, возьмётся 75 ч из .sh"
+        for hours in map(int, limits):
+            assert hours * gpus <= budget, (
+                f"{stage}: {hours} ч x {gpus} карт = {hours * gpus} GPU-часов "
+                f"-- не пройдёт проверку квоты при скромном остатке")
+
+
+def test_time_limit_is_overridable():
+    """Остаток квоты меняется, и подгонять лимит правкой файла нельзя."""
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    assert sh.count('--time="${TIME_LIMIT:-') >= 6, (
+        "не все задания читают TIME_LIMIT из окружения")

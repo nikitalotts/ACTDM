@@ -149,8 +149,21 @@ case "$1" in
         # 128 на карту, у small памяти с запасом, а стоит он около четверти
         # скорости. Перед запуском проверить пробником, что батч действительно
         # влезает:
-        #   GPT_MODEL=gpt2 GRAD_CKPT=0 AMP_DTYPE=fp16 ARCHS=gpt MAX_BATCH=128         #       sbatch find_max_batch.sh
-        GPT_MODEL=gpt2         AMP_DTYPE="${AMP_DTYPE:-fp16}"         GRAD_CKPT="${GRAD_CKPT:-0}"         ARCH_TYPE=gpt sbatch --job-name=train_gpt2-small train_gpt2.sh
+        #   GPT_MODEL=gpt2 GRAD_CKPT=0 AMP_DTYPE=fp16 ARCHS=gpt MAX_BATCH=128 \
+        #       sbatch find_max_batch.sh
+        #
+        # Лимит времени -- не формальность: кластер проверяет квоту прямо на
+        # sbatch и отказывает, если (карты x время) больше остатка проекта.
+        # 75 ч из train_gpt2.sh это 300 GPU-часов, и при остатке меньше этого
+        # задание не отправится вообще. По пробнику small нужно ~15 ч, 20 даёт
+        # треть запаса; снятое по лимиту задание теряет максимум ~1.4 ч
+        # (last.pth пишется каждые 2500 шагов) и продолжается тем же запуском.
+        # Остаток смотреть: bash projstat.sh proj_1891
+        GPT_MODEL=gpt2 \
+        AMP_DTYPE="${AMP_DTYPE:-fp16}" \
+        GRAD_CKPT="${GRAD_CKPT:-0}" \
+        ARCH_TYPE=gpt sbatch --time="${TIME_LIMIT:-20:00:00}" \
+            --job-name=train_gpt2-small train_gpt2.sh
         echo "==> каталог чекпоинтов: checkpoints/gpt2-512-0.0002-wikipedia"
         echo "==> medium не затрагивается: у размеров разные префиксы"
         ;;
@@ -252,17 +265,17 @@ case "$1" in
             # bleu/rouge, то есть в одну таблицу с условными подходами он не
             # ставится. И считается он дольше всех -- mauve и ppl примерно вдвое
             # дороже bleu/rouge. Пусть его стоимость будет видна отдельно.
-            ARCH_TYPE=unconditional sbatch --job-name=stat-unconditional eval_diffusion_stat.sh
+            ARCH_TYPE=unconditional sbatch --time="${TIME_LIMIT:-16:00:00}" --job-name=stat-unconditional eval_diffusion_stat.sh
             echo "==> unconditional: mauve/div/ppl -- это АБСОЛЮТНЫЕ числа,"
             echo "==> референс по ним не считается (см. заметку в RUNBOOK)"
         else
-            ARCH_TYPE=genie    sbatch --job-name=stat-genie    eval_diffusion_stat.sh
-            ARCH_TYPE=diffuseq sbatch --job-name=stat-diffuseq eval_diffusion_stat.sh
+            ARCH_TYPE=genie    sbatch --time="${TIME_LIMIT:-12:00:00}" --job-name=stat-genie    eval_diffusion_stat.sh
+            ARCH_TYPE=diffuseq sbatch --time="${TIME_LIMIT:-12:00:00}" --job-name=stat-diffuseq eval_diffusion_stat.sh
             for AUG in shuffled augmented combined; do
                 ARCH_TYPE=guidance AUG_SCHEME=${AUG} \
-                    sbatch --job-name=stat-guidance-${AUG} eval_diffusion_stat.sh
+                    sbatch --time="${TIME_LIMIT:-12:00:00}" --job-name=stat-guidance-${AUG} eval_diffusion_stat.sh
             done
-            ARCH_TYPE=gpt sbatch --job-name=stat-gpt eval_gpt2_stat.sh
+            ARCH_TYPE=gpt sbatch --time="${TIME_LIMIT:-12:00:00}" --job-name=stat-gpt eval_gpt2_stat.sh
             echo "==> шесть заданий: genie, diffuseq, guidance x3, gpt"
             echo "==> unconditional отдельно: ./run_wikipedia.sh stat-uncond"
         fi
