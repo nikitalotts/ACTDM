@@ -290,8 +290,18 @@ case "$1" in
                 ARCH_TYPE=guidance AUG_SCHEME=${AUG} \
                     sbatch --time="${TIME_LIMIT:-12:00:00}" --job-name=stat-guidance-${AUG} eval_diffusion_stat.sh
             done
-            ARCH_TYPE=gpt sbatch --time="${TIME_LIMIT:-12:00:00}" --job-name=stat-gpt eval_gpt2_stat.sh
-            echo "==> шесть заданий: genie, diffuseq, guidance x3, gpt"
+            # Два размера авторегрессионного бейзлайна -- это два разных
+            # подхода в таблице: medium (355M) отвечает на "кто лучше при
+            # равном числе увиденных примеров", small (124M) -- на "кто лучше
+            # при сопоставимом числе параметров". GPT_MODEL входит в
+            # checkpoints_prefix, так что задания читают разные чекпоинты.
+            ARCH_TYPE=gpt GPT_MODEL=gpt2-medium \
+                sbatch --time="${TIME_LIMIT:-12:00:00}" \
+                --job-name=stat-gpt-medium eval_gpt2_stat.sh
+            ARCH_TYPE=gpt GPT_MODEL=gpt2 \
+                sbatch --time="${TIME_LIMIT:-12:00:00}" \
+                --job-name=stat-gpt-small eval_gpt2_stat.sh
+            echo "==> семь заданий: genie, diffuseq, guidance x3, gpt-medium, gpt-small"
             echo "==> unconditional отдельно: ./run_wikipedia.sh stat-uncond"
         fi
         echo "==> сверить, что все подходы считаны на одном шаге:"

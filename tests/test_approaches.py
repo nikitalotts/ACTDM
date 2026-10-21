@@ -3429,6 +3429,13 @@ def test_stat_stage_covers_exactly_the_six_compared_configurations():
 
     for at in ("genie", "diffuseq", "gpt"):
         assert f"ARCH_TYPE={at}" in main_part, f"нет {at}"
+
+    # Два размера авторегрессионного бейзлайна -- это два разных подхода в
+    # таблице: medium отвечает на "кто лучше при равном числе увиденных
+    # примеров", small -- на "кто лучше при сопоставимом числе параметров".
+    assert "GPT_MODEL=gpt2-medium" in main_part and "GPT_MODEL=gpt2 " in main_part, (
+        "стат-оценка покрывает только один размер gpt")
+    assert main_part.count("eval_gpt2_stat.sh") == 2
     assert "AUG_SCHEME=${AUG}" in main_part and "shuffled augmented combined" in main_part
     assert "eval_gpt2_stat.sh" in main_part and "eval_diffusion_stat.sh" in main_part
 
