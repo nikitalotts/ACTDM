@@ -1144,6 +1144,17 @@ class GPT2Runner:
         load = torch.load(checkpoint_name, map_location="cpu")
         self.step = load["step"]
         print(f'LOADED GPT2 from {checkpoint_name}, step={self.step}')
+        # Имя файла и шаг внутри обязаны совпадать. __save_checkpoint всегда
+        # называет файл по self.step, поэтому расхождение означает, что файл
+        # переложили руками -- и тогда eval посчитает метрики ЧУЖОГО шага, а
+        # сравнение подходов поедет. Именно так 20-сидовая стат-оценка
+        # medium-бейзлайна оказалась сделана на шаге 50000 при файле 87500.pth.
+        if str(name).isdigit() and self.step != int(name):
+            raise ValueError(
+                f"{checkpoint_name}: внутри чекпоинта шаг {self.step}, "
+                f"а имя обещает {name}. Файл переименован -- сверьте каталог: "
+                f"python check_checkpoints.py --dir {prefix_folder}")
+
         self.model.load_state_dict(load["model"])
         if "tracked_metrics" in load:
             self.tracked_test_metric = load["tracked_metrics"]["test_metrics"]

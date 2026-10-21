@@ -41,6 +41,10 @@
 #                                   температурой/top_p/top_k. Нужен, чтобы в
 #                                   статье сравнивать с ЛУЧШИМ gpt, а не со
 #                                   случайно выбранным декодингом
+#   ./run_wikipedia.sh stat-gpt     только два авторегрессионных бейзлайна:
+#                                   medium и small. Нужна, когда диффузии уже
+#                                   посчитаны, а gpt надо пересчитать -- гонять
+#                                   ради этого все семь заданий незачем
 #   ./run_wikipedia.sh stat-uncond  то же для unconditional, отдельно: у него
 #                                   метрики mauve/div/ppl, он не попадает в одну
 #                                   таблицу с условными, и считается дольше всех
@@ -262,7 +266,7 @@ case "$1" in
         echo "==> собрать метрики:"
         echo "==>   for f in slurm_logs/*sweep-gpt*.log; do echo \"== \$f\"; grep -aE '^(bleu|bert-score|rouge1|rouge2|rougeL):' \"\$f\" | tail -5; done"
         ;;
-    stat|stat-uncond)
+    stat|stat-uncond|stat-gpt)
         # Статистическая оценка для статьи: NUM_SEEDS независимых прогонов
         # генерации, из них mean +- std и 95% CI.
         #
@@ -275,7 +279,18 @@ case "$1" in
         echo "==> CHECKPOINT_STEP=${CHECKPOINT_STEP}  NUM_SEEDS=${NUM_SEEDS}"
         echo "==> пилот перед боевым прогоном: NUM_SEEDS=3 ./run_wikipedia.sh $1"
 
-        if [ "$1" = "stat-uncond" ]; then
+        if [ "$1" = "stat-gpt" ]; then
+            # Только бейзлайны. Диффузии считаются один раз и переоценивать их
+            # незачем: пять заданий по 20 сидов -- это десятки GPU-часов,
+            # которых под конец проекта просто нет.
+            ARCH_TYPE=gpt GPT_MODEL=gpt2-medium \
+                sbatch --time="${TIME_LIMIT:-12:00:00}" \
+                --job-name=stat-gpt-medium eval_gpt2_stat.sh
+            ARCH_TYPE=gpt GPT_MODEL=gpt2 \
+                sbatch --time="${TIME_LIMIT:-12:00:00}" \
+                --job-name=stat-gpt-small eval_gpt2_stat.sh
+            echo "==> два задания: gpt-medium и gpt-small"
+        elif [ "$1" = "stat-uncond" ]; then
             # Отдельной стадией: у unconditional метрики mauve/div/ppl, а не
             # bleu/rouge, то есть в одну таблицу с условными подходами он не
             # ставится. И считается он дольше всех -- mauve и ppl примерно вдвое
@@ -309,7 +324,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,52p' "$0"
+        sed -n '2,56p' "$0"
         exit 1
         ;;
 esac

@@ -277,6 +277,17 @@ class DiffusionRunner:
         load = torch.load(checkpoint_name)
         self.step = load["step"]
         print('LOADED Diffusion from', checkpoint_name, self.step)
+        # Имя файла и шаг внутри обязаны совпадать. __save_checkpoint всегда
+        # называет файл по self.step, поэтому расхождение означает, что файл
+        # переложили руками -- и тогда eval посчитает метрики ЧУЖОГО шага, а
+        # сравнение подходов поедет. Именно так 20-сидовая стат-оценка
+        # gpt2-medium оказалась сделана на шаге 50000 при файле 87500.pth.
+        if str(name).isdigit() and self.step != int(name):
+            raise ValueError(
+                f"{checkpoint_name}: внутри чекпоинта шаг {self.step}, "
+                f"а имя обещает {name}. Файл переименован -- сверьте каталог: "
+                f"python check_checkpoints.py --dir {prefix_folder}")
+
         self.ema.load_state_dict(load["ema"])
         self.switch_to_ema()
 

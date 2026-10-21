@@ -3409,7 +3409,7 @@ def test_seed_count_is_overridable_from_the_environment(script):
 
 def _stat_stage_body():
     sh = open("run_wikipedia.sh", encoding="utf-8").read()
-    start = sh.index('    stat|stat-uncond)')
+    start = sh.index('    stat|stat-uncond|stat-gpt)')
     return sh[start:sh.index("\n        ;;", start)]
 
 
@@ -3459,7 +3459,7 @@ def test_checkpoint_step_does_not_leak_into_training_stages():
     sh = open("run_wikipedia.sh", encoding="utf-8").read()
     assert '_CKPT_STEP="${CHECKPOINT_STEP:-}"' in sh
     assert "unset CHECKPOINT_STEP" in sh
-    assert sh.index("unset CHECKPOINT_STEP") < sh.index('    stat|stat-uncond)'), (
+    assert sh.index("unset CHECKPOINT_STEP") < sh.index('    stat|stat-uncond|stat-gpt)'), (
         "гашение должно быть до разбора стадий")
 
 
@@ -3751,7 +3751,7 @@ def test_stages_request_a_time_limit_the_quota_allows():
     sh = open("run_wikipedia.sh", encoding="utf-8").read()
 
     # (стадия, карт в задании, потолок GPU-часов на задание)
-    for stage, gpus, budget in (("gpt-small", 4, 100), ("stat|stat-uncond", 1, 20)):
+    for stage, gpus, budget in (("gpt-small", 4, 100), ("stat|stat-uncond|stat-gpt", 1, 20)):
         start = sh.index(f"    {stage})")
         body = sh[start:sh.index("\n        ;;", start)]
         limits = re.findall(r'--time="\$\{TIME_LIMIT:-(\d+):', body)
@@ -3767,3 +3767,53 @@ def test_time_limit_is_overridable():
     sh = open("run_wikipedia.sh", encoding="utf-8").read()
     assert sh.count('--time="${TIME_LIMIT:-') >= 6, (
         "не все задания читают TIME_LIMIT из окружения")
+
+
+def test_gpt_only_stat_stage_leaves_the_diffusions_alone():
+    """Диффузии считаются один раз: пять заданий по 20 сидов -- это десятки
+    GPU-часов. Когда пересчитать надо только бейзлайны (например, gpt был
+    загружен не с того шага), гонять всю стадию stat нельзя."""
+    sh = open("run_wikipedia.sh", encoding="utf-8").read()
+    assert "stat-gpt)" in sh or "stat-gpt|" in sh or "|stat-gpt)" in sh, (
+        "нет стадии только для gpt"
+    )
+    start = sh.index('if [ "$1" = "stat-gpt" ]')
+    body = sh[start:sh.index("elif", start)]
+
+    assert "GPT_MODEL=gpt2-medium" in body and "GPT_MODEL=gpt2 " in body
+    assert body.count("eval_gpt2_stat.sh") == 2
+    for other in ("ARCH_TYPE=genie", "ARCH_TYPE=diffuseq", "ARCH_TYPE=guidance",
+                  "ARCH_TYPE=unconditional", "eval_diffusion_stat.sh"):
+        assert other not in body, f"стадия тянет лишнее: {other}"
+
+
+def test_renamed_checkpoint_cannot_pass_as_another_step():
+    """Переименование файла не меняет его содержимого: self.step читается из
+    load["step"]. Чекпоинт, переложенный под чужим именем, грузился молча, и
+    так 20-сидовая стат-оценка бейзлайна оказалась сделана на шаге 50000 при
+    файле 87500.pth -- сравнение подходов поехало бы на разных бюджетах.
+
+    __save_checkpoint всегда называет файл по self.step, поэтому расхождение
+    означает ручное вмешательство и всегда является ошибкой."""
+    import inspect
+    from gpt2_holder import GPT2Runner
+    from diffusion_holder import DiffusionRunner
+
+    for runner in (GPT2Runner, DiffusionRunner):
+        src = inspect.getsource(runner.restore_parameters)
+        assert "self.step != int(name)" in src, (
+            f"{runner.__name__}: имя файла не сверяется с шагом внутри")
+        assert "raise ValueError" in src
+        assert "check_checkpoints.py" in src, (
+            "в ошибке нет команды, которой чинить")
+
+
+def test_checkpoint_checker_reports_mismatches():
+    """Сам сверяльщик: имя против содержимого, плюс last.pth как исключение
+    (у него номера нет и быть не должно)."""
+    import check_checkpoints as cc
+
+    assert cc.NUMBERED.match("87500.pth").group(1) == "87500"
+    assert cc.NUMBERED.match("last.pth") is None
+    assert cc.NUMBERED.match("o87500.pth") is None, (
+        "нечисловое имя не должно считаться нумерованным чекпоинтом")
