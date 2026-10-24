@@ -68,7 +68,11 @@
 #                                   tangent, normal при одной доле шага, плюс
 #                                   пол без guidance
 #   ./run_wikipedia.sh probes-sweep     свип силы шага (доля ||lam*grad||/||score||)
-#                                   для PROBE_GRAD_MODE, пять точек
+#                                   для PROBE_GRAD_MODE, пять точек.
+#                                   Диапазон -- PROBE_RATIOS
+#   ./run_wikipedia.sh probes-twostage  двухэтапная схема: цель берется из
+#                                   генераций другой модели (PROBE_TARGET_JSON),
+#                                   дальше reconstruction guidance ведет к ней
 #   ./run_wikipedia.sh probes-sigmoid   с множителем (1-sigma(f)) и без него
 #
 # Порядок целиком: data -> stats -> decoders -> diffusion -> classifiers -> eval,
@@ -344,7 +348,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -438,12 +442,32 @@ case "$1" in
             # Свип силы шага для выбранного режима. Прогон 24.10 показал, что
             # при постоянной lambda=10 доля шага гуляет вдоль траектории в 170
             # раз -- значит оптимум надо искать по доле, а не по lambda.
-            for RATIO in 0.02 0.05 0.1 0.2 0.4; do
+            #
+            # Диапазон идет ВНИЗ от 0.05, а не вверх. Замер 24.10: при доле 0.1
+            # все три режима оказались НИЖЕ пола (безусловной генерации), то
+            # есть 0.1 уже за пиком. При lambda=10 из ВКР доля составляла
+            # 0.007-0.017 и давала прирост над полом -- оптимум лежит там.
+            for RATIO in ${PROBE_RATIOS:-0.002 0.005 0.01 0.02 0.05}; do
                 ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
                     PROBE_GRAD_MODE="${PROBE_GRAD_MODE:-tangent}" \
                     PROBE_SCALE_MODE=adaptive PROBE_TARGET_RATIO=${RATIO} \
                     sbatch --time="${TIME_LIMIT:-04:00:00}" \
                     --job-name=probe-sweep-${RATIO} probe_projected_guidance.sh
+            done
+        fi
+
+        if [ "$1" = "probes-twostage" ]; then
+            # ДВУХЭТАПНАЯ СХЕМА. Замер 24.10 показал, что reconstruction
+            # guidance к ТОЧКЕ при доле шага 0.1 воспроизводит цель почти
+            # дословно (bleu 0.938 к оракулу), то есть механизм управления
+            # исправен и узкое место -- только выбор цели. Здесь цель берется
+            # из генераций другой модели: сначала выбрать моду, потом вести.
+            : "${PROBE_TARGET_JSON:?укажите json с генерациями, например generated_texts/<префикс genie>/87500-N=50-seed=0-...json}"
+            export PROBE_TARGET_JSON
+            for RATIO in ${PROBE_RATIOS:-0.05 0.1 0.2}; do
+                ARCH_TYPE=unconditional PROBE_TARGET=json PROBE_TARGET_RATIO=${RATIO} \
+                    sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                    --job-name=probe-twostage-${RATIO} probe_recon_guidance.sh
             done
         fi
 
@@ -470,7 +494,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,78p' "$0"
+        sed -n '2,82p' "$0"
         exit 1
         ;;
 esac

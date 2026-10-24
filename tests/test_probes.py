@@ -502,6 +502,32 @@ def test_projected_guidance_respects_the_requested_step_fraction():
                cond_mask=None) is None
 
 
+def test_summary_survives_an_empty_diagnostic():
+    """Базовая линия (lambda=0) не заполняет диагностику, и прямое
+    форматирование None роняло прогон УЖЕ ПОСЛЕ подсчета метрик: json не
+    сохранялся, карта тратилась зря (задание 4440381)."""
+    body = open("probe_projected_guidance.py", encoding="utf-8").read()
+    assert "def fmt(" in body, "нет безопасного форматирования сводки"
+    assert "{mean(diag['rel_norm']):.4f}" not in body, (
+        "сводка снова форматирует возможный None напрямую")
+
+
+def test_sweep_searches_below_the_measured_overshoot():
+    """Замер 24.10: при доле шага 0.1 все режимы оказались НИЖЕ пола, то есть
+    0.1 уже за пиком. При lambda=10 из ВКР доля была 0.007-0.017 и давала
+    прирост. Значит свип обязан покрывать именно этот диапазон, а не идти
+    вверх от 0.1 -- иначе оптимума он не найдет."""
+    stage = _probes_stage()
+    assert "PROBE_RATIOS:-0.002" in stage, (
+        "свип не спускается ниже измеренного перелета")
+    import re
+    ratios = re.search(r"PROBE_RATIOS:-([0-9. ]+)\}", stage)
+    assert ratios, "диапазон свипа не задан"
+    values = [float(x) for x in ratios.group(1).split()]
+    assert min(values) <= 0.005 and max(values) <= 0.05, (
+        f"диапазон {values} не накрывает измеренную рабочую область 0.007-0.017")
+
+
 def test_sigmoid_factor_changes_the_gradient():
     """PROBE_SIGMOID=0 обязан убирать множитель (1 - sigma(f)), а не быть
     декоративным флагом: на нем держится проверка факта, что guidance гаснет

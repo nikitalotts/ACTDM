@@ -265,6 +265,12 @@ def main():
     def mean(xs):
         return float(sum(xs) / len(xs)) if xs else None
 
+    def fmt(v, prec=4):
+        # У базовой линии (lambda=0) перехват возвращает None сразу, диагностика
+        # остается пустой, и прямое форматирование None роняло прогон УЖЕ ПОСЛЕ
+        # того, как метрики посчитаны: json не сохранялся, карта потрачена зря.
+        return "нет (guidance выключен)" if v is None else f"{v:.{prec}f}"
+
     if dist.get_rank() == 0:
         print("\n" + "=" * 72)
         print(f"----- {mode} / {scale_mode} / {strength} / "
@@ -272,10 +278,10 @@ def main():
         for k, v in metrics.items():
             print(f"{k}: {v:0.5f}")
         print(f"\nсредняя доля шага ||lam*grad||/||score||: "
-              f"{mean(diag['rel_norm']):.4f}")
+              f"{fmt(mean(diag['rel_norm']))}")
         if bank is not None:
             print(f"средняя касательная доля градиента: "
-                  f"{mean(diag['tangent_frac']):.4f} "
+                  f"{fmt(mean(diag['tangent_frac']))} "
                   f"(у случайного вектора {bank.random_tangent_fraction:.4f})")
         print("=" * 72)
 
