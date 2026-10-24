@@ -63,6 +63,7 @@ from probes.common import (
     build_probe_runner, content_mask, dump_json, encode_batch, log,
     masked_cosine, masked_norm, probe_loader, progress, t_grid,
 )
+from probes.manifold import LatentBank
 from utils.util import parse, set_seed
 
 
@@ -123,9 +124,22 @@ def main():
         f"probe_results/signal_survival-{config.data.datasets.datasets_list[0]}"
         f"-{config.cond_encoder.augmentation_scheme}.json")
 
+    tangent_dim = int(os.environ.get("PROBE_TANGENT_DIM", "16"))
+    knn = int(os.environ.get("PROBE_KNN", "32"))
+    bank_size = int(os.environ.get("PROBE_BANK", "8192"))
+    with_tangent = os.environ.get("PROBE_WITH_TANGENT", "1") == "1"
+
     set_seed(config.seed)
     runner = build_probe_runner(config)
     lam = float(runner.guidance_scale)
+
+    # Банк строится по примерам ЗА пределами измеряемых: иначе касательное в
+    # точке оценивалось бы по ее же соседям из того же текста.
+    bank = None
+    if with_tangent:
+        bank = LatentBank.from_runner(
+            runner, size=bank_size, skip_examples=n_batches * batch_size,
+            batch_size=batch_size, knn=knn, dim=tangent_dim)
 
     if dist.get_rank() == 0:
         print("=" * 72)
@@ -143,7 +157,8 @@ def main():
     grid = t_grid(n_points)
     acc = {tv: {"rank": [], "pos_hit": [], "neg_hit": [], "pos": [], "neg": [],
                 "cos_grad": [], "cos_rand": [], "cos_score": [],
-                "rel_norm": [], "x0_shift": []} for tv in grid}
+                "rel_norm": [], "x0_shift": [],
+                "tan_grad": [], "tan_score": [], "tan_rand": []} for tv in grid}
 
     def mean(xs):
         return float(sum(xs) / len(xs)) if xs else float("nan")
@@ -162,6 +177,9 @@ def main():
                 "cos_score": mean(a["cos_score"]),
                 "rel_norm": mean(a["rel_norm"]),
                 "x0_shift": mean(a["x0_shift"]),
+                "tan_grad": mean(a["tan_grad"]),
+                "tan_score": mean(a["tan_score"]),
+                "tan_random": mean(a["tan_rand"]),
                 "n": len(a["rank"]),
             })
         return out
@@ -183,6 +201,11 @@ def main():
             "time_scale": float(config.cond_encoder.time_scale),
             "n_batches": n_batches,
             "batch_size": batch_size,
+            "tangent_dim": tangent_dim,
+            "knn": knn,
+            "bank_size": int(bank.bank.shape[0]) if bank is not None else None,
+            "random_tangent_fraction": (bank.random_tangent_fraction
+                                        if bank is not None else None),
             "tau_signal_rank055": _tau(rows),
             "rows": rows,
         }, out_path)
@@ -206,6 +229,10 @@ def main():
         # зашумленности: классификатор обязан сказать «это продолжение не к
         # этому промпту», а не «здесь больше шума».
         neg_trg = torch.roll(trg_x, shifts=1, dims=0)
+
+        # Базис касательного зависит только от точки, не от уровня шума:
+        # считаем один раз на батч и переиспользуем на всех 21 значении t.
+        basis = bank.basis_for(trg_x) if bank is not None else None
 
         for tv in grid:
             t = tv * torch.ones(bsz, device=runner.device)
@@ -263,6 +290,16 @@ def main():
             n_x0 = masked_norm(trg_x, mask).clamp_min(1e-12)
             acc[tv]["x0_shift"] += (n_shift / n_x0).cpu().tolist()
 
+            # Разложение на касательную и нормальную компоненты. Доля у
+            # СЛУЧАЙНОГО вектора равна dim/D -- без нее число не читается:
+            # «0.02 энергии в касательном» это много или мало, зависит только
+            # от того, сколько там у случайного направления.
+            if basis is not None:
+                for key, vec in (("tan_grad", grad), ("tan_score", score),
+                                 ("tan_rand", rnd)):
+                    proj = bank.project_with(vec, basis)
+                    acc[tv][key] += bank.fraction(vec, proj, mask).cpu().tolist()
+
             # Прогресс печатается по точкам сетки, а не по батчам: один батч --
             # это 21 точка и несколько минут счета, и по батчам лог выглядел бы
             # замершим.
@@ -287,17 +324,28 @@ def main():
     rows = build_rows()
 
     if dist.get_rank() == 0:
-        print("\n" + "=" * 108)
-        print(f"{'t':>6} {'rank_acc':>9} {'bal_acc':>8} {'auc':>7} "
+        print("\n" + "=" * 134)
+        print(f"{'t':>6} {'rank_acc':>9} {'auc':>7} "
               f"{'cos_grad':>10} {'cos_rand':>10} {'cos_score':>10} "
-              f"{'rel_norm':>9} {'x0_shift':>9}")
-        print("-" * 108)
+              f"{'rel_norm':>9} {'x0_shift':>9} "
+              f"{'tan_grad':>9} {'tan_score':>10} {'tan_rand':>9}")
+        print("-" * 134)
         for r in rows:
-            print(f"{r['t']:>6.3f} {r['rank_acc']:>9.4f} {r['bal_acc']:>8.4f} "
+            def f(key, width=9, prec=5):
+                v = r.get(key)
+                return ("нет".rjust(width) if v is None or v != v
+                        else f"{v:>{width}.{prec}f}")
+            print(f"{r['t']:>6.3f} {r['rank_acc']:>9.4f} "
                   f"{r['auc']:>7.4f} {r['cos_grad']:>10.5f} "
                   f"{r['cos_random']:>10.5f} {r['cos_score']:>10.5f} "
-                  f"{r['rel_norm']:>9.4f} {r['x0_shift']:>9.5f}")
-        print("=" * 108)
+                  f"{r['rel_norm']:>9.4f} {r['x0_shift']:>9.5f} "
+                  f"{f('tan_grad')} {f('tan_score', 10)} {f('tan_random')}")
+        print("=" * 134)
+        if bank is not None:
+            print(f"\nдоля энергии в касательном у СЛУЧАЙНОГО вектора: "
+                  f"{bank.random_tangent_fraction:.5f} (dim={tangent_dim}/D=768)")
+            print("tan_grad на этом уровне -- градиент неотличим от случайного "
+                  "направления,\nто есть он просто уводит с многообразия.")
 
         print(f"\ntau_signal (rank_acc >= 0.55): {_tau(rows)}")
         print("Выше этого уровня шума классификатор не отличает правильное "

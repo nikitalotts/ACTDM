@@ -310,7 +310,7 @@ def test_recon_identity_gradient_matches_the_closed_form():
 
     diag = {"rel_norm": []}
     fn = make_recon_guidance(runner, scale=2.0, jacobian="identity",
-                             gamma2=3.0, diag=diag)
+                             gamma2=3.0, diag=diag, scale_mode="const")
     fn.state["target"] = target
 
     out = {"x_0": x_0, "score": torch.ones_like(x_t)}
@@ -338,7 +338,8 @@ def test_recon_scale_zero_is_exactly_unconditional():
     out = {"x_0": torch.randn_like(x_t), "score": torch.randn_like(x_t)}
 
     fn = make_recon_guidance(runner, scale=0.0, jacobian="identity",
-                             gamma2=1.0, diag={"rel_norm": []})
+                             gamma2=1.0, diag={"rel_norm": []},
+                             scale_mode="const")
     fn.state["target"] = torch.randn_like(x_t)
     assert fn(x_t=x_t, t=0.4 * torch.ones(B), out=out) is None
 
@@ -348,8 +349,185 @@ def test_recon_stage_launches_the_zero_scale_baseline():
     результат. Строка guidance из основной таблицы ее не заменяет -- там другое
     число текстов и другие сиды."""
     stage = _probes_stage()
-    assert "PROBE_RECON_SCALE=0" in stage, (
-        "стадия probes-recon не запускает базовую линию lambda=0")
+    assert "PROBE_TARGET_RATIO=0" in stage, (
+        "стадия probes-recon не запускает базовую линию. Внимание: после "
+        "перехода на адаптивный шаг пол задается ДОЛЕЙ 0, а не scale=0 -- "
+        "PROBE_RECON_SCALE=0 при scale_mode=adaptive guidance НЕ выключает")
+
+
+# =====================================================================
+# Касательное пространство: измерение и метод
+# =====================================================================
+
+def _subspace_bank(n=4000, D=32, d=4, noise=1e-4, seed=0):
+    """Банк точек, лежащих на известном d-мерном подпространстве R^D."""
+    g = torch.Generator().manual_seed(seed)
+    A = torch.linalg.qr(torch.randn(D, d, generator=g))[0].T      # [d, D]
+    coef = torch.randn(n, d, generator=g)
+    pts = coef @ A + noise * torch.randn(n, D, generator=g)
+    return pts, A
+
+
+def test_tangent_basis_recovers_a_known_subspace():
+    """На точках, лежащих в d-мерном подпространстве, локальный PCA обязан
+    найти именно его.
+
+    Это проверка самой оценки касательного. Если она не восстанавливает
+    известное подпространство на синтетике, то числа tan_grad на реальных
+    энкодингах ничего не значат -- а на них держится и измерение, и метод."""
+    from probes.manifold import LatentBank
+
+    pts, A = _subspace_bank()
+    bank = LatentBank(pts, knn=16, dim=4)
+    x = pts[:64]
+
+    inside = torch.randn(64, 4) @ A                 # вектор В подпространстве
+    outside = torch.randn(64, 32)
+    outside = outside - (outside @ A.T) @ A         # вектор ОРТОГОНАЛЬНО ему
+
+    f_in = bank.tangent_fraction(inside, x).mean().item()
+    f_out = bank.tangent_fraction(outside, x).mean().item()
+    assert f_in > 0.99, f"вектор из подпространства дал долю {f_in:.4f}"
+    assert f_out < 0.05, f"ортогональный вектор дал долю {f_out:.4f}"
+
+
+def test_random_vector_hits_the_dim_over_D_baseline():
+    """У случайного направления доля энергии в dim-мерном подпространстве равна
+    dim/D. Это та самая база, без которой tan_grad не читается."""
+    from probes.manifold import LatentBank
+
+    pts, _ = _subspace_bank(D=32, d=4)
+    bank = LatentBank(pts, knn=16, dim=4)
+    assert bank.random_tangent_fraction == pytest.approx(4 / 32)
+
+    torch.manual_seed(0)
+    rnd = torch.randn(256, 32)
+    f = bank.tangent_fraction(rnd, pts[:256]).mean().item()
+    assert abs(f - 4 / 32) < 0.05, (
+        f"эмпирическая доля случайного вектора {f:.4f} против теоретической "
+        f"{4 / 32:.4f}")
+
+
+def test_tangent_and_normal_parts_are_orthogonal():
+    """Энергии касательной и нормальной частей обязаны складываться в целое --
+    иначе режимы tangent и normal не дополняют друг друга и их сравнение
+    ничего не разделяет."""
+    from probes.manifold import LatentBank
+
+    pts, _ = _subspace_bank(D=32, d=4)
+    bank = LatentBank(pts, knn=16, dim=4)
+    torch.manual_seed(1)
+    g = torch.randn(128, 32)
+    x = pts[:128]
+
+    tan = bank.project(g, x)
+    nrm = g - tan
+    assert torch.allclose((tan * nrm).sum(dim=1),
+                          torch.zeros(128), atol=1e-4), "части не ортогональны"
+    assert torch.allclose(tan.pow(2).sum(1) + nrm.pow(2).sum(1),
+                          g.pow(2).sum(1), rtol=1e-4)
+
+
+def test_bank_refuses_a_degenerate_basis():
+    """Соседей должно быть больше размерности касательного, иначе базис
+    вырожден, проекция становится тождественной и метод молча превращается
+    в raw."""
+    from probes.manifold import LatentBank
+
+    pts, _ = _subspace_bank(D=32, d=4)
+    with pytest.raises(ValueError):
+        LatentBank(pts, knn=8, dim=8)
+
+
+def test_cached_basis_matches_recomputation():
+    """basis_for считается один раз на батч и переиспользуется на 21 уровне
+    шума. Результат обязан совпасть с проекцией, считающей базис заново."""
+    from probes.manifold import LatentBank
+
+    pts, _ = _subspace_bank(D=32, d=4)
+    bank = LatentBank(pts, knn=16, dim=4, query_chunk=37)
+    torch.manual_seed(2)
+    g = torch.randn(100, 32)
+    x = pts[:100]
+    basis = bank.basis_for(x)
+    assert torch.allclose(bank.project_with(g, basis), bank.project(g, x),
+                          atol=1e-5)
+
+
+def test_projected_stage_compares_modes_at_equal_step():
+    """raw, tangent и normal обязаны идти при ОДНОЙ доле шага.
+
+    Проекция уменьшает норму градиента в разы. При постоянной lambda сравнение
+    режимов было бы сравнением размеров шага, а не направлений, и выигрыш
+    tangent ничего бы не доказывал."""
+    stage = _probes_stage()
+    assert "for MODE in raw tangent normal" in stage, (
+        "нет контроля normal -- без него выигрыш tangent не отличить от "
+        "простого уменьшения шага")
+    assert "PROBE_SCALE_MODE=adaptive" in stage, (
+        "режимы сравниваются не при равной доле шага")
+    assert "PROBE_LAMBDA=0" in stage, "нет пола без guidance"
+
+
+def test_projected_guidance_respects_the_requested_step_fraction():
+    """В режиме adaptive отданный градиент обязан давать ровно заданную долю
+    ||lam*grad||/||score||: на этом держится сравнение режимов."""
+    from probe_projected_guidance import make_guidance
+
+    runner, config = _stub("unconditional")
+    L, D = config.data.max_sequence_len, HIDDEN
+
+    class FakeClassifier(torch.nn.Module):
+        def forward(self, src_embeds, noisy_trg_embeds, t, src_mask=None):
+            return noisy_trg_embeds.pow(2).sum(dim=(1, 2)) * 0.01
+
+    runner.cond_encoder = FakeClassifier()
+    torch.manual_seed(0)
+    x_t = torch.randn(B, L, D)
+    out = {"x_0": torch.randn(B, L, D), "score": torch.randn(B, L, D)}
+    cond = torch.randn(B, config.data.max_context_len, D)
+
+    diag = {"rel_norm": [], "tangent_frac": []}
+    fn = make_guidance(runner, None, "raw", "adaptive", 0.25, 10.0, True, diag)
+    g = fn(x_t=x_t, t=0.5 * torch.ones(B), out=out, cond=cond, cond_mask=None)
+
+    ratio = (g.flatten(1).norm(dim=1)
+             / out["score"].flatten(1).norm(dim=1))
+    assert torch.allclose(ratio, torch.full((B,), 0.25), atol=1e-4), (
+        f"запрошена доля 0.25, получена {ratio.tolist()}")
+
+    # lambda=0 в режиме const -- это пол без guidance, а не нулевой тензор
+    fn0 = make_guidance(runner, None, "raw", "const", 0.1, 0.0, True, diag)
+    assert fn0(x_t=x_t, t=0.5 * torch.ones(B), out=out, cond=cond,
+               cond_mask=None) is None
+
+
+def test_sigmoid_factor_changes_the_gradient():
+    """PROBE_SIGMOID=0 обязан убирать множитель (1 - sigma(f)), а не быть
+    декоративным флагом: на нем держится проверка факта, что guidance гаснет
+    там, где классификатор уверен."""
+    from probe_projected_guidance import classifier_grad
+
+    runner, config = _stub("unconditional")
+    L, D = config.data.max_sequence_len, HIDDEN
+
+    class FakeClassifier(torch.nn.Module):
+        def forward(self, src_embeds, noisy_trg_embeds, t, src_mask=None):
+            # большой положительный логит -> sigma(f) ~ 1 -> множитель ~ 0
+            return noisy_trg_embeds.pow(2).sum(dim=(1, 2)) + 50.0
+
+    runner.cond_encoder = FakeClassifier()
+    torch.manual_seed(0)
+    x_t = torch.randn(B, L, D)
+    cond = torch.randn(B, config.data.max_context_len, D)
+    t = 0.5 * torch.ones(B)
+
+    with_sig = classifier_grad(runner, x_t, cond, t, None, sigmoid_factor=True)
+    without = classifier_grad(runner, x_t, cond, t, None, sigmoid_factor=False)
+    assert without.norm() > 0
+    assert with_sig.norm() < 1e-6 * without.norm(), (
+        "множитель (1-sigma) не гасит градиент при уверенном классификаторе -- "
+        "значит флаг ничего не меняет")
 
 
 def test_recon_guidance_without_target_is_a_noop():
@@ -359,7 +537,8 @@ def test_recon_guidance_without_target_is_a_noop():
 
     runner, config = _stub("unconditional")
     fn = make_recon_guidance(runner, scale=1.0, jacobian="identity",
-                             gamma2=1.0, diag={"rel_norm": []})
+                             gamma2=1.0, diag={"rel_norm": []},
+                             scale_mode="const")
     x_t = torch.zeros(B, config.data.max_sequence_len, HIDDEN)
     out = {"x_0": torch.zeros_like(x_t), "score": torch.zeros_like(x_t)}
     assert fn(x_t=x_t, t=0.5 * torch.ones(B), out=out) is None
@@ -425,12 +604,12 @@ def test_t_grid_covers_the_full_noise_range():
 # Стадия оркестратора
 # =====================================================================
 
-PROBES_BRANCH = "probes|probes-window|probes-signal|probes-geometry|probes-recon)"
-
-
 def _probes_stage():
+    """Тело ветки стадий probes. Метка ветки ищется по началу, а не
+    сравнивается целиком: список подстадий растет, и тесты не должны
+    падать от добавления новой."""
     body = open("run_wikipedia.sh", encoding="utf-8").read()
-    branch = body.index(PROBES_BRANCH)
+    branch = body.index("\n    probes|") + 1
     return body[branch:body.index(";;", branch)]
 
 

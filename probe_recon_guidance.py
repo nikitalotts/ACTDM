@@ -86,7 +86,8 @@ from probes.common import (
 from utils.util import parse, set_seed
 
 
-def make_recon_guidance(runner, scale, jacobian, gamma2, diag):
+def make_recon_guidance(runner, scale, jacobian, gamma2, diag,
+                        scale_mode="adaptive", target_ratio=0.1):
     """Градиент log N(z; x_0(x_t), gamma^2 I) по x_t. Цель задается на батч."""
     state = {"target": None}
 
@@ -95,7 +96,8 @@ def make_recon_guidance(runner, scale, jacobian, gamma2, diag):
         target = state["target"]
         if target is None:
             return None
-        if scale == 0.0:
+        if (scale_mode == "adaptive" and target_ratio == 0.0) or \
+                (scale_mode == "const" and scale == 0.0):
             # БАЗОВАЯ ЛИНИЯ lambda=0. Возврат None, а не нулевого тензора:
             # обертка тогда отдает score нетронутым, тогда как score + 0*grad
             # заставило бы пересчитать x_0 по алгебраической формуле и дало бы
@@ -106,6 +108,11 @@ def make_recon_guidance(runner, scale, jacobian, gamma2, diag):
         mu = params["mu"].view(-1, 1, 1)
 
         if jacobian == "identity":
+            # Множитель 1/mu_t расходится при t -> 1: у CosineSD с d=9
+            # mu_t ~ 4.8e-9, то есть 1/mu_t ~ 2e8. Первый же шаг траектории
+            # давал ||scale*grad||/||score|| порядка 1e8 и разрушал генерацию
+            # (прогон 24.10: среднее 4e6, максимум 2.9e8, тексты -- мусор).
+            # Поэтому сила задается не scale, а долей шага, см. ниже.
             grad = (target - out["x_0"]) / (gamma2 * mu)
         else:
             # Честный backward через denoising network. Берется
@@ -123,13 +130,19 @@ def make_recon_guidance(runner, scale, jacobian, gamma2, diag):
                 logp = -((target - x0) ** 2).sum() / (2.0 * gamma2)
                 grad = torch.autograd.grad(logp, xg)[0]
 
-        g = scale * grad
-        # Диагностика силы: какую долю шага дает guidance. Нужна, чтобы отличить
-        # «scale подобран слишком мал» от «направление бесполезно».
+        n_s = out["score"].flatten(1).norm(dim=1).clamp_min(1e-12)
+        if scale_mode == "adaptive":
+            # Сила задается ДОЛЕЙ шага, а не постоянным множителем: иначе
+            # 1/mu_t выносит траекторию на первом же шаге, а на остальных
+            # guidance оказывается рассогласован по уровню шума в сотни раз.
+            n_g = grad.flatten(1).norm(dim=1).clamp_min(1e-12)
+            coef = (target_ratio * n_s / n_g).view(-1, 1, 1)
+        else:
+            coef = torch.full_like(n_s, scale).view(-1, 1, 1)
+
+        g = coef * grad
         with torch.no_grad():
-            n_g = g.flatten(1).norm(dim=1)
-            n_s = out["score"].flatten(1).norm(dim=1).clamp_min(1e-12)
-            diag["rel_norm"] += (n_g / n_s).cpu().tolist()
+            diag["rel_norm"] += (g.flatten(1).norm(dim=1) / n_s).cpu().tolist()
         return g
 
     fn.state = state
@@ -175,12 +188,18 @@ def main():
 
     scale = float(os.environ.get("PROBE_RECON_SCALE", "1.0"))
     gamma2 = float(os.environ.get("PROBE_GAMMA2", "1.0"))
+    scale_mode = os.environ.get("PROBE_SCALE_MODE", "adaptive")
+    if scale_mode not in ("adaptive", "const"):
+        raise SystemExit(f"PROBE_SCALE_MODE={scale_mode!r}: ожидается adaptive | const")
+    target_ratio = float(os.environ.get("PROBE_TARGET_RATIO", "0.1"))
     num_texts = int(os.environ.get("PROBE_NUM_TEXTS", "1000"))
     batch_size = int(os.environ.get("PROBE_BATCH_SIZE", "64"))
     out_path = os.environ.get(
         "PROBE_OUT",
         f"probe_results/recon_guidance-{config.data.datasets.datasets_list[0]}"
-        f"-{target_mode}-{jacobian}-s{scale:g}.json")
+        f"-{target_mode}-{jacobian}-"
+        + (f"r{target_ratio:g}" if scale_mode == "adaptive" else f"s{scale:g}")
+        + ".json")
 
     # Безусловная диффузия в пайплайне промпт не получает, но здесь он нужен:
     # collate_fn обязан собрать input_ids_src, иначе нечего кодировать для SRC.
@@ -206,12 +225,17 @@ def main():
         print(f"  цель              : {target_mode}"
               + (f" ({target_json})" if target_mode == "json" else ""))
         print(f"  якобиан           : {jacobian}")
-        print(f"  scale / gamma^2   : {scale} / {gamma2}")
+        print(f"  сила              : {scale_mode} "
+              + (f"(доля шага {target_ratio})" if scale_mode == "adaptive"
+                 else f"(scale {scale})"))
+        print(f"  gamma^2           : {gamma2}")
         print(f"  текстов           : {num_texts} (батч {batch_size})")
         print("=" * 72)
 
     diag = {"rel_norm": []}
-    guidance_fn = make_recon_guidance(runner, scale, jacobian, gamma2, diag)
+    guidance_fn = make_recon_guidance(runner, scale, jacobian, gamma2, diag,
+                                      scale_mode=scale_mode,
+                                      target_ratio=target_ratio)
 
     target_rows = _load_target_texts(target_json) if target_mode == "json" else None
     loader = probe_loader(runner, split="test", batch_size=batch_size)
@@ -346,6 +370,8 @@ def main():
             "target_json": target_json or None,
             "jacobian": jacobian,
             "recon_scale": scale,
+            "scale_mode": scale_mode,
+            "target_ratio": target_ratio,
             "gamma2": gamma2,
             "solver_steps": runner.dynamic.N,
             "n_texts": len(gen_texts),

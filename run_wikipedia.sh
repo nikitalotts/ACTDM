@@ -62,6 +62,14 @@
 #   ./run_wikipedia.sh probes-recon     guidance к ОДНОЙ цели: oracle и
 #                                   shuffled. Решает, в чем причина провала --
 #                                   в многомодальности цели или в геометрии
+#   ./run_wikipedia.sh probes-projected ГЛАВНЫЙ ЭКСПЕРИМЕНТ: guidance с
+#                                   проекцией градиента на касательное
+#                                   пространство. Четыре задания -- raw,
+#                                   tangent, normal при одной доле шага, плюс
+#                                   пол без guidance
+#   ./run_wikipedia.sh probes-sweep     свип силы шага (доля ||lam*grad||/||score||)
+#                                   для PROBE_GRAD_MODE, пять точек
+#   ./run_wikipedia.sh probes-sigmoid   с множителем (1-sigma(f)) и без него
 #
 # Порядок целиком: data -> stats -> decoders -> diffusion -> classifiers -> eval,
 # gpt можно пускать сразу после data параллельно всему остальному.
@@ -336,7 +344,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -395,9 +403,64 @@ case "$1" in
             # отличить "механизм дал прирост" от "это и есть пол безусловной
             # модели". Брать вместо нее строку guidance из основной таблицы
             # нельзя -- там другое число текстов и другие сиды.
-            ARCH_TYPE=unconditional PROBE_TARGET=oracle PROBE_RECON_SCALE=0 \
+            # Сила задается ДОЛЕЙ шага (PROBE_TARGET_RATIO), а не постоянным
+            # множителем: у identity-якобиана множитель 1/mu_t расходится при
+            # t -> 1 и разносил генерацию (прогон 24.10, см. RUNBOOK 6.3).
+            # Поэтому базовая линия -- это ratio=0, а не scale=0.
+            ARCH_TYPE=unconditional PROBE_TARGET=oracle PROBE_TARGET_RATIO=0 \
                 sbatch --time="${TIME_LIMIT:-04:00:00}" \
                 --job-name=probe-recon-baseline probe_recon_guidance.sh
+        fi
+
+        if [ "$1" = "probes" ] || [ "$1" = "probes-projected" ]; then
+            # ГЛАВНЫЙ ЭКСПЕРИМЕНТ. Три режима градиента при ОДИНАКОВОЙ доле шага
+            # -- иначе сравнивались бы не направления, а размеры шага: проекция
+            # уменьшает норму градиента в разы.
+            #
+            # normal здесь не формальность: если выигрыш дает не касательное
+            # направление, а просто уменьшение шага, то normal при той же доле
+            # покажет то же самое. Без этого контроля tangent не доказателен.
+            for MODE in raw tangent normal; do
+                ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
+                    PROBE_GRAD_MODE=${MODE} PROBE_SCALE_MODE=adaptive \
+                    PROBE_TARGET_RATIO="${PROBE_TARGET_RATIO:-0.1}" \
+                    sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                    --job-name=probe-proj-${MODE} probe_projected_guidance.sh
+            done
+            # Пол: та же безусловная генерация без всякого guidance.
+            ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
+                PROBE_GRAD_MODE=raw PROBE_SCALE_MODE=const PROBE_LAMBDA=0 \
+                sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                --job-name=probe-proj-baseline probe_projected_guidance.sh
+        fi
+
+        if [ "$1" = "probes-sweep" ]; then
+            # Свип силы шага для выбранного режима. Прогон 24.10 показал, что
+            # при постоянной lambda=10 доля шага гуляет вдоль траектории в 170
+            # раз -- значит оптимум надо искать по доле, а не по lambda.
+            for RATIO in 0.02 0.05 0.1 0.2 0.4; do
+                ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
+                    PROBE_GRAD_MODE="${PROBE_GRAD_MODE:-tangent}" \
+                    PROBE_SCALE_MODE=adaptive PROBE_TARGET_RATIO=${RATIO} \
+                    sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                    --job-name=probe-sweep-${RATIO} probe_projected_guidance.sh
+            done
+        fi
+
+        if [ "$1" = "probes-sigmoid" ]; then
+            # Множитель (1 - sigma(f)) обнуляет guidance там, где классификатор
+            # уверен, -- а уверен он при МАЛОМ шуме, где текст и решается
+            # (AUC 0.9997 при t=0.01, доля шага 0.0001). Проверяем, оживает ли
+            # guidance без него.
+            for SIG in 1 0; do
+                ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
+                    PROBE_GRAD_MODE="${PROBE_GRAD_MODE:-tangent}" \
+                    PROBE_SCALE_MODE=adaptive \
+                    PROBE_TARGET_RATIO="${PROBE_TARGET_RATIO:-0.1}" \
+                    PROBE_SIGMOID=${SIG} \
+                    sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                    --job-name=probe-sigmoid-${SIG} probe_projected_guidance.sh
+            done
         fi
 
         echo "==> результаты лягут в probe_results/*.json, сводки -- в slurm_logs"
@@ -407,7 +470,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,70p' "$0"
+        sed -n '2,78p' "$0"
         exit 1
         ;;
 esac
