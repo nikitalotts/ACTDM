@@ -48,6 +48,17 @@
 #   ./run_wikipedia.sh stat-uncond  то же для unconditional, отдельно: у него
 #                                   метрики mauve/div/ppl, он не попадает в одну
 #                                   таблицу с условными, и считается дольше всех
+#   ./run_wikipedia.sh probes       диагностики для статьи (после classifiers).
+#                                   Только инференс по готовым чекпоинтам.
+#                                   Подстадии, если нужна часть:
+#   ./run_wikipedia.sh probes-window    окно управления: accuracy(t) трех
+#                                   классификаторов + кривая предрешенности
+#                                   genie и unconditional
+#   ./run_wikipedia.sh probes-geometry  геометрия латентного пространства:
+#                                   hole ratio, r_tok, интерполяция
+#   ./run_wikipedia.sh probes-recon     guidance к ОДНОЙ цели: oracle и
+#                                   shuffled. Решает, в чем причина провала --
+#                                   в многомодальности цели или в геометрии
 #
 # Порядок целиком: data -> stats -> decoders -> diffusion -> classifiers -> eval,
 # gpt можно пускать сразу после data параллельно всему остальному.
@@ -322,9 +333,62 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
+    probes|probes-window|probes-geometry|probes-recon)
+        # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
+        # что и таблицы статьи, и считают по одной карте. Поэтому они идут
+        # параллельно чему угодно и стоят единицы GPU-часов.
+        #
+        # CHECKPOINT_STEP обязателен по той же причине, что и у стадии stat:
+        # без него restore_parameters берет max(нумерованных), а он разный у
+        # разных подходов -- диагностика описывала бы не ту модель, что в таблице.
+        : "${CHECKPOINT_STEP:?укажите шаг сравнения, например CHECKPOINT_STEP=87500}"
+        export CHECKPOINT_STEP
+
+        if [ "$1" = "probes" ] || [ "$1" = "probes-window" ]; then
+            # accuracy(t): три схемы классификатора. Все три нужны именно вместе
+            # -- совпадение кривых у трех РАЗНЫХ классификаторов и есть довод,
+            # что дело не в конкретном обучении.
+            for AUG in shuffled augmented combined; do
+                ARCH_TYPE=guidance AUG_SCHEME=${AUG} \
+                    sbatch --time="${TIME_LIMIT:-02:00:00}" \
+                    --job-name=probe-signal-${AUG} probe_signal_survival.sh
+            done
+            # Кривая предрешенности. genie здесь -- ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ:
+            # у рабочей условной модели окно обязано быть непустым, иначе
+            # измерение ничего не меряет и выводы по unconditional не стоят ничего.
+            ARCH_TYPE=unconditional \
+                sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                --job-name=probe-commit-uncond probe_commitment.sh
+            ARCH_TYPE=genie \
+                sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                --job-name=probe-commit-genie probe_commitment.sh
+        fi
+
+        if [ "$1" = "probes" ] || [ "$1" = "probes-geometry" ]; then
+            ARCH_TYPE=unconditional \
+                sbatch --time="${TIME_LIMIT:-02:00:00}" \
+                --job-name=probe-geometry probe_latent_geometry.sh
+        fi
+
+        if [ "$1" = "probes" ] || [ "$1" = "probes-recon" ]; then
+            # oracle -- верхняя граница механизма при одномодальной цели.
+            # shuffled -- отрицательный контроль; он важнее, потому что отличает
+            # "guidance ничего не делает" от "двигает, но не туда".
+            for TGT in oracle shuffled; do
+                ARCH_TYPE=unconditional PROBE_TARGET=${TGT} \
+                    sbatch --time="${TIME_LIMIT:-06:00:00}" \
+                    --job-name=probe-recon-${TGT} probe_recon_guidance.sh
+            done
+        fi
+
+        echo "==> результаты лягут в probe_results/*.json, сводки -- в slurm_logs"
+        echo "==> главный рисунок собирается из signal_survival (tau_signal) и"
+        echo "==> commitment (tau_commit): если их носители не пересекаются,"
+        echo "==> окно управления пусто и подбор lambda не мог помочь"
+        ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,56p' "$0"
+        sed -n '2,67p' "$0"
         exit 1
         ;;
 esac

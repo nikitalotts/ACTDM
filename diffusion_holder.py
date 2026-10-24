@@ -67,7 +67,8 @@ class DiffusionRunner:
     def __init__(
             self,
             config: ConfigDict,
-            eval: bool = False
+            eval: bool = False,
+            build_only: bool = False
     ):
         self.config = config
 
@@ -158,6 +159,14 @@ class DiffusionRunner:
                 mode="offline"
             )
         
+        # build_only -- сборка без побочных эффектов, для диагностик (probe_*.py).
+        # Обе штатные ветки ниже что-то запускают: eval=True сразу считает
+        # estimate() на 5000 текстов, eval=False готовит оптимизатор и может
+        # дозапуститься из чекпоинта с собственным eval. Диагностике нужен
+        # только собранный набор модулей -- веса она восстанавливает сама.
+        if build_only:
+            return
+
         if eval:
             self.restore_parameters(self.device)
             self.score_estimator.eval()

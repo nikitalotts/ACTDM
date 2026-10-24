@@ -28,6 +28,10 @@ wandb/
 slurm_logs/*
 !slurm_logs/.gitkeep
 
+# --- результаты диагностик (probe_*.py): пересчитываются из чекпоинтов ---
+probe_results/
+image_latents.npy
+
 # --- кеши ---
 .cache/
 nltk_data/
