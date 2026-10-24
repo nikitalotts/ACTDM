@@ -98,9 +98,30 @@ def prefix_mask(content: torch.Tensor, k: int) -> torch.Tensor:
     return content & (order <= k)
 
 
+def content_position_mean(target: torch.Tensor,
+                          content: torch.Tensor) -> torch.Tensor:
+    """Позиционное среднее по СОДЕРЖАТЕЛЬНЫМ позициям батча. [B,L,D] -> [L,D].
+
+    Это якорь «про эту позицию условие не говорит ничего»: маргинальное
+    среднее латентов в ней. Усреднять надо только по тем примерам, у которых
+    в этой позиции стоит настоящий токен: Encoder кладет в паддинг zero_emb, и
+    общее среднее тянуло бы хвост последовательности к нулю тем сильнее, чем
+    позиция дальше, то есть якорь нес бы информацию о ДЛИНЕ. Позиции, где
+    содержательных примеров не нашлось вовсе, получают общее среднее.
+    """
+    m = content.unsqueeze(-1).to(torch.float32)
+    x = target.float() * m
+    s = x.sum(dim=0)                                      # [L, D]
+    n = m.sum(dim=0)                                      # [L, 1]
+    glob = x.flatten(0, 1).sum(dim=0) / m.sum().clamp_min(1.0)   # [D]
+    out = torch.where(n > 0, s / n.clamp_min(1.0),
+                      glob.unsqueeze(0).expand_as(s))
+    return out.to(target.dtype)
+
+
 def degrade_target(mode: str, target: torch.Tensor, level: int,
                    bank=None, content: Optional[torch.Tensor] = None,
-                   seed: int = 0):
+                   seed: int = 0, fill: Optional[torch.Tensor] = None):
     """Вернуть (деградированная цель, маска позиций или None, описание).
 
     mode:
@@ -119,7 +140,32 @@ def degrade_target(mode: str, target: torch.Tensor, level: int,
     if mode == "prefix":
         if content is None:
             raise ValueError("prefix требует маску содержательных позиций")
-        return target, prefix_mask(content, level), f"первые {level} позиций"
+        mask = prefix_mask(content, level)
+        # ЦЕЛЬ ДЛЯ ОТОБРАЖЕНИЯ обязана быть деградированной, а не оракульной.
+        # Раньше здесь возвращался target как есть, и steer = decode(z)
+        # оказывался полным референсом: target_recovery читался 0.998 на ВСЕХ
+        # уровнях k. Пока осью x был косинус, это была косметика. Теперь ось x
+        # -- это и есть восстановимость цели, и prefix вырождался в
+        # вертикальную прямую: четыре разных качества при одном x. А именно
+        # prefix несет методический вывод «номинальные биты качество не
+        # предсказывают» (prefix-32 дает bert 0.722 против 0.470 у quantize-32
+        # при тех же ~320 битах), то есть точка без координаты x -- это вывод
+        # без опоры.
+        #
+        # Открытые позиции берем из истины, остальные СОДЕРЖАТЕЛЬНЫЕ -- из
+        # позиционного среднего: про них условие и правда не говорит ничего.
+        # Спецтокены и паддинг не трогаем -- скелет последовательности на всех
+        # уровнях одинаков, поэтому восстановимость меряет СОДЕРЖАНИЕ, а не
+        # длину. Утечка длины при этом постоянна вдоль оси и тренд дать не
+        # может.
+        if fill is None:
+            fill = content_position_mean(target, content)
+        keep = (mask | ~content).unsqueeze(-1)
+        z = torch.where(keep, target, fill.unsqueeze(0).to(target.dtype))
+        # На градиент подмена не влияет: corr домножается на ту же mask, а
+        # внутри нее z совпадает с target побитово. Закреплено тестом
+        # test_prefix_display_target_does_not_touch_the_gradient.
+        return z, mask, f"первые {level} позиций"
 
     if mode == "quantize":
         if bank is None:

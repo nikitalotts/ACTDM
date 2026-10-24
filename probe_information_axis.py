@@ -132,8 +132,8 @@ from probes.common import (
     latents_to_tokens, log, masked_cosine, probe_loader, progress,
     reverse_process,
 )
-from probes.degrade import (cluster_bundle, degrade_target,
-                            estimated_bits)
+from probes.degrade import (cluster_bundle, content_position_mean,
+                            degrade_target, estimated_bits)
 from probes.manifold import LatentBank
 from utils.util import parse, set_seed
 
@@ -305,6 +305,7 @@ def main():
     gen_texts, trg_texts, src_texts, steer_texts = [], [], [], []
     started = time.time()
     desc = ""
+    prefix_fill = None
 
     for b_idx, batch in enumerate(loader):
         if len(gen_texts) >= num_texts:
@@ -314,9 +315,18 @@ def main():
         cond_mask = batch.get("attention_mask_src")
         content = content_mask(runner, batch["input_ids_trg"])
 
+        if mode == "prefix" and prefix_fill is None:
+            # Якорь закрытых позиций считаем ОДИН раз, по первому батчу, и
+            # переиспользуем. Иначе «про эти позиции ничего не известно»
+            # означало бы разное на разных батчах, и ось x дрожала бы внутри
+            # одной точки -- при том что вся ось строится из 16 отдельных
+            # заданий, которые обязаны отличаться только уровнем.
+            prefix_fill = content_position_mean(trg_x, content)
+
         z, pos_mask, desc = degrade_target(mode, trg_x, level, bank=bank,
                                            content=content,
-                                           seed=config.seed + b_idx)
+                                           seed=config.seed + b_idx,
+                                           fill=prefix_fill)
         cand = None
         if set_mode != "centroid":
             centroid, medoid, members = cluster_bundle(

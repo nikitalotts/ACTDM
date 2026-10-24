@@ -20,15 +20,34 @@
                    свободна от калибровки: порог не нужен.
   bal_acc(t)    -- сбалансированная точность по порогу 0 (как на валидации).
   auc(t)        -- площадь под ROC по всем накопленным логитам.
-  cos_grad(t)   -- косинус между градиентом guidance и направлением, которое
-                   реально ведет к истинному продолжению: mu_t * x_0 - x_t.
-  cos_random(t) -- тот же косинус для случайного вектора. Это БАЗОВАЯ ЛИНИЯ, без
-                   нее cos_grad не читается: в пространстве 64 x 768 случайный
-                   косинус имеет масштаб 1/sqrt(49152) ~ 0.0045, и значение
-                   0.01 само по себе ничего не значит.
-  cos_score(t)  -- тот же косинус для безусловного score. Это ПОТОЛОК: показывает,
-                   что измерение вообще работает и что сама диффузия в это
-                   направление смотрит.
+  cos_x0_grad(t) -- РАБОЧАЯ ОСЬ. Косинус между градиентом guidance и
+                   направлением к истинному продолжению В ПРОСТРАНСТВЕ x_0:
+                   cos(grad, trg - x_0). Guidance сдвигает предсказание
+                   чистого состояния на std^2 * lam * grad / mu, то есть
+                   ВДОЛЬ grad, а положительный скаляр на косинус не влияет --
+                   поэтому косинус берется прямо по grad.
+  cos_x0_random(t), cos_x0_random_rms(t) -- база для него, см. ниже.
+  cos_x0_score(t) -- потолок для него: то же для безусловного score.
+
+  cos_grad(t)   -- СНЯТАЯ ось, сохранена как задокументированный отрицательный
+                   результат. Косинус с направлением mu_t * x_0 - x_t. Оно
+                   равно -std * eps, и при t -> 1 (CosineSD d=9, mu ~ 5e-9)
+                   вырождается в -x_t: «куда надо идти» превращается в «убрать
+                   шум», а туда смотрит любой разумный вектор. На оси
+                   информативности эта величина дала оракулу 0.0909 против
+                   0.1775 у почти пустой quantize K=2 и отрицательные значения
+                   у prefix при растущем качестве -- то есть она
+                   антикоррелировала с тем, что должна измерять. Держим рядом,
+                   чтобы расхождение двух осей было видно, а не постулировано.
+  cos_random(t) -- БАЗОВАЯ ЛИНИЯ, и читать ее надо ТОЛЬКО как _rms. Среднее
+                   ЗНАКОВОГО косинуса сходится к нулю с ростом выборки, потому
+                   что косинус случайного вектора симметричен; «во сколько раз
+                   градиент лучше случайного» по такому знаменателю можно
+                   сделать любым, просто взяв больше примеров. Честный масштаб
+                   -- СКО: в пространстве 64 x 768 это 1/sqrt(49152) = 0.0045.
+                   Поэтому рядом печатается cos_random_rms.
+  cos_score(t)  -- тот же косинус для безусловного score, потолок снятой оси:
+                   показывает, что измерение вообще работает.
   rel_norm(t)   -- ||lambda * grad|| / ||score||: какую долю шага дает guidance.
   x0_shift(t)   -- ||sigma^2 * lambda * grad / mu|| / ||x_0||: на сколько
                    guidance сдвигает предсказание чистого состояния. Отличает
@@ -157,11 +176,18 @@ def main():
     grid = t_grid(n_points)
     acc = {tv: {"rank": [], "pos_hit": [], "neg_hit": [], "pos": [], "neg": [],
                 "cos_grad": [], "cos_rand": [], "cos_score": [],
+                "cos_x0_grad": [], "cos_x0_rand": [], "cos_x0_score": [],
                 "rel_norm": [], "x0_shift": [],
                 "tan_grad": [], "tan_score": [], "tan_rand": []} for tv in grid}
 
     def mean(xs):
         return float(sum(xs) / len(xs)) if xs else float("nan")
+
+    def rms(xs):
+        # Честный масштаб случайного косинуса. Знаковое среднее сходится к
+        # нулю, поэтому отношением к нему мерить нельзя -- см. шапку файла.
+        return float((sum(x * x for x in xs) / len(xs)) ** 0.5) if xs \
+            else float("nan")
 
     def build_rows():
         out = []
@@ -172,8 +198,13 @@ def main():
                 "rank_acc": mean(a["rank"]),
                 "bal_acc": 0.5 * (mean(a["pos_hit"]) + mean(a["neg_hit"])),
                 "auc": _auc(a["pos"], a["neg"]),
+                "cos_x0_grad": mean(a["cos_x0_grad"]),
+                "cos_x0_random": mean(a["cos_x0_rand"]),
+                "cos_x0_random_rms": rms(a["cos_x0_rand"]),
+                "cos_x0_score": mean(a["cos_x0_score"]),
                 "cos_grad": mean(a["cos_grad"]),
                 "cos_random": mean(a["cos_rand"]),
+                "cos_random_rms": rms(a["cos_rand"]),
                 "cos_score": mean(a["cos_score"]),
                 "rel_norm": mean(a["rel_norm"]),
                 "x0_shift": mean(a["x0_shift"]),
@@ -276,10 +307,20 @@ def main():
                 runner.use_guidance = was
             score = out["score"]
 
+            # РАБОЧАЯ ось: направление к истине в пространстве x_0. Та же
+            # величина, по которой строится ось информативности
+            # (probe_information_axis.cos_x0), иначе классификатор и
+            # оракульные деградации меряются разными линейками и в одно
+            # предложение не ставятся.
+            dir_x0 = trg_x - out["x_0"]
+
             rnd = torch.randn_like(grad)
             acc[tv]["cos_grad"] += masked_cosine(grad, dir_true, mask).cpu().tolist()
             acc[tv]["cos_rand"] += masked_cosine(rnd, dir_true, mask).cpu().tolist()
             acc[tv]["cos_score"] += masked_cosine(score, dir_true, mask).cpu().tolist()
+            acc[tv]["cos_x0_grad"] += masked_cosine(grad, dir_x0, mask).cpu().tolist()
+            acc[tv]["cos_x0_rand"] += masked_cosine(rnd, dir_x0, mask).cpu().tolist()
+            acc[tv]["cos_x0_score"] += masked_cosine(score, dir_x0, mask).cpu().tolist()
 
             n_guid = masked_norm(lam * grad, mask)
             n_score = masked_norm(score, mask).clamp_min(1e-12)
@@ -341,6 +382,21 @@ def main():
                   f"{r['rel_norm']:>9.4f} {r['x0_shift']:>9.5f} "
                   f"{f('tan_grad')} {f('tan_score', 10)} {f('tan_random')}")
         print("=" * 134)
+
+        # Рабочая ось -- отдельной таблицей, чтобы ее не спутали со снятой.
+        print("\nВЫРАВНИВАНИЕ В ПРОСТРАНСТВЕ x_0 (та же линейка, что у оси "
+              "информативности)")
+        print("-" * 68)
+        print(f"{'t':>6} {'cos_x0_grad':>13} {'rand_rms':>11} "
+              f"{'cos_x0_score':>14}")
+        for r in rows:
+            print(f"{r['t']:>6.3f} {r['cos_x0_grad']:>13.5f} "
+                  f"{r['cos_x0_random_rms']:>11.5f} "
+                  f"{r['cos_x0_score']:>14.5f}")
+        print("-" * 68)
+        print("Сравнивать cos_x0_grad надо с rand_rms (СКО случайного "
+              "косинуса), а не со\nзнаковым средним: оно сходится к нулю, и "
+              "отношение к нему ничего не значит.")
         if bank is not None:
             print(f"\nдоля энергии в касательном у СЛУЧАЙНОГО вектора: "
                   f"{bank.random_tangent_fraction:.5f} (dim={tangent_dim}/D=768)")
