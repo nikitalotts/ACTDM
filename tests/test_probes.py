@@ -484,6 +484,24 @@ def test_probe_time_limits_leave_room_for_loading():
             f"на загрузку датасета и чекпоинтов")
 
 
+def test_shell_scripts_are_executable_in_the_index():
+    """Бит запуска хранится в индексе git, а не на диске.
+
+    Репозиторий на кластере клонируется гитом (заливать с винды нельзя -- CRLF
+    ломает .sh). Если файл лежит в индексе как 100644, после каждого клона
+    приходится руками делать chmod +x, причем ровно в тот момент, когда хочется
+    запускать прогоны. Новый .sh без бита ловится здесь, а не на кластере."""
+    import subprocess
+
+    out = subprocess.run(["git", "ls-files", "-s", "--", "*.sh"],
+                         capture_output=True, text=True, check=True).stdout
+    bad = [line.split("\t")[-1] for line in out.splitlines()
+           if line and not line.startswith("100755")]
+    assert not bad, (
+        "в индексе git нет бита запуска у: " + ", ".join(bad) +
+        "  --  поправить: git update-index --chmod=+x <файл>")
+
+
 def test_probe_scripts_ask_for_one_gpu():
     """Диагностики -- инференс по одной карте. Четыре карты здесь означали бы,
     что кто-то скопировал шапку обучения, и бюджет проекта сгорел бы вчетверо
