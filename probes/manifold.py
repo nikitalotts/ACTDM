@@ -45,7 +45,8 @@ class LatentBank:
     """Банк чистых энкодингов плюс локальное касательное в произвольной точке."""
 
     def __init__(self, vectors: torch.Tensor, knn: int = 32, dim: int = 16,
-                 query_chunk: int = 1024, bank_chunk: int = 8192):
+                 query_chunk: int = 1024, bank_chunk: int = 8192,
+                 sequences: Optional[torch.Tensor] = None):
         if vectors.dim() != 2:
             raise ValueError(f"банк ожидается [N, D], получено {tuple(vectors.shape)}")
         if knn <= dim:
@@ -57,6 +58,10 @@ class LatentBank:
         self.dim = dim
         self.query_chunk = query_chunk
         self.bank_chunk = bank_chunk
+        # Латенты целых продолжений [N, L, D]. Нужны только оси информативности
+        # (probes/degrade.py, режим seqquant -- квантизация по темам); для
+        # касательного пространства работаем на уровне позиций.
+        self.sequences = sequences
 
     @property
     def D(self) -> int:
@@ -84,7 +89,7 @@ class LatentBank:
         log(f"собираю банк латентов: {size} векторов "
             f"(пропускаю первые {skip_examples} примеров)")
         loader = probe_loader(runner, split=split, batch_size=batch_size)
-        chunks, seen, taken = [], 0, 0
+        chunks, seqs, seen, taken = [], [], 0, 0
         for batch in loader:
             n = len(batch["text_trg"])
             if seen + n <= skip_examples:
@@ -95,6 +100,7 @@ class LatentBank:
             mask = content_mask(runner, batch["input_ids_trg"])
             v = trg_x[mask].detach().float()
             chunks.append(v)
+            seqs.append(trg_x.detach().float())
             taken += v.shape[0]
             if taken >= size:
                 break
@@ -102,8 +108,10 @@ class LatentBank:
             raise RuntimeError(
                 "банк пуст: skip_examples больше размера сплита")
         bank = torch.cat(chunks)[:size].contiguous()
-        log(f"банк готов: {tuple(bank.shape)}")
-        return cls(bank, **kw)
+        sequences = torch.cat(seqs).contiguous()
+        log(f"банк готов: позиции {tuple(bank.shape)}, "
+            f"последовательности {tuple(sequences.shape)}")
+        return cls(bank, sequences=sequences, **kw)
 
     def _knn_index(self, x: torch.Tensor) -> torch.Tensor:
         """Индексы k ближайших точек банка. x: [M, D] -> [M, k]."""

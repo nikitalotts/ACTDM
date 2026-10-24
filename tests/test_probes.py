@@ -557,6 +557,117 @@ def test_sweep_searches_below_the_measured_overshoot():
         f"диапазон {values} не накрывает измеренный пик 0.005")
 
 
+# =====================================================================
+# Ось информативности условия
+# =====================================================================
+
+def test_prefix_mask_counts_content_positions_not_raw_ones():
+    """Открываем первые k СОДЕРЖАТЕЛЬНЫХ позиций, а не первые k вообще.
+
+    Нулевая позиция -- это [CLS]. По сырым позициям prefix с k=1 не дал бы ни
+    одного настоящего токена, и нижняя точка оси оказалась бы ложно нулевой."""
+    from probes.degrade import prefix_mask
+
+    #                    CLS  tok  tok  SEP  pad
+    content = torch.tensor([[False, True, True, False, False],
+                            [False, True, True, True, False]])
+    assert torch.equal(prefix_mask(content, 0), torch.zeros_like(content))
+    assert torch.equal(prefix_mask(content, 1),
+                       torch.tensor([[False, True, False, False, False],
+                                     [False, True, False, False, False]]))
+    got = prefix_mask(content, 2)
+    assert got[0].sum() == 2 and got[1].sum() == 2
+    # запрошено больше, чем есть содержательных -- берем все, что есть
+    assert prefix_mask(content, 99)[0].sum() == 2
+    assert prefix_mask(content, 99)[1].sum() == 3
+
+
+def test_kmeans_recovers_known_clusters():
+    """Если k-means не находит очевидные кластеры на синтетике, числа режима
+    quantize на реальных латентах ничего не значат."""
+    from probes.degrade import kmeans
+
+    torch.manual_seed(0)
+    centers = torch.tensor([[-5.0, 0.0], [5.0, 0.0], [0.0, 5.0]])
+    x = centers.repeat_interleave(200, dim=0) + torch.randn(600, 2) * 0.1
+    got = kmeans(x, 3, seed=0)
+
+    for c in centers:
+        assert (got - c).norm(dim=1).min() < 0.3, (
+            f"кластер {c.tolist()} не найден: {got.tolist()}")
+
+
+def test_degradation_is_monotone_in_level():
+    """ГЛАВНЫЙ ИНВАРИАНТ ОСИ: чем выше уровень, тем ближе деградированная цель
+    к истинной.
+
+    Если это не так, ось информативности бессмысленна: точки на ней
+    расположены не по количеству информации, и кривая 'качество от косинуса'
+    ничего не доказывает."""
+    from probes.degrade import degrade_target
+    from probes.manifold import LatentBank
+
+    torch.manual_seed(0)
+    D, L, M = 24, 6, 32
+    # Банк и цель берутся из ОДНОГО распределения -- так же, как в боевом
+    # прогоне, где и банк, и цель это латенты реальных продолжений. Если бы
+    # цель была независима от банка, квантизация не переносила бы информацию
+    # вовсе: ближайший центроид чужого облака не приближается к цели с ростом K.
+    centers = torch.randn(M, D) * 4.0
+    bank_vecs = (centers.repeat_interleave(40, dim=0)
+                 + torch.randn(M * 40, D) * 0.3)
+    bank = LatentBank(bank_vecs, knn=8, dim=4,
+                      sequences=bank_vecs[:240].reshape(40, L, D))
+    pick = torch.randint(M, (4 * L,))
+    target = (centers[pick] + torch.randn(4 * L, D) * 0.3).reshape(4, L, D)
+
+    def closeness(z):
+        return -(z - target).pow(2).mean().item()
+
+    for mode, levels in (("quantize", [2, 8, 32]), ("rank", [1, 4, 12, 24])):
+        scores = [closeness(degrade_target(mode, target, lv, bank=bank)[0])
+                  for lv in levels]
+        assert scores == sorted(scores), (
+            f"{mode}: близость к цели не растет с уровнем: {scores}")
+
+    # Полная размерность и полный ранг обязаны вернуть цель без искажения
+    full, _, _ = degrade_target("rank", target, D, bank=bank)
+    assert torch.allclose(full, target, atol=1e-4)
+
+
+def test_none_mode_is_the_untouched_oracle():
+    """Верхняя точка оси обязана быть ТОЧНО оракулом: иначе вся шкала съезжает."""
+    from probes.degrade import degrade_target
+
+    torch.manual_seed(0)
+    target = torch.randn(3, 5, 8)
+    z, mask, _ = degrade_target("none", target, 0)
+    assert z is target and mask is None
+
+
+def test_seqquant_needs_sequence_level_bank():
+    """Квантизация по темам работает с латентами целых продолжений. Банк
+    позиций для нее не годится, и молча подставлять его нельзя."""
+    from probes.degrade import degrade_target
+    from probes.manifold import LatentBank
+
+    bank = LatentBank(torch.randn(100, 8), knn=8, dim=4)
+    with pytest.raises(ValueError):
+        degrade_target("seqquant", torch.randn(2, 4, 8), 4, bank=bank)
+
+
+def test_infoaxis_stage_runs_two_different_degradation_axes():
+    """Две оси нужны именно разные по характеру: prefix дает точную информацию
+    о немногих позициях, quantize -- грубую обо всех. Совпадение их кривых и
+    есть доказательство, что дело в количестве информации, а не в том, как она
+    распределена. С одной осью доказательства нет."""
+    stage = _probes_stage()
+    assert "PROBE_DEGRADE=prefix" in stage, "нет оси точной локальной информации"
+    assert "PROBE_DEGRADE=quantize" in stage, "нет оси грубой глобальной информации"
+    assert "PROBE_DEGRADE=seqquant" in stage, "нет точки 'веди к теме'"
+    assert "PROBE_DEGRADE=none" in stage, "нет верхней точки оси (оракул)"
+
+
 def test_sigmoid_factor_changes_the_gradient():
     """PROBE_SIGMOID=0 обязан убирать множитель (1 - sigma(f)), а не быть
     декоративным флагом: на нем держится проверка факта, что guidance гаснет

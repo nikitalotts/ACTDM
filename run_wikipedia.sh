@@ -70,6 +70,11 @@
 #   ./run_wikipedia.sh probes-sweep     свип силы шага (доля ||lam*grad||/||score||)
 #                                   для PROBE_GRAD_MODE, пять точек.
 #                                   Диапазон -- PROBE_RATIOS
+#   ./run_wikipedia.sh probes-infoaxis  ГЛАВНЫЙ ЭКСПЕРИМЕНТ: ось
+#                                   информативности условия -- от одного
+#                                   бита до полной цели, деградацией
+#                                   оракула. Шестнадцать заданий, обучать
+#                                   ничего не нужно
 #   ./run_wikipedia.sh probes-twostage  двухэтапная схема: цель берется из
 #                                   генераций другой модели (PROBE_TARGET_JSON),
 #                                   дальше reconstruction guidance ведет к ней
@@ -348,7 +353,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -456,6 +461,31 @@ case "$1" in
             done
         fi
 
+        if [ "$1" = "probes-infoaxis" ]; then
+            # ГЛАВНЫЙ ЭКСПЕРИМЕНТ: ось информативности условия. Все точки
+            # строятся деградацией ОРАКУЛЬНОЙ цели, обучать ничего не нужно.
+            #
+            # Две оси намеренно разные по характеру: prefix дает ТОЧНУЮ
+            # информацию о немногих позициях, quantize -- ГРУБУЮ обо всех.
+            # Если обе лягут на одну кривую "качество от косинуса", значит
+            # качество определяется количеством информации, а не тем, как она
+            # распределена. Это и есть проверяемая форма закона.
+            #
+            # seqquant -- это "веди к теме": оракульный классификатор темы дал
+            # бы градиент ровно в центроид своего кластера. Отдельно обучать
+            # классификатор темы не нужно, и это экономит 6 GPU-часов.
+            ARCH_TYPE=unconditional PROBE_DEGRADE=none PROBE_LEVEL=0                 sbatch --time="${TIME_LIMIT:-03:00:00}"                 --job-name=probe-axis-oracle probe_information_axis.sh
+            for K in ${PROBE_PREFIX:-1 2 4 8 16 32}; do
+                ARCH_TYPE=unconditional PROBE_DEGRADE=prefix PROBE_LEVEL=${K}                     sbatch --time="${TIME_LIMIT:-03:00:00}"                     --job-name=probe-axis-prefix-${K} probe_information_axis.sh
+            done
+            for K in ${PROBE_QUANT:-2 8 32 128 512}; do
+                ARCH_TYPE=unconditional PROBE_DEGRADE=quantize PROBE_LEVEL=${K}                     sbatch --time="${TIME_LIMIT:-03:00:00}"                     --job-name=probe-axis-quant-${K} probe_information_axis.sh
+            done
+            for K in ${PROBE_TOPICS:-4 16 64 256}; do
+                ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant PROBE_LEVEL=${K}                     sbatch --time="${TIME_LIMIT:-03:00:00}"                     --job-name=probe-axis-topic-${K} probe_information_axis.sh
+            done
+        fi
+
         if [ "$1" = "probes-twostage" ]; then
             # ДВУХЭТАПНАЯ СХЕМА. Замер 24.10 показал, что reconstruction
             # guidance к ТОЧКЕ при доле шага 0.1 воспроизводит цель почти
@@ -494,7 +524,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,82p' "$0"
+        sed -n '2,87p' "$0"
         exit 1
         ;;
 esac
