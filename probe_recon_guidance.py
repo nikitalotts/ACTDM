@@ -60,7 +60,11 @@ z: градиент логарифма гауссова правдоподоби
     PROBE_TARGET      (oracle)  oracle | shuffled | json
     PROBE_TARGET_JSON ()        путь к json при PROBE_TARGET=json
     PROBE_JACOBIAN    (identity) identity | full
-    PROBE_RECON_SCALE (1.0)     сила guidance
+    PROBE_RECON_SCALE (1.0)     сила guidance. 0 -- БАЗОВАЯ ЛИНИЯ: чистая
+                                безусловная генерация, прогнанная через те же
+                                метрики, те же сиды и то же число текстов.
+                                Без нее числа oracle не читаются: непонятно,
+                                пол это или уже результат
     PROBE_GAMMA2      (1.0)     дисперсия гауссова правдоподобия цели
     PROBE_NUM_TEXTS   (1000)    сколько текстов сгенерировать
     PROBE_BATCH_SIZE  (64)      размер батча
@@ -90,6 +94,13 @@ def make_recon_guidance(runner, scale, jacobian, gamma2, diag):
            x_0_self_cond=None, **kwargs):
         target = state["target"]
         if target is None:
+            return None
+        if scale == 0.0:
+            # БАЗОВАЯ ЛИНИЯ lambda=0. Возврат None, а не нулевого тензора:
+            # обертка тогда отдает score нетронутым, тогда как score + 0*grad
+            # заставило бы пересчитать x_0 по алгебраической формуле и дало бы
+            # расхождение на уровне арифметики с плавающей точкой. База обязана
+            # быть ТОЧНО безусловной генерацией, иначе ее не с чем сравнивать.
             return None
         params = runner.dynamic.marginal_params(t)
         mu = params["mu"].view(-1, 1, 1)

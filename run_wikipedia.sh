@@ -379,6 +379,15 @@ case "$1" in
                     sbatch --time="${TIME_LIMIT:-04:00:00}" \
                     --job-name=probe-recon-${TGT} probe_recon_guidance.sh
             done
+            # БАЗОВАЯ ЛИНИЯ lambda=0: та же безусловная генерация, те же сиды,
+            # то же число текстов, те же метрики -- но без всякого guidance.
+            # Без нее числа oracle и shuffled не с чем сравнивать: нельзя
+            # отличить "механизм дал прирост" от "это и есть пол безусловной
+            # модели". Брать вместо нее строку guidance из основной таблицы
+            # нельзя -- там другое число текстов и другие сиды.
+            ARCH_TYPE=unconditional PROBE_TARGET=oracle PROBE_RECON_SCALE=0 \
+                sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                --job-name=probe-recon-baseline probe_recon_guidance.sh
         fi
 
         echo "==> результаты лягут в probe_results/*.json, сводки -- в slurm_logs"

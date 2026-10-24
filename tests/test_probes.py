@@ -322,6 +322,38 @@ def test_recon_identity_gradient_matches_the_closed_form():
     assert diag["rel_norm"], "диагностика силы шага не заполнена"
 
 
+def test_recon_scale_zero_is_exactly_unconditional():
+    """При scale=0 перехват обязан вернуть None, а не нулевой тензор.
+
+    score + 0*grad выглядит тем же самым, но заставляет обертку пересчитать
+    x_0 по алгебраической формуле (x_t + std^2*score)/mu и дает расхождение на
+    уровне арифметики с плавающей точкой. Базовая линия обязана быть ТОЧНО
+    безусловной генерацией -- иначе ее не с чем сравнивать, а именно ради
+    сравнения она и считается."""
+    from probe_recon_guidance import make_recon_guidance
+
+    runner, config = _stub("unconditional")
+    torch.manual_seed(0)
+    x_t = torch.randn(B, config.data.max_sequence_len, HIDDEN)
+    out = {"x_0": torch.randn_like(x_t), "score": torch.randn_like(x_t)}
+
+    fn = make_recon_guidance(runner, scale=0.0, jacobian="identity",
+                             gamma2=1.0, diag={"rel_norm": []})
+    fn.state["target"] = torch.randn_like(x_t)
+    assert fn(x_t=x_t, t=0.4 * torch.ones(B), out=out) is None
+
+
+def test_recon_stage_launches_the_zero_scale_baseline():
+    """Без базовой линии числа oracle не читаются: непонятно, пол это или уже
+    результат. Строка guidance из основной таблицы ее не заменяет -- там другое
+    число текстов и другие сиды."""
+    body = open("run_wikipedia.sh", encoding="utf-8").read()
+    branch = body.index("probes|probes-window|probes-geometry|probes-recon)")
+    stage = body[branch:body.index(";;", branch)]
+    assert "PROBE_RECON_SCALE=0" in stage, (
+        "стадия probes-recon не запускает базовую линию lambda=0")
+
+
 def test_recon_guidance_without_target_is_a_noop():
     """Пока цель не выставлена, перехват обязан вернуть None и оставить score
     безусловным -- иначе первый батч считался бы с мусорной целью."""
