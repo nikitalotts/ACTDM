@@ -375,8 +375,25 @@ for f in slurm_logs/*sweep-gpt*.log; do echo "== $f"; grep -aE '^(bleu|bert-scor
 CHECKPOINT_STEP=87500 ./run_wikipedia.sh probes
 ```
 
-Восемь заданий. Частями: `probes-window`, `probes-geometry`, `probes-recon`.
+Девять заданий. Частями: `probes-window`, `probes-signal`, `probes-geometry`,
+`probes-recon`. Одна схема классификатора вместо трёх:
+
+```bash
+PROBE_SCHEMES=augmented CHECKPOINT_STEP=87500 ./run_wikipedia.sh probes-signal
+```
+
 Результаты — `probe_results/*.json`, сводные таблицы печатаются в `slurm_logs`.
+
+> **Запускать через стадию, а не руками через `sbatch`.** После миграции
+> Харизмы на Rocky `sbatch` требует `-A <проект>`, дефолта нет, и голый
+> `sbatch probe_signal_survival.sh` падает с `Invalid account or
+> account/partition combination specified`. Проект выставляет оркестратор
+> (`SBATCH_ACCOUNT=proj_1891`). Для разовых ручных запусков — положить в
+> `~/.bashrc`:
+>
+> ```bash
+> export SBATCH_ACCOUNT=proj_1891
+> ```
 
 ### 6.1 Окно управления (`probes-window`)
 

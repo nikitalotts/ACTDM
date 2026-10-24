@@ -54,6 +54,9 @@
 #   ./run_wikipedia.sh probes-window    окно управления: accuracy(t) трех
 #                                   классификаторов + кривая предрешенности
 #                                   genie и unconditional
+#   ./run_wikipedia.sh probes-signal    только accuracy(t). Схемы задаются
+#                                   через PROBE_SCHEMES (по умолчанию все три):
+#                                   PROBE_SCHEMES=augmented ./run_wikipedia.sh probes-signal
 #   ./run_wikipedia.sh probes-geometry  геометрия латентного пространства:
 #                                   hole ratio, r_tok, интерполяция
 #   ./run_wikipedia.sh probes-recon     guidance к ОДНОЙ цели: oracle и
@@ -333,26 +336,33 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-geometry|probes-recon)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
         #
-        # CHECKPOINT_STEP обязателен по той же причине, что и у стадии stat:
-        # без него restore_parameters берет max(нумерованных), а он разный у
-        # разных подходов -- диагностика описывала бы не ту модель, что в таблице.
-        : "${CHECKPOINT_STEP:?укажите шаг сравнения, например CHECKPOINT_STEP=87500}"
-        export CHECKPOINT_STEP
+        # Шаг берется из _CKPT_STEP, а НЕ из CHECKPOINT_STEP: эта переменная
+        # гасится в шапке скрипта (см. unset выше), чтобы обучающие стадии не
+        # дозапускались с указанного шага. Стадии stat читают ее так же.
+        # Пин обязателен по той же причине, что и у stat: без него
+        # restore_parameters берет max(нумерованных), а он разный у разных
+        # подходов -- диагностика описывала бы не ту модель, что в таблице.
+        export CHECKPOINT_STEP="${_CKPT_STEP:-87500}"
+        echo "==> CHECKPOINT_STEP=${CHECKPOINT_STEP}"
 
-        if [ "$1" = "probes" ] || [ "$1" = "probes-window" ]; then
+        if [ "$1" = "probes" ] || [ "$1" = "probes-window" ] || [ "$1" = "probes-signal" ]; then
             # accuracy(t): три схемы классификатора. Все три нужны именно вместе
             # -- совпадение кривых у трех РАЗНЫХ классификаторов и есть довод,
-            # что дело не в конкретном обучении.
-            for AUG in shuffled augmented combined; do
+            # что дело не в конкретном обучении. На первом заходе разумно взять
+            # одну: PROBE_SCHEMES=augmented (лучшая по валидации).
+            for AUG in ${PROBE_SCHEMES:-shuffled augmented combined}; do
                 ARCH_TYPE=guidance AUG_SCHEME=${AUG} \
                     sbatch --time="${TIME_LIMIT:-02:00:00}" \
                     --job-name=probe-signal-${AUG} probe_signal_survival.sh
             done
+        fi
+
+        if [ "$1" = "probes" ] || [ "$1" = "probes-window" ]; then
             # Кривая предрешенности. genie здесь -- ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ:
             # у рабочей условной модели окно обязано быть непустым, иначе
             # измерение ничего не меряет и выводы по unconditional не стоят ничего.
@@ -397,7 +407,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,67p' "$0"
+        sed -n '2,70p' "$0"
         exit 1
         ;;
 esac

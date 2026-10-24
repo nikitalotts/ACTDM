@@ -347,9 +347,7 @@ def test_recon_stage_launches_the_zero_scale_baseline():
     """Без базовой линии числа oracle не читаются: непонятно, пол это или уже
     результат. Строка guidance из основной таблицы ее не заменяет -- там другое
     число текстов и другие сиды."""
-    body = open("run_wikipedia.sh", encoding="utf-8").read()
-    branch = body.index("probes|probes-window|probes-geometry|probes-recon)")
-    stage = body[branch:body.index(";;", branch)]
+    stage = _probes_stage()
     assert "PROBE_RECON_SCALE=0" in stage, (
         "стадия probes-recon не запускает базовую линию lambda=0")
 
@@ -427,26 +425,51 @@ def test_t_grid_covers_the_full_noise_range():
 # Стадия оркестратора
 # =====================================================================
 
-def test_probes_stage_demands_the_comparison_step():
-    """Без CHECKPOINT_STEP диагностика посчиталась бы на max(нумерованных), а он
-    разный у разных подходов (genie и unconditional доехали до 100000, diffuseq
-    и gpt остановлены на 87500). Выводы относились бы не к той модели, что в
-    таблицах, и в логе это выглядело бы нормально."""
+PROBES_BRANCH = "probes|probes-window|probes-signal|probes-geometry|probes-recon)"
+
+
+def _probes_stage():
     body = open("run_wikipedia.sh", encoding="utf-8").read()
-    branch = body.index("probes|probes-window|probes-geometry|probes-recon)")
-    stage = body[branch:body.index(";;", branch)]
-    assert "CHECKPOINT_STEP:?" in stage, (
-        "стадия probes не требует CHECKPOINT_STEP")
-    assert "export CHECKPOINT_STEP" in stage, (
-        "CHECKPOINT_STEP не уходит в окружение sbatch -- задания его не увидят")
+    branch = body.index(PROBES_BRANCH)
+    return body[branch:body.index(";;", branch)]
+
+
+def test_stages_read_the_stashed_checkpoint_step():
+    """Шаг сравнения берется из _CKPT_STEP, а не из CHECKPOINT_STEP.
+
+    Шапка run_wikipedia.sh делает unset CHECKPOINT_STEP и прячет значение в
+    _CKPT_STEP -- иначе обучающие стадии дозапускались бы с указанного шага.
+    Стадия, которая читает голый CHECKPOINT_STEP, всегда видит ПУСТО: ровно на
+    этом стадия probes падала с требованием задать переменную, которая была
+    задана. Проверяем все стадии разом, чтобы следующая не наступила туда же."""
+    body = open("run_wikipedia.sh", encoding="utf-8").read()
+    exports = [ln for ln in body.splitlines()
+               if ln.strip().startswith("export CHECKPOINT_STEP")]
+    assert exports, "ни одна стадия не пинит шаг сравнения"
+    for ln in exports:
+        assert "_CKPT_STEP" in ln, (
+            f"стадия берет шаг не из _CKPT_STEP, а он к этому моменту стерт: "
+            f"{ln.strip()}")
+    assert "export CHECKPOINT_STEP" in _probes_stage(), (
+        "стадия probes не пинит шаг -- restore_parameters возьмет "
+        "max(нумерованных), а он разный у разных подходов")
+
+
+def test_probes_signal_substage_can_pick_one_scheme():
+    """Первый заход считает одну схему, а не три: PROBE_SCHEMES=augmented.
+
+    Нужна именно подстадия, а не ручной sbatch -- тот уходит без -A и падает
+    с Invalid account, потому что проект Slurm выставляет оркестратор."""
+    stage = _probes_stage()
+    assert "PROBE_SCHEMES:-shuffled augmented combined" in stage, (
+        "нельзя выбрать подмножество схем классификатора")
+    assert "probes-signal" in stage, "нет подстадии только для accuracy(t)"
 
 
 def test_probes_window_runs_all_three_classifier_schemes():
     """Совпадение кривых accuracy(t) у трех РАЗНЫХ классификаторов -- это и есть
     довод, что дело не в конкретном обучении. С одной схемой довода нет."""
-    body = open("run_wikipedia.sh", encoding="utf-8").read()
-    branch = body.index("probes|probes-window|probes-geometry|probes-recon)")
-    stage = body[branch:body.index(";;", branch)]
+    stage = _probes_stage()
     for aug in ("shuffled", "augmented", "combined"):
         assert aug in stage, f"схема {aug} не запускается в probes-window"
     # genie -- положительный контроль кривой предрешенности
