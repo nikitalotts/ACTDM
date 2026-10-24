@@ -376,7 +376,7 @@ case "$1" in
             # "guidance ничего не делает" от "двигает, но не туда".
             for TGT in oracle shuffled; do
                 ARCH_TYPE=unconditional PROBE_TARGET=${TGT} \
-                    sbatch --time="${TIME_LIMIT:-06:00:00}" \
+                    sbatch --time="${TIME_LIMIT:-04:00:00}" \
                     --job-name=probe-recon-${TGT} probe_recon_guidance.sh
             done
         fi

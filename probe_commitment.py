@@ -52,13 +52,24 @@ import torch.distributed as dist
 
 from create_config import create_config
 from probes.common import (
-    build_probe_runner, dump_json, encode_batch, latents_to_tokens,
-    make_timesteps, probe_loader, reverse_process, unigram_f1,
+    build_probe_runner, dump_json, encode_batch, latents_to_tokens, log,
+    make_timesteps, probe_loader, progress, reverse_process, unigram_f1,
 )
 from utils.util import parse, set_seed
 
 
+def _tau_commit(rows, threshold=0.05):
+    """Наименьший уровень шума, на котором ветвление еще меняет выход.
+
+    Порог 0.05 по divergence: ниже него тексты совпадают с точностью до
+    единичных токенов, то есть результат уже предрешен.
+    """
+    movable = [r["t_state"] for r in rows if r["divergence"] >= threshold]
+    return min(movable) if movable else None
+
+
 def main():
+    log("старт: собираю конфиг")
     args = parse()
     config = create_config(args)
 
@@ -99,8 +110,54 @@ def main():
         print("=" * 72)
 
     stats = {i: {"f1": [], "exact": [], "latent_rel": []} for i in branch_idx}
+
+    def mean(xs):
+        return float(sum(xs) / len(xs)) if xs else float("nan")
+
+    def build_rows():
+        out = []
+        for idx in branch_idx:
+            s = stats[idx]
+            f1 = mean(s["f1"])
+            out.append({
+                "step_idx": idx,
+                "t_state": float(timesteps[idx + 1]),
+                "f1": f1,
+                "divergence": 1.0 - f1,
+                "exact_match": mean(s["exact"]),
+                "latent_rel_dist": mean(s["latent_rel"]),
+                "n": len(s["f1"]),
+            })
+        return out
+
+    def save(rows, partial):
+        # Промежуточное сохранение после каждого батча: задание, снятое по
+        # лимиту, иначе не оставляло бы ничего, хотя кривая по двум батчам из
+        # четырех уже читается.
+        dump_json({
+            "probe": "commitment",
+            "partial": partial,
+            "dataset": config.data.datasets.datasets_list[0],
+            "architecture_type": config.architecture_type,
+            "diffusion_checkpoint": runner.loaded_checkpoint_path,
+            "step": runner.step,
+            "solver_steps": n_steps,
+            "branch_every": branch_every,
+            "n_batches": n_batches,
+            "batch_size": batch_size,
+            "tau_commit_div005": _tau_commit(rows),
+            "rows": rows,
+        }, out_path)
+
     loader = probe_loader(runner, split="test", batch_size=batch_size)
     started = time.time()
+    # Базовая траектория плюс хвост из каждой точки ветвления. Считаем в шагах
+    # солвера -- это и есть единица работы, по ней честно строится остаток.
+    steps_per_batch = n_steps + sum(n_steps - i - 1 for i in branch_idx)
+    total_steps = n_batches * steps_per_batch
+    done_steps = 0
+    log(f"считаю {total_steps} шагов солвера "
+        f"({n_batches} батчей x {steps_per_batch})")
 
     for b_idx, batch in enumerate(loader):
         if b_idx >= n_batches:
@@ -114,7 +171,11 @@ def main():
         set_seed(config.seed + b_idx)
         base_lat = reverse_process(
             runner, batch_size=bsz, cond_x=src_x, cond_mask=cond_mask,
-            attention_mask=None, record_at=branch_idx, record_out=snapshots)
+            attention_mask=None, record_at=branch_idx, record_out=snapshots,
+            show_steps=(b_idx == 0))
+        done_steps += n_steps
+        progress(done_steps, total_steps, started, "шагов солвера",
+                 extra=f"батч {b_idx + 1}: базовая траектория готова")
         base_text, base_tok = latents_to_tokens(
             runner, base_lat, cond_x=src_x, cond_mask=cond_mask)
 
@@ -142,32 +203,22 @@ def main():
                    / base_lat.flatten(1).norm(dim=1).clamp_min(1e-12))
             stats[idx]["latent_rel"] += rel.detach().cpu().tolist()
 
+            done_steps += n_steps - idx - 1
+            f1s = stats[idx]["f1"]
+            progress(done_steps, total_steps, started, "шагов солвера",
+                     extra=f"ветка с шага {idx}: divergence "
+                           f"{1.0 - sum(f1s) / len(f1s):.3f}")
+
             if dist.get_rank() == 0 and b_idx == 0 and idx in (branch_idx[0], branch_idx[len(branch_idx) // 2], branch_idx[-1]):
                 print(f"\n--- ветвление на шаге {idx} (t_state="
                       f"{float(timesteps[snap['start_idx']]):.3f}) ---")
                 print(f"  база : {base_text[0][:160]}")
                 print(f"  ветка: {alt_text[0][:160]}")
 
-        if dist.get_rank() == 0:
-            print(f"  батч {b_idx + 1}/{n_batches} готов "
-                  f"({time.time() - started:.0f} c)")
+        log(f"батч {b_idx + 1}/{n_batches} готов")
+        save(build_rows(), partial=(b_idx + 1 < n_batches))
 
-    def mean(xs):
-        return float(sum(xs) / len(xs)) if xs else float("nan")
-
-    rows = []
-    for idx in branch_idx:
-        s = stats[idx]
-        f1 = mean(s["f1"])
-        rows.append({
-            "step_idx": idx,
-            "t_state": float(timesteps[idx + 1]),
-            "f1": f1,
-            "divergence": 1.0 - f1,
-            "exact_match": mean(s["exact"]),
-            "latent_rel_dist": mean(s["latent_rel"]),
-            "n": len(s["f1"]),
-        })
+    rows = build_rows()
 
     if dist.get_rank() == 0:
         print("\n" + "=" * 84)
@@ -180,28 +231,11 @@ def main():
                   f"{r['exact_match']:>8.4f} {r['latent_rel_dist']:>11.4f}")
         print("=" * 84)
 
-        # tau_commit -- наименьшее t_state, при котором ветвление еще способно
-        # изменить выход. Порог 0.05 по divergence: ниже него тексты совпадают
-        # с точностью до единичных токенов, то есть выход предрешен.
-        movable = [r["t_state"] for r in rows if r["divergence"] >= 0.05]
-        tau_commit = min(movable) if movable else None
-        print(f"\ntau_commit (divergence >= 0.05): {tau_commit}")
+        print(f"\ntau_commit (divergence >= 0.05): {_tau_commit(rows)}")
         print("Ниже этого уровня шума выход уже предрешен: любая коррекция "
               "score после этой точки\nна итоговый текст не влияет.\n")
 
-        dump_json({
-            "probe": "commitment",
-            "dataset": config.data.datasets.datasets_list[0],
-            "architecture_type": config.architecture_type,
-            "diffusion_checkpoint": runner.loaded_checkpoint_path,
-            "step": runner.step,
-            "solver_steps": n_steps,
-            "branch_every": branch_every,
-            "n_batches": n_batches,
-            "batch_size": batch_size,
-            "tau_commit_div005": tau_commit,
-            "rows": rows,
-        }, out_path)
+    save(rows, partial=False)
 
 
 if __name__ == "__main__":

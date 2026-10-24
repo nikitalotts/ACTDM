@@ -66,7 +66,8 @@ import torch.distributed as dist
 
 from create_config import create_config
 from probes.common import (
-    build_probe_runner, content_mask, dump_json, encode_batch, probe_loader,
+    build_probe_runner, content_mask, dump_json, encode_batch, log,
+    probe_loader, progress,
 )
 from utils.util import parse, set_seed
 
@@ -191,9 +192,11 @@ def decoder_probes(runner, seq_latents, cond_x=None, cond_mask=None, seed=0):
     half = x0.shape[0] // 2
     if half >= 1:
         xa, xb = x0[:half], x0[half:2 * half]
-        ca = cb = None
-        if cond_x is not None:
-            ca, cb = cond_x[:half], cond_x[half:2 * half]
+        # Середине отрезка нужен какой-то один промпт, и выбор здесь
+        # произволен -- берем промпт первого конца. Значение это имеет только
+        # для условного декодера (genie); проба задумана для безусловного, где
+        # pred_logits условие все равно отбрасывает.
+        ca = cond_x[:half] if cond_x is not None else None
         mid_logits = runner.pred_logits(0.5 * (xa + xb), cond_x=ca, cond_mask=None)
         mid_tok = mid_logits.argmax(dim=-1)
         mid_conf = mid_logits.softmax(dim=-1).max(dim=-1).values.mean().item()
@@ -213,6 +216,7 @@ def decoder_probes(runner, seq_latents, cond_x=None, cond_mask=None, seed=0):
 
 
 def main():
+    log("старт: собираю конфиг")
     args = parse()
     config = create_config(args)
 
@@ -259,8 +263,12 @@ def main():
 
     started = time.time()
     for batch in loader:
-        if sum(b.shape[0] for b in enc_bank) >= bank_size:
+        collected = sum(b.shape[0] for b in enc_bank)
+        if collected >= bank_size:
             break
+        if enc_bank and len(enc_bank) % 10 == 0:
+            progress(min(collected, bank_size), bank_size, started,
+                     "векторов в банке")
         batch, src_x, trg_x = encode_batch(runner, batch)
         mask = content_mask(runner, batch["input_ids_trg"])
 
@@ -313,15 +321,16 @@ def main():
         banks["images"] = t[:bank_size].to(runner.device)
 
     results = {}
-    for name, bank in banks.items():
-        if dist.get_rank() == 0:
-            print(f"\n  считаю геометрию: {name} {tuple(bank.shape)}")
+    geom_started = time.time()
+    for i, (name, bank) in enumerate(banks.items(), start=1):
+        log(f"считаю геометрию: {name} {tuple(bank.shape)}")
         results[name] = hole_ratio(bank, n_anchors=n_anchors, seed=config.seed)
         results[name]["dim"] = int(bank.shape[1])
+        progress(i, len(banks), geom_started, "пространств",
+                 extra=f"{name}: H(0.5) = {results[name]['H']['0.5']:.2f}")
 
     if with_decoder:
-        if dist.get_rank() == 0:
-            print("\n  пробы декодера (flip_rate, интерполяция)")
+        log("пробы декодера (flip_rate, интерполяция)")
         results.setdefault("encodings", {})["decoder"] = decoder_probes(
             runner, seq, cond_x=cond if runner.config.decoder.is_conditional else None,
             seed=config.seed)

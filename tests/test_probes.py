@@ -423,6 +423,35 @@ def test_probes_window_runs_all_three_classifier_schemes():
         "проверить, и нулевой результат по unconditional ничего не доказывает")
 
 
+def test_long_probes_save_partial_results():
+    """Диагностика, снятая по лимиту времени, обязана оставить хоть что-то.
+
+    Усреднение по батчам устроено так, что половина батчей уже дает читаемую
+    кривую; терять ее из-за среза -- значит платить за прогон дважды."""
+    for name in ("probe_signal_survival.py", "probe_commitment.py"):
+        body = open(name, encoding="utf-8").read()
+        assert "partial=(b_idx + 1 < n_batches)" in body, (
+            f"{name}: нет досохранения после батча")
+        assert "partial=False" in body, f"{name}: нет финального сохранения"
+
+
+def test_probe_time_limits_leave_room_for_loading():
+    """Лимит должен многократно перекрывать оценку, иначе прогон срежется на
+    загрузке датасета -- она на wikipedia занимает десятки минут и в оценку
+    счета не входит. SLURM считает фактически потраченное время, а не лимит,
+    поэтому запас не стоит GPU-часов."""
+    import glob
+    import re
+
+    for script in sorted(glob.glob("probe_*.sh")):
+        body = open(script, encoding="utf-8").read()
+        m = re.search(r"#SBATCH --time=(\d+):", body)
+        assert m, f"{script}: не задан лимит времени"
+        assert int(m.group(1)) >= 2, (
+            f"{script}: лимит {m.group(1)} ч -- меньше двух часов не хватит "
+            f"на загрузку датасета и чекпоинтов")
+
+
 def test_probe_scripts_ask_for_one_gpu():
     """Диагностики -- инференс по одной карте. Четыре карты здесь означали бы,
     что кто-то скопировал шапку обучения, и бюджет проекта сгорел бы вчетверо

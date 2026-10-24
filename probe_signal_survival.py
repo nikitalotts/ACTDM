@@ -60,8 +60,8 @@ import torch.distributed as dist
 
 from create_config import create_config
 from probes.common import (
-    build_probe_runner, content_mask, dump_json, encode_batch, masked_cosine,
-    masked_norm, probe_loader, t_grid,
+    build_probe_runner, content_mask, dump_json, encode_batch, log,
+    masked_cosine, masked_norm, probe_loader, progress, t_grid,
 )
 from utils.util import parse, set_seed
 
@@ -86,7 +86,18 @@ def _auc(pos_scores, neg_scores):
     return float((r_pos - pos.size * (pos.size + 1) / 2) / (pos.size * neg.size))
 
 
+def _tau(rows, threshold=0.55):
+    """Наибольшее t, на котором классификатор еще различает продолжения.
+
+    Порог 0.55, а не 0.5: при n ~ 500 стандартная ошибка доли ~0.022, то есть
+    0.55 -- это примерно +2 сигмы от случайного угадывания.
+    """
+    above = [r["t"] for r in rows if r["rank_acc"] >= threshold]
+    return max(above) if above else None
+
+
 def main():
+    log("старт: собираю конфиг")
     args = parse()
     config = create_config(args)
 
@@ -134,8 +145,53 @@ def main():
                 "cos_grad": [], "cos_rand": [], "cos_score": [],
                 "rel_norm": [], "x0_shift": []} for tv in grid}
 
+    def mean(xs):
+        return float(sum(xs) / len(xs)) if xs else float("nan")
+
+    def build_rows():
+        out = []
+        for tv in grid:
+            a = acc[tv]
+            out.append({
+                "t": round(tv, 4),
+                "rank_acc": mean(a["rank"]),
+                "bal_acc": 0.5 * (mean(a["pos_hit"]) + mean(a["neg_hit"])),
+                "auc": _auc(a["pos"], a["neg"]),
+                "cos_grad": mean(a["cos_grad"]),
+                "cos_random": mean(a["cos_rand"]),
+                "cos_score": mean(a["cos_score"]),
+                "rel_norm": mean(a["rel_norm"]),
+                "x0_shift": mean(a["x0_shift"]),
+                "n": len(a["rank"]),
+            })
+        return out
+
+    def save(rows, partial):
+        # Промежуточное сохранение после каждого батча. Задание, снятое по
+        # лимиту времени, иначе не оставляло бы НИЧЕГО -- а усреднение по
+        # батчам устроено так, что половина батчей уже дает осмысленную кривую.
+        dump_json({
+            "probe": "signal_survival",
+            "partial": partial,
+            "dataset": config.data.datasets.datasets_list[0],
+            "architecture_type": config.architecture_type,
+            "augmentation_scheme": config.cond_encoder.augmentation_scheme,
+            "classifier_path": config.cond_encoder.cond_encoder_path,
+            "diffusion_checkpoint": runner.loaded_checkpoint_path,
+            "step": runner.step,
+            "guidance_scale": lam,
+            "time_scale": float(config.cond_encoder.time_scale),
+            "n_batches": n_batches,
+            "batch_size": batch_size,
+            "tau_signal_rank055": _tau(rows),
+            "rows": rows,
+        }, out_path)
+
     loader = probe_loader(runner, split="test", batch_size=batch_size)
     started = time.time()
+    total_units = n_batches * len(grid)
+    done_units = 0
+    log(f"считаю {total_units} точек (батчей {n_batches} x сетка {len(grid)})")
 
     for b_idx, batch in enumerate(loader):
         if b_idx >= n_batches:
@@ -207,28 +263,28 @@ def main():
             n_x0 = masked_norm(trg_x, mask).clamp_min(1e-12)
             acc[tv]["x0_shift"] += (n_shift / n_x0).cpu().tolist()
 
-        if dist.get_rank() == 0:
-            print(f"  батч {b_idx + 1}/{n_batches} готов "
-                  f"({time.time() - started:.0f} c)")
+            # Прогресс печатается по точкам сетки, а не по батчам: один батч --
+            # это 21 точка и несколько минут счета, и по батчам лог выглядел бы
+            # замершим.
+            done_units += 1
+            if done_units % 5 == 0 or done_units == total_units:
+                progress(done_units, total_units, started, "точек сетки")
 
-    def mean(xs):
-        return float(sum(xs) / len(xs)) if xs else float("nan")
+        # Промежуточные числа после каждого батча: видно не только что счет
+        # идет, но и что он сходится к чему-то осмысленному.
+        if grid:
+            lo, mid, hi = grid[0], grid[len(grid) // 2], grid[-1]
+            def _m(tv_):
+                xs = acc[tv_]["rank"]
+                return sum(xs) / len(xs) if xs else float("nan")
+            log(f"батч {b_idx + 1}/{n_batches}: rank_acc "
+                f"t={lo:.2f} -> {_m(lo):.3f} | "
+                f"t={mid:.2f} -> {_m(mid):.3f} | "
+                f"t={hi:.2f} -> {_m(hi):.3f}")
 
-    rows = []
-    for tv in grid:
-        a = acc[tv]
-        rows.append({
-            "t": round(tv, 4),
-            "rank_acc": mean(a["rank"]),
-            "bal_acc": 0.5 * (mean(a["pos_hit"]) + mean(a["neg_hit"])),
-            "auc": _auc(a["pos"], a["neg"]),
-            "cos_grad": mean(a["cos_grad"]),
-            "cos_random": mean(a["cos_rand"]),
-            "cos_score": mean(a["cos_score"]),
-            "rel_norm": mean(a["rel_norm"]),
-            "x0_shift": mean(a["x0_shift"]),
-            "n": len(a["rank"]),
-        })
+        save(build_rows(), partial=(b_idx + 1 < n_batches))
+
+    rows = build_rows()
 
     if dist.get_rank() == 0:
         print("\n" + "=" * 108)
@@ -243,31 +299,12 @@ def main():
                   f"{r['rel_norm']:>9.4f} {r['x0_shift']:>9.5f}")
         print("=" * 108)
 
-        # tau_signal -- наибольшее t, при котором rank_acc еще выше порога.
-        # Порог 0.55, а не 0.5: при n ~ 500 стандартная ошибка доли ~0.022,
-        # и 0.55 это примерно +2 сигмы от случайного угадывания.
-        above = [r["t"] for r in rows if r["rank_acc"] >= 0.55]
-        tau_signal = max(above) if above else None
-        print(f"\ntau_signal (rank_acc >= 0.55): {tau_signal}")
+        print(f"\ntau_signal (rank_acc >= 0.55): {_tau(rows)}")
         print("Выше этого уровня шума классификатор не отличает правильное "
               "продолжение от чужого,\nто есть guidance там не несет информации "
               "ни при каком lambda.\n")
 
-        dump_json({
-            "probe": "signal_survival",
-            "dataset": config.data.datasets.datasets_list[0],
-            "architecture_type": config.architecture_type,
-            "augmentation_scheme": config.cond_encoder.augmentation_scheme,
-            "classifier_path": config.cond_encoder.cond_encoder_path,
-            "diffusion_checkpoint": runner.loaded_checkpoint_path,
-            "step": runner.step,
-            "guidance_scale": lam,
-            "time_scale": float(config.cond_encoder.time_scale),
-            "n_batches": n_batches,
-            "batch_size": batch_size,
-            "tau_signal_rank055": tau_signal,
-            "rows": rows,
-        }, out_path)
+    save(rows, partial=False)
 
 
 if __name__ == "__main__":

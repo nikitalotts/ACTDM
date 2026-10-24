@@ -76,8 +76,8 @@ import torch.distributed as dist
 from create_config import create_config, metrics_for_mode
 from estimation_utils.metrics import compute_metric
 from probes.common import (
-    build_probe_runner, dump_json, encode_batch, latents_to_tokens,
-    masked_norm, probe_loader, reverse_process, content_mask,
+    build_probe_runner, dump_json, encode_batch, latents_to_tokens, log,
+    masked_norm, probe_loader, progress, reverse_process, content_mask,
 )
 from utils.util import parse, set_seed
 
@@ -132,6 +132,7 @@ def _load_target_texts(path):
 
 
 def main():
+    log("старт: собираю конфиг")
     args = parse()
     config = create_config(args)
 
@@ -253,7 +254,8 @@ def main():
         set_seed(config.seed + b_idx)
         lat = reverse_process(
             runner, batch_size=bsz, cond_x=src_x, cond_mask=cond_mask,
-            attention_mask=None, guidance_fn=guidance_fn)
+            attention_mask=None, guidance_fn=guidance_fn,
+            show_steps=(b_idx == 0))
         texts, _ = latents_to_tokens(runner, lat, cond_x=src_x, cond_mask=cond_mask)
 
         gen_texts += texts
@@ -274,9 +276,10 @@ def main():
                 print(f"  TRG   : {trg_texts[i][:160]}")
                 print(f"  GEN   : {gen_texts[i][:160]}")
 
-        if dist.get_rank() == 0:
-            print(f"  батч {b_idx + 1}: всего {len(gen_texts)} текстов "
-                  f"({time.time() - started:.0f} c)")
+        rel = diag["rel_norm"]
+        progress(min(len(gen_texts), num_texts), num_texts, started, "текстов",
+                 extra=(f"||scale*grad||/||score|| = "
+                        f"{sum(rel) / len(rel):.3f}" if rel else ""))
 
     gen_texts = gen_texts[:num_texts]
     trg_texts = trg_texts[:num_texts]
@@ -286,15 +289,20 @@ def main():
     metric_names = config.data.datasets.metrics[
         config.data.datasets.datasets_list[0]]["metrics"]
 
-    def metrics_against(refs):
+    def metrics_against(refs, label):
         res = {}
-        for name in metric_names:
+        for i, name in enumerate(metric_names, start=1):
+            # bert-score тянет DeBERTa-xlarge и на тысяче текстов считается
+            # минуты. Без отметки на каждую метрику лог молчит весь этот блок,
+            # уже ПОСЛЕ генерации -- самое обидное место для подозрения в зависании.
+            log(f"метрики {label}: {name} ({i}/{len(metric_names)})...")
             res[name] = compute_metric(
                 name, predictions=gen_texts, references=refs, sources=src_texts)
         return res
 
-    vs_trg = metrics_against(trg_texts)
-    vs_steer = metrics_against(steer_texts) if target_mode != "oracle" else vs_trg
+    vs_trg = metrics_against(trg_texts, "vs TRG")
+    vs_steer = (metrics_against(steer_texts, "vs STEER")
+                if target_mode != "oracle" else vs_trg)
 
     if dist.get_rank() == 0:
         def show(title, d):

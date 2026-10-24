@@ -24,17 +24,57 @@ tests/test_probes.py::test_reverse_process_reproduces_pred_embeddings: при
 prior_sampling на CPU, затем по одному randn_like на CUDA на каждом шаге).
 """
 import os
+import sys
+import time
 from functools import partial
 from typing import Dict, List, Optional
 
 import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from data.dataset import get_dataset_iter
 from diffusion_holder import DiffusionRunner, _loader_workers
 from diffusion_utils.solvers import create_solver
 
 EPS_T = 0.01  # то же значение, что в DiffusionRunner.pred_embeddings
+
+_T0 = time.time()
+
+
+def fmt_dur(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:d}:{m:02d}:{s:02d}"
+
+
+def log(msg: str) -> None:
+    """Строка в лог с временем от старта.
+
+    Диагностики подолгу молчат на загрузке датасета и чекпоинтов (на wikipedia
+    это десятки минут), и отличить работу от зависания по пустому логу нельзя.
+    Поэтому каждый заметный этап отмечается явно. PYTHONUNBUFFERED=1 ставится
+    в run_flags.sh, так что строки попадают в slurm-лог сразу.
+    """
+    if dist.is_initialized() and dist.get_rank() != 0:
+        return
+    print(f"[PROBE +{fmt_dur(time.time() - _T0)}] {msg}", flush=True)
+
+
+def progress(done: int, total: int, started: float, label: str,
+             extra: str = "") -> None:
+    """Прогресс с оценкой остатка -- чтобы было видно, что счет идет."""
+    if dist.is_initialized() and dist.get_rank() != 0:
+        return
+    elapsed = time.time() - started
+    eta = elapsed / done * (total - done) if done else 0.0
+    pct = 100.0 * done / total if total else 0.0
+    tail = f"  {extra}" if extra else ""
+    print(f"[PROBE +{fmt_dur(time.time() - _T0)}] {label} {done}/{total} "
+          f"({pct:.0f}%)  прошло {fmt_dur(elapsed)}, осталось ~{fmt_dur(eta)}{tail}",
+          flush=True)
 
 
 def build_probe_runner(config) -> DiffusionRunner:
@@ -44,7 +84,10 @@ def build_probe_runner(config) -> DiffusionRunner:
     считались все метрики в таблицах. Диагностика обязана мерить именно их,
     иначе ее выводы не относятся к опубликованным числам.
     """
+    log("собираю модули (BERT, декодер, denoising network)...")
     runner = DiffusionRunner(config, build_only=True)
+    log(f"восстанавливаю веса из {config.training.checkpoints_prefix} "
+        f"(шаг {config.training.checkpoint_name or '<последний>'})...")
     runner.restore_parameters(runner.device)
     # restore_parameters возвращает False, если нумерованных чекпоинтов нет, и
     # НЕ выставляет loaded_checkpoint_path. Падать надо здесь, а не через
@@ -59,6 +102,7 @@ def build_probe_runner(config) -> DiffusionRunner:
     runner.ddp_score_estimator.eval()
     runner.decoder.eval()
     runner.encoder.eval()
+    log(f"веса готовы: {runner.loaded_checkpoint_path}, шаг {runner.step}")
     return runner
 
 
@@ -70,7 +114,13 @@ def probe_loader(runner: DiffusionRunner, split: str = "test",
     обязан совпадать от прогона к прогону.
     """
     dataset_name = runner.config.data.datasets.datasets_list[0]
+    # На wikipedia здесь идет препроцессинг шарда -- он может занять десятки
+    # минут и ничего не печатает. Отмечаем вход и выход, иначе лог выглядит
+    # зависшим ровно на самом долгом этапе.
+    log(f"готовлю загрузчик {dataset_name}/{split} (препроцессинг может занять "
+        f"десятки минут, это нормально)...")
     dt = next(get_dataset_iter(runner.config, dataset_name, split=split))
+    log(f"загрузчик готов: {len(dt)} примеров")
     return DataLoader(
         dt,
         num_workers=_loader_workers(),
@@ -197,6 +247,7 @@ def reverse_process(
         resume: Optional[Dict] = None,
         record_at=None,
         record_out: Optional[List[Dict]] = None,
+        show_steps: bool = False,
 ):
     """Обратный процесс с перехватами. Шаг в шаг повторяет pred_embeddings.
 
@@ -208,6 +259,9 @@ def reverse_process(
                    случайных чисел не трогается до первого шага солвера.
     record_at   -- множество индексов шагов, на которых снять снимок состояния.
     record_out  -- список, куда класть снимки.
+    show_steps  -- показать tqdm по шагам солвера. Прогресс-бар не трогает
+                   генератор случайных чисел, поэтому побитовое совпадение с
+                   pred_embeddings сохраняется.
 
     Возвращает латенты продолжения (без src-части) -- как pred_embeddings.
     """
@@ -255,7 +309,12 @@ def reverse_process(
         timesteps = make_timesteps(runner)
         z_mean = z
 
-        for idx in range(start_idx, runner.dynamic.N):
+        steps = range(start_idx, runner.dynamic.N)
+        if show_steps:
+            steps = tqdm(steps, desc="обратный процесс", file=sys.stdout,
+                         mininterval=5.0)
+
+        for idx in steps:
             t = timesteps[idx]
             next_t = timesteps[idx + 1]
 

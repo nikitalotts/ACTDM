@@ -6,7 +6,12 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --time=06:00:00
+# Оценка: 1000 текстов x 50 шагов -- около 2 мин счета при PROBE_JACOBIAN=identity
+# и ~6 мин при full (там на каждый шаг добавляется backward через денойзер),
+# плюс ~4 мин на метрики (bert-score считается ДВАЖДЫ: против TRG и против
+# STEER) и до ~30 мин на загрузку. Итого ~45 мин; лимит 4 ч с запасом на
+# PROBE_NUM_TEXTS=5000.
+#SBATCH --time=04:00:00
 
 source ~/.bashrc
 module purge
