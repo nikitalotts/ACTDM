@@ -452,7 +452,7 @@ case "$1" in
                     PROBE_GRAD_MODE="${PROBE_GRAD_MODE:-tangent}" \
                     PROBE_SCALE_MODE=adaptive PROBE_TARGET_RATIO=${RATIO} \
                     sbatch --time="${TIME_LIMIT:-04:00:00}" \
-                    --job-name=probe-sweep-${RATIO} probe_projected_guidance.sh
+                    --job-name=probe-sweep-${PROBE_GRAD_MODE:-tangent}-${RATIO} probe_projected_guidance.sh
             done
         fi
 
