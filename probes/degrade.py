@@ -99,7 +99,8 @@ def prefix_mask(content: torch.Tensor, k: int) -> torch.Tensor:
 
 
 def degrade_target(mode: str, target: torch.Tensor, level: int,
-                   bank=None, content: Optional[torch.Tensor] = None):
+                   bank=None, content: Optional[torch.Tensor] = None,
+                   seed: int = 0):
     """Вернуть (деградированная цель, маска позиций или None, описание).
 
     mode:
@@ -108,6 +109,8 @@ def degrade_target(mode: str, target: torch.Tensor, level: int,
       quantize -- level = число центроидов (по позициям)
       seqquant -- level = число центроидов (по последовательностям); это и есть
                   «веди к теме»
+      dilute   -- level = проценты: z = mean + (level/100) (target - mean)
+      noisy    -- level = проценты std: z = target + (level/100) std eps
       rank     -- level = число главных компонент
     """
     if mode == "none":
@@ -139,6 +142,18 @@ def degrade_target(mode: str, target: torch.Tensor, level: int,
         idx = torch.cdist(flat, centers).argmin(dim=1)
         z = centers[idx].reshape(target.shape).to(target.dtype)
         return z, None, f"{level} тем (центроиды последовательностей)"
+
+    if mode == "dilute":
+        # level -- проценты: 100 это оракул, 0 это среднее (нулевая информация)
+        a = level / 100.0
+        return (dilute_target(target, a), None,
+                f"сжатие к среднему, alpha={a:g}")
+
+    if mode == "noisy":
+        # level -- проценты от собственного std данных
+        f = level / 100.0
+        return (noisy_target(target, f, seed=seed), None,
+                f"изотропный шум, {level}% std")
 
     if mode == "rank":
         if bank is None:
@@ -172,6 +187,136 @@ def estimated_bits(mode: str, level: int, seq_len: int) -> Optional[float]:
         return seq_len * math.log2(level)
     if mode == "seqquant":
         return math.log2(level)
-    if mode == "rank":
+    if mode in ("dilute", "noisy", "rank"):
+        # Для непрерывных осей номинальных бит нет, и это к лучшему: замеры
+        # 24.10 показали, что номинальные биты качество НЕ предсказывают --
+        # prefix-32 и quantize-32 обе дают ~320 бит, а bert 0.722 против 0.470.
+        # Рабочая ось -- измеренная восстановимость цели (target_recovery).
         return None
     return None
+
+
+# --------------------------------------------------------------------------
+# Непрерывные оси информативности
+# --------------------------------------------------------------------------
+# Дискретные режимы выше дали монотонную картину, но КОСИНУС как ось x оказался
+# непригоден (см. probe_information_axis.py, раздел «почему cos_to_true лжет»).
+# Рабочая ось -- измеренная восстановимость самой цели (STEER vs TRG). Чтобы
+# пройти по ней непрерывно и попасть в тот диапазон, где живет реальный
+# классификатор (bert 0.5081 при поле 0.4605), нужны режимы с плавным уровнем.
+#
+# dilute -- сжатие цели к среднему: z = mean + a (target - mean). Это ровно та
+#   форма, которую имеет условное среднее истинной цели при частичной
+#   информации: байесовская оценка по b битам -- сжатая копия истины. Поэтому
+#   dilute -- не произвольная порча, а каноническая форма «условие несет долю
+#   информации».
+# noisy -- изотропный шум: z = target + s * std * eps. Другая по характеру
+#   порча при той же непрерывности. Если dilute и noisy лягут на одну кривую
+#   «качество от восстановимости цели», значит важен ОБЪЕМ информации, а не
+#   способ ее порчи. Это проверяемая форма закона, и в отличие от пары
+#   prefix/quantize здесь обе оси непрерывны и перекрываются по диапазону.
+
+
+def dilute_target(target: torch.Tensor, alpha: float,
+                  mean: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """z = mean + alpha * (target - mean). alpha=1 -- оракул, alpha=0 -- среднее."""
+    if mean is None:
+        # Среднее по позициям внутри батча: позиционная статистика энкодингов
+        # сильно неоднородна ([CLS], пунктуация), общее среднее смазало бы ее.
+        mean = target.reshape(-1, target.shape[-1]).mean(dim=0)
+    return (mean + alpha * (target.float() - mean)).to(target.dtype)
+
+
+def noisy_target(target: torch.Tensor, frac: float, seed: int = 0,
+                 std: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """z = target + frac * std * eps, std -- поканальный масштаб самих данных."""
+    if std is None:
+        std = target.reshape(-1, target.shape[-1]).float().std(dim=0)
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    eps = torch.randn(target.shape, generator=g).to(target.device)
+    return (target.float() + frac * std * eps).to(target.dtype)
+
+
+# --------------------------------------------------------------------------
+# Множество против точки при РАВНОЙ информации
+# --------------------------------------------------------------------------
+# Решающий эксперимент. Реальный классификатор несет один бит и дает +0.048 к
+# полу; точка-цель сравнимой информативности (seqquant) дает -0.07, то есть
+# ХУЖЕ отсутствия guidance. Значит дело не только в объеме информации, но и в
+# ФОРМЕ условия: классификатор говорит «будь во множестве допустимых», а не
+# «иди в эту точку».
+#
+# Чтобы отделить форму от объема, нужны три условия с ОДИНАКОВОЙ информацией
+# (метка кластера, log2 K бит) и разной формой:
+#   centroid -- среднее кластера: точка, которой нет на многообразии;
+#   medoid   -- самый центральный РЕАЛЬНЫЙ элемент кластера: точка на
+#               многообразии (выбран по центроиду, не по истине, -- иначе
+#               утечка информации сверх метки кластера);
+#   mixture  -- мягкий минимум по M центральным элементам: множество на
+#               многообразии, модель сама выбирает, к какому идти.
+# Разность centroid->medoid измеряет цену схода с многообразия, medoid->mixture
+# -- выигрыш от множественной формы. Обучать ничего не нужно.
+
+_CODEBOOK_CACHE = {}
+
+
+def sequence_codebook(bank, level: int):
+    """Центроиды и приписки по последовательностям банка. Считается один раз.
+
+    Без кеша k-means пересчитывался бы на каждом батче: тот же банк, тот же
+    сид, тот же ответ -- но при level=512 это минуты на пустом месте.
+    """
+    seq = bank.sequences
+    if seq is None:
+        raise ValueError("нужен банк с последовательностями")
+    key = (id(bank), "seq", level)
+    if key not in _CODEBOOK_CACHE:
+        flat = seq.reshape(seq.shape[0], -1).float()
+        centers = kmeans(flat, level)
+        assign = torch.cdist(flat, centers).argmin(dim=1)
+        _CODEBOOK_CACHE[key] = (centers, assign)
+    return _CODEBOOK_CACHE[key]
+
+
+def cluster_bundle(bank, target: torch.Tensor, level: int, members: int = 4):
+    """Для каждого элемента батча -- (центроид, медоид, M кандидатов).
+
+    Все три несут РОВНО метку кластера: медоид и кандидаты выбираются по
+    близости к центроиду, истина при выборе не используется.
+    Возвращает centroid [B,L,D], medoid [B,L,D], cand [B,M,L,D].
+    """
+    seq = bank.sequences
+    centers, assign = sequence_codebook(bank, level)
+    B, L, D = target.shape
+    flat = target.reshape(B, -1).float()
+    mine = torch.cdist(flat, centers).argmin(dim=1)              # [B]
+
+    centroid = centers[mine].reshape(B, L, D)
+    flat_bank = seq.reshape(seq.shape[0], -1).float()
+
+    medoid = torch.empty(B, L * D, device=target.device, dtype=torch.float32)
+    cand = torch.empty(B, members, L * D, device=target.device,
+                       dtype=torch.float32)
+    for i in range(B):
+        c = int(mine[i].item())
+        idx = (assign == c).nonzero(as_tuple=True)[0]
+        if idx.numel() == 0:
+            # Пустой кластер: кандидатов нет, честнее отступить к центроиду,
+            # чем молча подменить его соседним кластером.
+            medoid[i] = centers[c]
+            cand[i] = centers[c].unsqueeze(0).expand(members, -1)
+            continue
+        d = (flat_bank[idx] - centers[c]).pow(2).sum(dim=1)
+        order = idx[d.argsort()]
+        medoid[i] = flat_bank[order[0]]
+        take = order[:members]
+        if take.numel() < members:
+            # Кластер меньше M: добираем повторами. Повтор не добавляет
+            # информации и не смещает softmax -- он лишь делит вес кандидата.
+            reps = members - take.numel()
+            take = torch.cat([take, take[:1].expand(reps)])
+        cand[i] = flat_bank[take]
+
+    return (centroid.to(target.dtype),
+            medoid.reshape(B, L, D).to(target.dtype),
+            cand.reshape(B, members, L, D).to(target.dtype))

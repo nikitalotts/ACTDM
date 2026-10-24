@@ -75,6 +75,16 @@
 #                                   бита до полной цели, деградацией
 #                                   оракула. Шестнадцать заданий, обучать
 #                                   ничего не нужно
+#   ./run_wikipedia.sh probes-dilute НЕПРЕРЫВНАЯ ось информативности: сжатие
+#                                   цели к среднему и изотропный шум. Две
+#                                   разные по характеру оси; если лягут на
+#                                   одну кривую -- важен объем информации, а
+#                                   не способ порчи. Двенадцать заданий
+#   ./run_wikipedia.sh probes-set   МНОЖЕСТВО против ТОЧКИ при равной
+#                                   информации: центроид, медоид, смесь.
+#                                   Проверяет, почему один бит классификатора
+#                                   обыгрывает два бита точки-цели. Шесть
+#                                   заданий
 #   ./run_wikipedia.sh probes-twostage  двухэтапная схема: цель берется из
 #                                   генераций другой модели (PROBE_TARGET_JSON),
 #                                   дальше reconstruction guidance ведет к ней
@@ -353,7 +363,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -482,7 +492,56 @@ case "$1" in
                 ARCH_TYPE=unconditional PROBE_DEGRADE=quantize PROBE_LEVEL=${K}                     sbatch --time="${TIME_LIMIT:-03:00:00}"                     --job-name=probe-axis-quant-${K} probe_information_axis.sh
             done
             for K in ${PROBE_TOPICS:-4 16 64 256}; do
-                ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant PROBE_LEVEL=${K}                     sbatch --time="${TIME_LIMIT:-03:00:00}"                     --job-name=probe-axis-topic-${K} probe_information_axis.sh
+                ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant PROBE_LEVEL=${K} PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-1024}                     sbatch --time="${TIME_LIMIT:-03:00:00}"                     --job-name=probe-axis-topic-${K} probe_information_axis.sh
+            done
+        fi
+
+        if [ "$1" = "probes-dilute" ]; then
+            # НЕПРЕРЫВНАЯ ось информативности. Дискретные режимы (prefix,
+            # quantize, seqquant) дали монотонную картину, но не покрыли тот
+            # диапазон, где живет реальный классификатор: его условие несет
+            # один бит, то есть восстановимость цели на уровне пола 0.4605.
+            #
+            # dilute -- сжатие цели к среднему. Это не произвольная порча: так
+            # выглядит условное среднее истины при частичной информации, то
+            # есть байесовская оценка по b битам. Низкие уровни дают цель чуть
+            # информативнее пола -- ровно регион классификатора.
+            #
+            # noisy -- изотропный шум, вторая ось, другая по характеру. Если
+            # обе лягут на одну кривую "качество от восстановимости цели", то
+            # качество определяется ОБЪЕМОМ информации, а не способом порчи.
+            # Номинальные биты этого не дают: prefix-32 и quantize-32 оба ~320
+            # бит, а bert 0.722 против 0.470.
+            for A in ${PROBE_DILUTE:-1 2 5 10 20 40 70}; do
+                ARCH_TYPE=unconditional PROBE_DEGRADE=dilute PROBE_LEVEL=${A} sbatch --time="${TIME_LIMIT:-03:00:00}" --job-name=probe-axis-dilute-${A} probe_information_axis.sh
+            done
+            for F in ${PROBE_NOISE:-25 50 75 100 150}; do
+                ARCH_TYPE=unconditional PROBE_DEGRADE=noisy PROBE_LEVEL=${F} sbatch --time="${TIME_LIMIT:-03:00:00}" --job-name=probe-axis-noisy-${F} probe_information_axis.sh
+            done
+        fi
+
+        if [ "$1" = "probes-set" ]; then
+            # МНОЖЕСТВО ПРОТИВ ТОЧКИ ПРИ РАВНОЙ ИНФОРМАЦИИ -- решающий замер.
+            #
+            # Факт, который надо объяснить: точка-цель информативностью ~2 бита
+            # (seqquant) дает bert 0.390-0.408, НИЖЕ пола 0.4605, а реальный
+            # бинарный классификатор с одним битом дает 0.5081, ВЫШЕ пола. Один
+            # бит обыгрывает два -- значит дело не только в объеме информации,
+            # но и в форме условия.
+            #
+            # Три формы при одной и той же информации (метка кластера):
+            #   centroid -- среднее кластера, точка ВНЕ многообразия;
+            #   medoid   -- самый центральный реальный элемент, точка НА нем;
+            #   mixture  -- мягкий минимум по кандидатам, МНОЖЕСТВО.
+            # centroid -> medoid измеряет цену схода с многообразия,
+            # medoid -> mixture -- выигрыш множественной формы.
+            #
+            # Банк последовательностей берем больше числа тем: при бюджете в
+            # 8192 позиции их набиралось всего 192, и K=256 падал.
+            for K in ${PROBE_TOPICS:-16 64}; do
+                for SHAPE in ${PROBE_SHAPES:-centroid medoid mixture}; do
+                    ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant PROBE_LEVEL=${K} PROBE_SET=${SHAPE} PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-1024} sbatch --time="${TIME_LIMIT:-04:00:00}" --job-name=probe-set-${SHAPE}-${K} probe_information_axis.sh
+                done
             done
         fi
 
@@ -524,7 +583,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,87p' "$0"
+        sed -n '2,97p' "$0"
         exit 1
         ;;
 esac

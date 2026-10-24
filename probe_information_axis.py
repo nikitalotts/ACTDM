@@ -22,29 +22,78 @@
 получены деградацией оракульной цели (см. probes/degrade.py), то есть ось
 строится целиком на инференсе.
 
-ЧТО ПРОВЕРЯЕТСЯ
----------------
-1. Монотонность: растет косинус -- растет качество.
-2. Совпадение осей. prefix дает ТОЧНУЮ информацию о немногих позициях,
-   quantize -- ГРУБУЮ обо всех. Если обе ложатся на одну кривую, качество
-   определяется количеством информации, а не тем, как она распределена.
-3. Попадание реального классификатора на кривую. Если точка (0.009, 52%)
-   лежит на кривой, построенной оракульными деградациями, то классификатор
-   ОПТИМАЛЕН для своего объема информации, и провал guidance на продолжении по
-   промпту -- информационный предел, а не дефект метода.
+РЕЗУЛЬТАТ ПЕРВОГО ПРОГОНА И ПОЧЕМУ cos_to_true ЛЖЕТ
+---------------------------------------------------
+Прогон 24.10 (16 заданий) дал монотонную картину по качеству, но показал, что
+ОСЬ X выбрана неверно. Косинус градиента с направлением mu*true - x_t ведет
+себя так:
 
-Пункт 3 -- главный. Он превращает частный отрицательный результат в правило:
-улучшать guidance надо, увеличивая информативность условия, а не подбирая
-lambda, не меняя архитектуру классификатора и не чиня геометрию.
+  оракул (полная цель)     cos 0.0909   bert 0.980
+  quantize K=2 (пусто)     cos 0.1775   bert 0.452
+  prefix k=1..16           cos отрицательный, bert растет 0.371 -> 0.606
+
+То есть у ПОЛНОЙ цели косинус вдвое ниже, чем у почти пустой квантизации, а у
+prefix он отрицателен при монотонно растущем качестве. Причина: при t -> 1
+mu ~ 5e-9 (CosineSD d=9, float32), поэтому mu*true - x_t ~ -x_t. "Направление
+к истине" вырождается в "убрать шум", и косинус с ним тем выше, чем ближе цель
+к среднему данных. Центроиды лежат у среднего, поэтому они и выигрывают.
+Величина измеряет не информативность условия, а близость цели к центру облака.
+
+Поэтому ось переписана. Выравнивание считается в пространстве x_0:
+cos(z - x_0, true - x_0). Для оракула это 1 по построению, масштаб mu в него не
+входит. Старая величина сохранена в json как cos_to_true -- это
+задокументированный отрицательный результат по диагностике, а не ось.
+
+РАБОЧАЯ ОСЬ: ВОССТАНОВИМОСТЬ ЦЕЛИ
+---------------------------------
+Информативность условия измеряется тем же, чем качество: насколько сама
+деградированная цель похожа на истину (STEER vs TRG, bert). Это уже считалось в
+первом прогоне, и по этой оси картина чистая:
+
+  seqquant (цель хуже пола)  0.307 -> 0.320   bert 0.390 -> 0.408
+  quantize                   0.355 -> 0.471   bert 0.470 -> 0.580
+  оракул                     0.998            bert 0.980
+
+Наклон около единицы, причем генерация идет ВЫШЕ восстановимости цели
+(0.419 -> 0.525): диффузия не просто переносит условие, она доводит его до
+многообразия текста. Номинальные биты эту кривую НЕ описывают: prefix-32 и
+quantize-32 оба дают ~320 бит, но bert 0.722 против 0.470. Значит правильный
+инвариант -- достижимое восстановление, а не счет бит. Это методический
+результат работы.
+
+ГЛАВНЫЙ ВЫВОД И ЧТО ИЗ НЕГО СЛЕДУЕТ ПРОВЕРИТЬ
+---------------------------------------------
+Точка-цель информативностью ~2 бита (seqquant) дает bert 0.390-0.408, то есть
+НИЖЕ пола 0.4605: вести к плохой точке хуже, чем не вести никуда. Реальный
+бинарный классификатор несет один бит и дает 0.5081, то есть ВЫШЕ пола. Один
+бит обыгрывает два бита на порядок величины эффекта -- значит дело не только в
+объеме информации, но и в ФОРМЕ условия: классификатор задает множество
+допустимых продолжений, а не точку.
+
+Это проверяется контролируемо, без обучения (PROBE_SET). При одной и той же
+информации (метка кластера, log2 K бит) сравниваются три формы:
+  centroid -- среднее кластера: точка ВНЕ многообразия;
+  medoid   -- самый центральный реальный элемент: точка НА многообразии;
+  mixture  -- мягкий минимум по кандидатам кластера: МНОЖЕСТВО.
+Разность centroid -> medoid измеряет цену схода с многообразия, medoid ->
+mixture -- выигрыш от множественной формы при той же информации. Если mixture
+обыгрывает medoid, различие "множество против точки" доказано внутри работы, а
+не только сравнением с классификатором.
 
 РЕЖИМЫ (PROBE_DEGRADE)
 ----------------------
   none     полная цель -- верхняя точка оси
   prefix   PROBE_LEVEL = сколько содержательных позиций открыто
   quantize PROBE_LEVEL = сколько центроидов (k-means по позициям банка)
-  seqquant PROBE_LEVEL = сколько центроидов по ПОСЛЕДОВАТЕЛЬНОСТЯМ. Это и есть
-           «веди к теме»: оракульный классификатор темы дал бы градиент ровно
-           в центроид своего кластера, поэтому отдельно обучать его не нужно
+  seqquant PROBE_LEVEL = сколько центроидов по ПОСЛЕДОВАТЕЛЬНОСТЯМ, то есть
+           "веди к теме"; только с ним работает PROBE_SET
+  dilute   PROBE_LEVEL = проценты: z = mean + (L/100) (target - mean). Это
+           каноническая форма частичной информации: условное среднее истины по
+           b битам -- сжатая копия истины. Непрерывная ось, проходит через тот
+           диапазон, где живет классификатор
+  noisy    PROBE_LEVEL = проценты std: z = target + (L/100) std eps. Вторая
+           непрерывная ось, другая по характеру порчи. Если dilute и noisy
+           лягут на одну кривую, важен объем информации, а не способ порчи
   rank     PROBE_LEVEL = сколько главных компонент банка оставить
 
 ЗАПУСК
@@ -53,14 +102,23 @@ lambda, не меняя архитектуру классификатора и �
     PROBE_DEGRADE=prefix PROBE_LEVEL=8 ./probe_information_axis.sh
 
 Настройки через окружение:
-    PROBE_DEGRADE      (prefix)  none | prefix | quantize | seqquant | rank
-    PROBE_LEVEL        (8)       уровень деградации, смысл зависит от режима
-    PROBE_TARGET_RATIO (0.1)     доля шага ||lam*grad||/||score||
-    PROBE_BANK         (8192)    векторов в банке
-    PROBE_NUM_TEXTS    (1000)    сколько текстов сгенерировать
-    PROBE_BATCH_SIZE   (64)      размер батча
-    PROBE_OUT          (...)     путь к json
+    PROBE_DEGRADE      (prefix)   none | prefix | quantize | seqquant |
+                                  dilute | noisy | rank
+    PROBE_LEVEL        (8)        уровень деградации, смысл зависит от режима
+    PROBE_SET          (centroid) centroid | medoid | mixture -- форма условия
+                                  при равной информации, только с seqquant
+    PROBE_SET_MEMBERS  (4)        кандидатов в множестве для mixture
+    PROBE_SET_SIGMA    (0.5)      ширина мягкого минимума, в долях медианного
+                                  расстояния до кандидатов
+    PROBE_SEQ_BANK     (1024)     последовательностей в банке (должно быть
+                                  больше числа тем, иначе k-means падает)
+    PROBE_TARGET_RATIO (0.1)      доля шага ||lam*grad||/||score||
+    PROBE_BANK         (8192)     векторов в банке
+    PROBE_NUM_TEXTS    (1000)     сколько текстов сгенерировать
+    PROBE_BATCH_SIZE   (64)       размер батча
+    PROBE_OUT          (...)      путь к json
 """
+import math
 import os
 import time
 
@@ -74,7 +132,8 @@ from probes.common import (
     latents_to_tokens, log, masked_cosine, probe_loader, progress,
     reverse_process,
 )
-from probes.degrade import degrade_target, estimated_bits
+from probes.degrade import (cluster_bundle, degrade_target,
+                            estimated_bits)
 from probes.manifold import LatentBank
 from utils.util import parse, set_seed
 
@@ -86,29 +145,59 @@ def make_axis_guidance(runner, target_ratio, diag):
     конфигурация, на которой оракульная цель дала bleu 0.938. Менять ее нельзя:
     точки оси обязаны отличаться ТОЛЬКО информативностью цели.
     """
-    state = {"target": None, "true": None, "mask": None}
+    state = {"target": None, "true": None, "mask": None, "cand": None,
+             "sigma_frac": 1.0}
 
     def fn(x_t, t, out, **kwargs):
-        if state["target"] is None:
+        if state["target"] is None and state["cand"] is None:
             return None
         params = runner.dynamic.marginal_params(t)
         mu = params["mu"]
+        x0 = out["x_0"]
+        content = state["content"]
 
-        grad = (state["target"] - out["x_0"]) / mu
-        if state["mask"] is not None:
-            grad = grad * state["mask"].unsqueeze(-1).to(grad.dtype)
+        if state["cand"] is not None:
+            # МНОЖЕСТВО вместо точки: мягкий минимум по кандидатам кластера.
+            # Именно такую форму имеет градиент классификатора -- «будь во
+            # множестве допустимых», а не «иди в эту точку». Информация та же
+            # (метка кластера), форма другая.
+            cand = state["cand"]                                  # [B, M, L, D]
+            w2 = content.unsqueeze(1).unsqueeze(-1).to(cand.dtype)
+            diff = cand - x0.unsqueeze(1)
+            d2 = (diff * w2).pow(2).flatten(2).sum(dim=2)         # [B, M]
+            # sigma задаем от самих расстояний: абсолютный масштаб латентов
+            # меняется между чекпоинтами, фиксированная sigma не переносится.
+            scale = d2.clamp_min(1e-12).sqrt().median(dim=1, keepdim=True).values
+            sigma = (state["sigma_frac"] * scale).clamp_min(1e-12)
+            w = torch.softmax(-d2 / (2 * sigma ** 2), dim=1)      # [B, M]
+            corr = (w.view(*w.shape, 1, 1) * diff).sum(dim=1)     # [B, L, D]
+            with torch.no_grad():
+                diag["set_entropy"] += (
+                    -(w.clamp_min(1e-12).log() * w).sum(dim=1)).cpu().tolist()
+        else:
+            corr = state["target"] - x0
+            if state["mask"] is not None:
+                corr = corr * state["mask"].unsqueeze(-1).to(corr.dtype)
+
+        grad = corr / mu
 
         n_s = out["score"].flatten(1).norm(dim=1).clamp_min(1e-12)
         n_g = grad.flatten(1).norm(dim=1).clamp_min(1e-12)
         g = (target_ratio * n_s / n_g).view(-1, 1, 1) * grad
 
         with torch.no_grad():
-            # ГЛАВНАЯ ИЗМЕРЯЕМАЯ ВЕЛИЧИНА: насколько направление, которое задает
-            # деградированное условие, совпадает с направлением к ИСТИННОМУ
-            # продолжению. Это ось x всей работы.
+            # ИСПРАВЛЕННАЯ ось: выравнивание считаем в пространстве x_0, а не
+            # x_t. Замер 24.10 показал, что cos_to_true измеряет не то: при
+            # t -> 1 mu ~ 5e-9, поэтому mu*true - x_t ~ -x_t, то есть «куда
+            # надо идти» вырождается в «убрать шум». Косинус с этим
+            # направлением тем выше, чем ближе цель к среднему данных, и
+            # оракул (0.0909) проиграл почти пустой quantize-2 (0.1775).
+            # cos_x0 от этого свободен: он равен 1 для оракула по построению.
+            diag["cos_x0"] += masked_cosine(
+                corr, state["true"] - x0, content).cpu().tolist()
             true_dir = mu * state["true"] - x_t
             diag["cos_to_true"] += masked_cosine(
-                g, true_dir, state["content"]).cpu().tolist()
+                g, true_dir, content).cpu().tolist()
             diag["rel_norm"] += (g.flatten(1).norm(dim=1) / n_s).cpu().tolist()
         return g
 
@@ -135,19 +224,40 @@ def main():
     dist.barrier()
     config.training.batch_size_per_gpu = config.training.batch_size // dist.get_world_size()
 
+    modes = ("none", "prefix", "quantize", "seqquant", "dilute", "noisy", "rank")
     mode = os.environ.get("PROBE_DEGRADE", "prefix")
-    if mode not in ("none", "prefix", "quantize", "seqquant", "rank"):
+    if mode not in modes:
         raise SystemExit(f"PROBE_DEGRADE={mode!r}: ожидается "
-                         f"none | prefix | quantize | seqquant | rank")
+                         + " | ".join(modes))
     level = int(os.environ.get("PROBE_LEVEL", "8"))
     target_ratio = float(os.environ.get("PROBE_TARGET_RATIO", "0.1"))
     bank_size = int(os.environ.get("PROBE_BANK", "8192"))
     num_texts = int(os.environ.get("PROBE_NUM_TEXTS", "1000"))
     batch_size = int(os.environ.get("PROBE_BATCH_SIZE", "64"))
+
+    # ФОРМА условия при одинаковой информации (метка кластера, log2 level бит):
+    #   centroid -- среднее кластера, точка вне многообразия (как было);
+    #   medoid   -- самый центральный реальный элемент, точка НА многообразии;
+    #   mixture  -- мягкий минимум по кандидатам, МНОЖЕСТВО на многообразии.
+    # Выбор медоида и кандидатов идет по центроиду, а не по истине: иначе
+    # условие несло бы больше метки кластера и сравнение сломалось бы.
+    set_mode = os.environ.get("PROBE_SET", "centroid")
+    if set_mode not in ("centroid", "medoid", "mixture"):
+        raise SystemExit(f"PROBE_SET={set_mode!r}: ожидается "
+                         f"centroid | medoid | mixture")
+    if set_mode != "centroid" and mode != "seqquant":
+        raise SystemExit("PROBE_SET работает только с PROBE_DEGRADE=seqquant: "
+                         "форму условия сравниваем при равной информации, а ее "
+                         "задает метка кластера последовательностей")
+    set_members = int(os.environ.get("PROBE_SET_MEMBERS", "4"))
+    sigma_frac = float(os.environ.get("PROBE_SET_SIGMA", "0.5"))
+    seq_bank = int(os.environ.get("PROBE_SEQ_BANK", "1024"))
+
+    tag = mode if set_mode == "centroid" else f"{mode}-{set_mode}"
     out_path = os.environ.get(
         "PROBE_OUT",
         f"probe_results/information_axis-{config.data.datasets.datasets_list[0]}"
-        f"-{mode}-L{level}-r{target_ratio:g}.json")
+        f"-{tag}-L{level}-r{target_ratio:g}.json")
 
     # Промпт самой диффузии не подается (она безусловная), но нужен collate и
     # условные метрики -- иначе точки оси не сравнить с таблицей подходов.
@@ -160,9 +270,17 @@ def main():
 
     bank = None
     if mode in ("quantize", "seqquant", "rank"):
+        # Для seqquant банк должен быть заметно больше числа тем: при 8192
+        # позициях целых последовательностей набиралось всего 192, и level=256
+        # падал. Просим последовательности отдельным бюджетом.
+        need_seq = seq_bank if mode == "seqquant" else 0
+        if mode == "seqquant" and need_seq <= level:
+            raise SystemExit(
+                f"PROBE_SEQ_BANK={need_seq} не больше числа тем {level}: "
+                f"квантизация по темам требует банка больше числа центроидов")
         bank = LatentBank.from_runner(
             runner, size=bank_size, skip_examples=num_texts,
-            batch_size=batch_size)
+            batch_size=batch_size, min_sequences=need_seq)
 
     if dist.get_rank() == 0:
         print("=" * 72)
@@ -170,13 +288,17 @@ def main():
         print("=" * 72)
         print(f"  чекпоинт          : {runner.loaded_checkpoint_path}")
         print(f"  деградация        : {mode}, уровень {level}")
+        print(f"  форма условия     : {set_mode}"
+              + (f" (кандидатов {set_members}, sigma {sigma_frac})"
+                 if set_mode == "mixture" else ""))
         print(f"  доля шага         : {target_ratio}")
         bits = estimated_bits(mode, level, config.data.max_sequence_len)
         print(f"  оценка бит о цели : {'нет' if bits is None else f'~{bits:.0f}'}")
         print(f"  текстов           : {num_texts} (батч {batch_size})")
         print("=" * 72)
 
-    diag = {"cos_to_true": [], "rel_norm": [], "target_recovery": []}
+    diag = {"cos_to_true": [], "cos_x0": [], "rel_norm": [],
+            "set_entropy": [], "target_recovery": []}
     guidance_fn = make_axis_guidance(runner, target_ratio, diag)
 
     loader = probe_loader(runner, split="test", batch_size=batch_size)
@@ -193,9 +315,23 @@ def main():
         content = content_mask(runner, batch["input_ids_trg"])
 
         z, pos_mask, desc = degrade_target(mode, trg_x, level, bank=bank,
-                                           content=content)
-        guidance_fn.state.update({"target": z, "true": trg_x,
-                                  "mask": pos_mask, "content": content})
+                                           content=content,
+                                           seed=config.seed + b_idx)
+        cand = None
+        if set_mode != "centroid":
+            centroid, medoid, members = cluster_bundle(
+                bank, trg_x, level, members=set_members)
+            # STEER и для medoid, и для mixture -- медоид: лучшая ОДИНОЧНАЯ
+            # реализация метки кластера. Значит у двух режимов совпадает и
+            # информация, и достижимое восстановление цели, а отличается только
+            # форма guidance. Это и делает сравнение контролируемым.
+            z = medoid
+            if set_mode == "mixture":
+                cand = members
+            desc = f"{desc}, форма {set_mode}"
+        guidance_fn.state.update({"target": z, "true": trg_x, "cand": cand,
+                                  "mask": pos_mask, "content": content,
+                                  "sigma_frac": sigma_frac})
 
         # Во что превращается сама ЦЕЛЬ после деградации -- вторая проверка
         # информативности, независимая от генерации.
@@ -222,9 +358,9 @@ def main():
                 print(f"  STEER : {steer_texts[i][:160]}")
                 print(f"  GEN   : {gen_texts[i][:160]}")
 
-        c = diag["cos_to_true"]
+        c = diag["cos_x0"]
         progress(min(len(gen_texts), num_texts), num_texts, started, "текстов",
-                 extra=f"cos к истине {sum(c) / len(c):.4f}" if c else "")
+                 extra=f"cos(x0) к истине {sum(c) / len(c):.4f}" if c else "")
 
     gen_texts = gen_texts[:num_texts]
     trg_texts = trg_texts[:num_texts]
@@ -250,17 +386,31 @@ def main():
     def mean(xs):
         return float(sum(xs) / len(xs)) if xs else None
 
+    def fmt(v):
+        # Режим без диагностики оставляет список пустым; падать на
+        # форматировании None ПОСЛЕ того, как метрики посчитаны, -- это терять
+        # весь прогон, со свипом так уже было.
+        return "нет" if v is None else f"{v:.5f}"
+
     if dist.get_rank() == 0:
         print("\n" + "=" * 72)
         print(f"----- {mode} / уровень {level} / доля {target_ratio} -----")
         for k, v in metrics.items():
             print(f"{k}: {v:0.5f}")
-        print(f"\nкосинус с направлением к истине : {mean(diag['cos_to_true']):.5f}")
+        print(f"\nвосстановимость цели (bert)      : {recovery['bert-score']:.5f}   <- ОСЬ X")
+        print(f"качество генерации   (bert)      : {metrics['bert-score']:.5f}   <- ОСЬ Y")
+        print(f"cos(x0) условия с истиной        : {fmt(mean(diag['cos_x0']))}")
+        print(f"cos(x_t) старая ось, непригодна  : {fmt(mean(diag['cos_to_true']))}")
         print(f"доля шага                        : {mean(diag['rel_norm']):.4f}")
-        print(f"сама цель против истины (bert)   : {recovery['bert-score']:.5f}")
+        if diag["set_entropy"]:
+            print(f"энтропия веса по кандидатам      : "
+                  f"{fmt(mean(diag['set_entropy']))} из "
+                  f"{math.log(set_members):.3f}")
         print("=" * 72)
-        print("Точка оси: (косинус, качество). Сравнивать с реальным "
-              "классификатором:\nего косинус 0.009 при bert 0.5081 и полом 0.4605.")
+        print("Точка оси: (восстановимость цели, качество генерации).")
+        print("Реальный классификатор: bert 0.5081 при поле 0.4605. Его "
+              "условие несет один бит, то есть восстановимость цели "
+              "на уровне пола.")
 
     dump_json({
         "probe": "information_axis",
@@ -277,6 +427,11 @@ def main():
         "metrics": metrics,
         "target_recovery": recovery,
         "cos_to_true": mean(diag["cos_to_true"]),
+        "cos_x0": mean(diag["cos_x0"]),
+        "set_shape": set_mode,
+        "set_members": set_members if set_mode == "mixture" else None,
+        "set_sigma_frac": sigma_frac if set_mode == "mixture" else None,
+        "set_entropy": mean(diag["set_entropy"]),
         "rel_norm_mean": mean(diag["rel_norm"]),
         "examples": [{"SRC": src_texts[i], "STEER": steer_texts[i],
                       "TRG": trg_texts[i], "GEN": gen_texts[i]}

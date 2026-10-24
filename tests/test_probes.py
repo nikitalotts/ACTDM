@@ -888,5 +888,251 @@ def test_probe_scripts_ask_for_one_gpu():
             f"не соберутся, и прогон пойдет на конфиге по умолчанию")
 
 
+def test_dilute_endpoints_and_monotonicity():
+    """Сжатие к среднему: alpha=1 обязано вернуть оракула, alpha=0 -- среднее.
+
+    Это КОНЦЫ оси. Если они съехали, вся непрерывная шкала смещена, и точка
+    реального классификатора сравнивается не с тем."""
+    from probes.degrade import degrade_target, dilute_target
+
+    torch.manual_seed(0)
+    target = torch.randn(4, 6, 12)
+    mean = target.reshape(-1, 12).mean(dim=0)
+
+    assert torch.allclose(dilute_target(target, 1.0), target, atol=1e-5)
+    z0 = dilute_target(target, 0.0)
+    assert torch.allclose(z0, mean.expand_as(z0), atol=1e-5)
+
+    def closeness(z):
+        return -(z - target).pow(2).mean().item()
+
+    scores = [closeness(degrade_target("dilute", target, lv)[0])
+              for lv in (1, 5, 20, 50, 100)]
+    assert scores == sorted(scores), f"dilute не монотонен: {scores}"
+
+
+def test_noisy_is_monotone_and_reproducible():
+    """Шумовая ось обязана быть монотонной и ВОСПРОИЗВОДИМОЙ.
+
+    Невоспроизводимая порча означала бы, что две точки оси отличаются не только
+    уровнем, и наклон кривой мерился бы вместе с шумом сэмплирования."""
+    from probes.degrade import degrade_target
+
+    torch.manual_seed(0)
+    target = torch.randn(4, 6, 12)
+
+    def closeness(z):
+        return -(z - target).pow(2).mean().item()
+
+    scores = [closeness(degrade_target("noisy", target, lv, seed=0)[0])
+              for lv in (150, 100, 50, 25)]
+    assert scores == sorted(scores), f"noisy не монотонен: {scores}"
+
+    a = degrade_target("noisy", target, 50, seed=3)[0]
+    b = degrade_target("noisy", target, 50, seed=3)[0]
+    assert torch.equal(a, b), "один сид дает разную порчу"
+    c = degrade_target("noisy", target, 50, seed=4)[0]
+    assert not torch.equal(a, c), "сид не влияет на порчу"
+
+
+def _clustered_bank(n_clusters=8, per=12, L=4, D=10, spread=0.2):
+    from probes.manifold import LatentBank
+
+    torch.manual_seed(0)
+    centers = torch.randn(n_clusters, L * D) * 6.0
+    seqs = (centers.repeat_interleave(per, dim=0)
+            + torch.randn(n_clusters * per, L * D) * spread)
+    return LatentBank(seqs[:, :D].contiguous(), knn=8, dim=4,
+                      sequences=seqs.reshape(-1, L, D)), centers
+
+
+def test_cluster_bundle_leaks_nothing_beyond_the_cluster_label():
+    """РЕШАЮЩИЙ ИНВАРИАНТ сравнения форм условия.
+
+    centroid, medoid и кандидаты несут РОВНО метку кластера. Если бы медоид
+    выбирался по близости к истине, он нес бы больше бита и сравнение
+    'множество против точки при равной информации' развалилось бы: множество
+    выигрывало бы просто потому, что ему подсказали ответ.
+
+    Проверяем прямо: две разные цели из одного кластера обязаны получить
+    одинаковые центроид, медоид и набор кандидатов."""
+    from probes.degrade import cluster_bundle
+
+    bank, centers = _clustered_bank()
+    L, D = bank.sequences.shape[1], bank.sequences.shape[2]
+    base = centers[3].reshape(1, L, D)
+    a = base + torch.randn(1, L, D) * 0.05
+    b = base + torch.randn(1, L, D) * 0.05
+    pair = torch.cat([a, b])
+
+    cen, med, cand = cluster_bundle(bank, pair, 8, members=3)
+    assert torch.allclose(cen[0], cen[1], atol=1e-5), "центроид зависит от цели"
+    assert torch.allclose(med[0], med[1], atol=1e-5), (
+        "медоид зависит от цели внутри кластера -- это утечка информации "
+        "сверх метки кластера, сравнение форм станет нечестным")
+    assert torch.allclose(cand[0], cand[1], atol=1e-5), (
+        "набор кандидатов зависит от цели внутри кластера")
+
+
+def test_cluster_bundle_candidates_are_real_points_of_the_manifold():
+    """Медоид и кандидаты -- настоящие элементы банка, а не средние.
+
+    В этом весь смысл разложения: centroid лежит ВНЕ многообразия, medoid и
+    кандидаты -- на нем. Разность между ними и измеряет цену схода с
+    многообразия. Если кандидаты окажутся усреднениями, измеряться будет
+    ничто."""
+    from probes.degrade import cluster_bundle
+
+    bank, _ = _clustered_bank()
+    L, D = bank.sequences.shape[1], bank.sequences.shape[2]
+    flat_bank = bank.sequences.reshape(bank.sequences.shape[0], -1)
+    target = bank.sequences[[5, 40]] + torch.randn(2, L, D) * 0.02
+
+    cen, med, cand = cluster_bundle(bank, target, 8, members=4)
+    for i in range(2):
+        d = (flat_bank - med[i].reshape(-1)).pow(2).sum(dim=1)
+        assert d.min() < 1e-6, "медоид не совпал ни с одним элементом банка"
+        for j in range(cand.shape[1]):
+            d = (flat_bank - cand[i, j].reshape(-1)).pow(2).sum(dim=1)
+            assert d.min() < 1e-6, f"кандидат {j} не из банка"
+    # Центроид усреднен, то есть почти наверняка НЕ элемент банка
+    d = (flat_bank - cen[0].reshape(-1)).pow(2).sum(dim=1)
+    assert d.min() > 1e-8, "центроид совпал с элементом банка -- кластер из одного"
+
+
+def test_codebook_is_cached_so_levels_stay_comparable():
+    """Кодовая книга считается один раз на банк и уровень.
+
+    Две причины. Во-первых, k-means на каждом батче при K=512 это минуты на
+    пустом месте. Во-вторых и важнее: точки оси обязаны отличаться ТОЛЬКО
+    уровнем, а пересчет с другим состоянием генератора дал бы разные центроиды
+    на разных батчах одного прогона."""
+    from probes.degrade import sequence_codebook
+
+    bank, _ = _clustered_bank()
+    first = sequence_codebook(bank, 4)
+    second = sequence_codebook(bank, 4)
+    assert first[0] is second[0] and first[1] is second[1], (
+        "кодовая книга пересчитывается -- центроиды поедут между батчами")
+
+
+def test_dilute_stage_reaches_the_region_where_the_classifier_lives():
+    """Непрерывная ось нужна именно низкими уровнями.
+
+    Реальный классификатор несет один бит: восстановимость его условия на
+    уровне пола 0.4605. Дискретные режимы в этот регион не попали (seqquant
+    дал 0.307-0.320, то есть НИЖЕ пола, quantize -- 0.355 и выше). Без низких
+    уровней dilute сравнивать классификатор по-прежнему не с чем."""
+    stage = _probes_stage()
+    assert "probes-dilute" in stage, "нет стадии непрерывной оси"
+    assert "PROBE_DEGRADE=dilute" in stage
+    assert "PROBE_DILUTE:-1 2 5" in stage, (
+        "в свипе нет низких уровней -- ось не доходит до региона "
+        "классификатора")
+    assert "PROBE_DEGRADE=noisy" in stage, (
+        "нет второй непрерывной оси: совпадение двух РАЗНЫХ по характеру "
+        "порчей и есть доказательство, что важен объем информации")
+
+
+def test_set_stage_compares_three_shapes_at_matched_information():
+    """Стадия probes-set обязана гонять все три формы на ОДНОМ уровне.
+
+    centroid -> medoid измеряет цену схода с многообразия, medoid -> mixture --
+    выигрыш множественной формы. Без любой из трех точек разложение не
+    считается, и объяснить, почему один бит классификатора обыгрывает два бита
+    точки-цели, нечем."""
+    stage = _probes_stage()
+    assert "probes-set" in stage, "нет стадии сравнения форм условия"
+    for shape in ("centroid", "medoid", "mixture"):
+        assert shape in stage, f"форма {shape} не запускается"
+    assert "PROBE_SET=${SHAPE}" in stage
+    assert "PROBE_SEQ_BANK" in stage, (
+        "банк последовательностей не задан: при бюджете в позициях их "
+        "набирается 192, и K=256 падает на k-means")
+
+
+def test_every_seqquant_launch_sizes_the_sequence_bank():
+    """Квантизация по темам требует банка БОЛЬШЕ числа тем.
+
+    Прогон 24.10: seqquant K=256 упал с 'центроидов (256) не меньше точек банка
+    (192)' -- бюджет банка задан в позициях, а последовательностей из него
+    выходит в сорок раз меньше. Проверяем все запуски seqquant разом."""
+    stage = _probes_stage()
+    for line in stage.splitlines():
+        if "PROBE_DEGRADE=seqquant" in line:
+            assert "PROBE_SEQ_BANK" in line, (
+                "запуск seqquant без размера банка последовательностей: "
+                + line.strip())
+
+
+def test_help_covers_the_whole_header():
+    """Справка печатается диапазоном строк, и этот диапазон обязан покрывать
+    шапку целиком.
+
+    Стадию легко добавить и забыть про диапазон -- тогда она есть, работает, но
+    в справке ее не видно, и узнать о ней можно только из кода."""
+    import re
+
+    body = open("run_wikipedia.sh", encoding="utf-8").read()
+    lines = body.splitlines()
+    m = re.search(r"sed -n '2,(\d+)p'", body)
+    assert m, "справка печатается не диапазоном строк -- поправьте тест"
+    shown = int(m.group(1))
+    head_end = next(i for i, l in enumerate(lines) if l.startswith("set -e"))
+    assert shown >= head_end - 1, (
+        f"справка печатает {shown} строк, а шапка кончается на {head_end}: "
+        f"последние стадии в нее не попадут")
+    for stage in ("probes-dilute", "probes-set", "probes-infoaxis"):
+        assert any(stage in l for l in lines[1:shown]), (
+            f"стадии {stage} нет в печатаемой справке")
+
+
+def _write_dump(tmp_path, name, refs, as_dict=True):
+    import json
+
+    d = tmp_path / name
+    d.mkdir()
+    rows = [{"TRG": t, "GEN": "x", "SRC": "y"} for t in refs]
+    payload = {"wikipedia": rows} if as_dict else rows
+    f = d / "87500-N=50-seed=0-len=1-gs=0.0.json"
+    f.write_text(json.dumps(payload), encoding="utf-8")
+    return str(f)
+
+
+def test_eval_alignment_check_catches_different_example_sets(tmp_path):
+    """СРАВНИМОСТЬ ТАБЛИЦЫ. Подходы обязаны быть оценены на одних примерах.
+
+    Дампы 24.10: genie против diffuseq -- 5000/5000 позиционно, genie против
+    guidance -- 1500/5000 при пересечении множеств 4500. Причина в сборе
+    генераций: ранг останавливается на границе батча за порогом
+    num_gen_texts // world_size, а у guidance validation.batch_size=128 вместо
+    500. На выводы это не влияет (сдвиг среднего ~0.0005 при эффектах в сотых),
+    но таблицу статьи так строить нельзя, и узнать об этом надо ДО прогона на
+    20 сидов."""
+    import subprocess
+
+    same_a = _write_dump(tmp_path, "approach-a", [f"ref {i}" for i in range(20)])
+    same_b = _write_dump(tmp_path, "approach-b", [f"ref {i}" for i in range(20)],
+                         as_dict=False)
+    shifted = _write_dump(tmp_path, "approach-c",
+                          [f"ref {i}" for i in range(2, 22)])
+
+    def run(*paths):
+        return subprocess.run(
+            [sys.executable, "check_eval_alignment.py", *paths],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    ok = run(same_a, same_b)
+    assert ok.returncode == 0, (
+        "одинаковые наборы объявлены разными: " + ok.stdout)
+
+    bad = run(same_a, shifted)
+    assert bad.returncode == 1, (
+        "разные наборы приняты за одинаковые -- проверка бесполезна: "
+        + bad.stdout)
+    assert "GUIDANCE_EVAL_BS" in bad.stdout, (
+        "в отчете нет причины расхождения, и починить его по нему нельзя")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v"]))
