@@ -512,20 +512,49 @@ def test_summary_survives_an_empty_diagnostic():
         "сводка снова форматирует возможный None напрямую")
 
 
+def test_target_json_accepts_the_format_estimate_writes():
+    """estimate() сохраняет СЛОВАРЬ {датасет: [примеры]}, а не список -- в имени
+    файла это видно по len=1 (число датасетов). Двухэтапная стадия 24.10 падала
+    здесь с 'unhashable type: slice' на срезе словаря, уже после загрузки
+    модели и датасета."""
+    import json
+    import tempfile
+
+    from probe_recon_guidance import _load_target_texts
+
+    rows = [{"SRC": "a", "TRG": "b", "GEN": "c"}]
+    with tempfile.TemporaryDirectory() as d:
+        as_dict = os.path.join(d, "dict.json")
+        with open(as_dict, "w", encoding="utf-8") as f:
+            json.dump({"wikipedia": rows}, f)
+        assert _load_target_texts(as_dict) == rows
+
+        as_list = os.path.join(d, "list.json")
+        with open(as_list, "w", encoding="utf-8") as f:
+            json.dump(rows, f)
+        assert _load_target_texts(as_list) == rows
+
+        many = os.path.join(d, "many.json")
+        with open(many, "w", encoding="utf-8") as f:
+            json.dump({"a": rows, "b": rows}, f)
+        with pytest.raises(SystemExit):
+            _load_target_texts(many)
+
+
 def test_sweep_searches_below_the_measured_overshoot():
     """Замер 24.10: при доле шага 0.1 все режимы оказались НИЖЕ пола, то есть
     0.1 уже за пиком. При lambda=10 из ВКР доля была 0.007-0.017 и давала
     прирост. Значит свип обязан покрывать именно этот диапазон, а не идти
     вверх от 0.1 -- иначе оптимума он не найдет."""
     stage = _probes_stage()
-    assert "PROBE_RATIOS:-0.002" in stage, (
-        "свип не спускается ниже измеренного перелета")
+    assert "PROBE_RATIOS:-0.003" in stage, (
+        "свип не сужен вокруг измеренного пика 0.005")
     import re
     ratios = re.search(r"PROBE_RATIOS:-([0-9. ]+)\}", stage)
     assert ratios, "диапазон свипа не задан"
     values = [float(x) for x in ratios.group(1).split()]
-    assert min(values) <= 0.005 and max(values) <= 0.05, (
-        f"диапазон {values} не накрывает измеренную рабочую область 0.007-0.017")
+    assert min(values) <= 0.004 and max(values) <= 0.02, (
+        f"диапазон {values} не накрывает измеренный пик 0.005")
 
 
 def test_sigmoid_factor_changes_the_gradient():

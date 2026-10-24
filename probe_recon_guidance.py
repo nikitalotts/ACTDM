@@ -150,9 +150,23 @@ def make_recon_guidance(runner, scale, jacobian, gamma2, diag,
 
 
 def _load_target_texts(path):
+    """Список примеров из generated_texts/<prefix>/<шаг>-...json.
+
+    estimate() сохраняет НЕ список, а словарь {имя_датасета: [примеры]} -- в
+    имени файла это видно по len=1 (число датасетов, а не примеров). Прогон
+    24.10 падал здесь с 'unhashable type: slice' на срезе словаря.
+    """
     with open(path, encoding="utf-8") as f:
-        rows = _json.load(f)
-    return rows
+        data = _json.load(f)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if len(data) != 1:
+            raise SystemExit(
+                f"{path}: ожидался один датасет, а в файле {sorted(data)}. "
+                f"Укажите json с одним датасетом.")
+        return next(iter(data.values()))
+    raise SystemExit(f"{path}: неизвестный формат {type(data).__name__}")
 
 
 def main():
