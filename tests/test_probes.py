@@ -582,6 +582,220 @@ def test_prefix_mask_counts_content_positions_not_raw_ones():
     assert prefix_mask(content, 99)[1].sum() == 3
 
 
+def _prefix_case(B=4, L=9, D=6, seed=0):
+    """Батч с явным скелетом: [CLS] + 6 содержательных + [SEP] + паддинг."""
+    torch.manual_seed(seed)
+    target = torch.randn(B, L, D)
+    content = torch.zeros(B, L, dtype=torch.bool)
+    content[:, 1:7] = True
+    return target, content
+
+
+def test_prefix_display_target_is_degraded_not_the_oracle():
+    """ЦЕЛЬ ДЛЯ ОТОБРАЖЕНИЯ обязана зависеть от уровня.
+
+    Раньше prefix возвращал target как есть, и steer = decode(z) был полным
+    референсом: target_recovery читался 0.998 на ВСЕХ k. Пока осью x был
+    косинус, это была косметика; теперь восстановимость цели -- это и есть
+    ось x, и prefix вырождался в вертикальную прямую (четыре разных качества
+    при одном x). Именно на prefix держится вывод 'номинальные биты качество
+    не предсказывают', так что точка без координаты x -- это вывод без опоры.
+    """
+    from probes.degrade import content_position_mean, degrade_target
+
+    target, content = _prefix_case()
+    fill = content_position_mean(target, content)
+
+    def gap(k):
+        z, _, _ = degrade_target("prefix", target, k, content=content,
+                                 pos_mean=fill)
+        return (z - target)[content].pow(2).mean().item()
+
+    assert gap(1) > 0, "цель при k=1 совпала с оракулом -- деградации нет"
+    gaps = [gap(k) for k in (1, 2, 4, 6)]
+    assert gaps == sorted(gaps, reverse=True), (
+        f"цель не приближается к истине с ростом k: {gaps}")
+    assert gaps[-1] == pytest.approx(0.0, abs=1e-6), (
+        "при k = числу содержательных позиций цель обязана стать оракулом")
+
+
+def test_prefix_display_target_keeps_the_sequence_skeleton():
+    """Спецтокены и паддинг не трогаем.
+
+    Скелет одинаков на всех уровнях, поэтому восстановимость меряет
+    СОДЕРЖАНИЕ, а не длину: подмена [CLS] декодировалась бы лишним словом, а
+    подмена позиции [SEP] сдвигала бы обрезку в latents_to_tokens, и кривая
+    поехала бы по длине."""
+    from probes.degrade import degrade_target
+
+    target, content = _prefix_case()
+    for k in (0, 1, 3):
+        z, _, _ = degrade_target("prefix", target, k, content=content)
+        assert torch.equal(z[~content], target[~content]), (
+            f"k={k}: подменены позиции вне содержательных")
+
+
+def test_prefix_display_target_does_not_touch_the_gradient():
+    """СТРАЖ: подмена цели для отображения обязана быть невидимой для guidance.
+
+    make_axis_guidance домножает corr на ту же позиционную маску, поэтому
+    внутри нее z совпадает с target побитово, а снаружи вклад и так обнулен.
+    Если это сломается, точки оси начнут отличаться не только уровнем, и
+    сравнивать их будет нельзя."""
+    from probes.degrade import degrade_target
+
+    target, content = _prefix_case()
+    x_0 = torch.randn_like(target)
+    for k in (1, 2, 5):
+        z, mask, _ = degrade_target("prefix", target, k, content=content)
+        m = mask.unsqueeze(-1)
+        assert torch.equal((z - x_0) * m, (target - x_0) * m), (
+            f"k={k}: градиент изменился -- цель для отображения протекла в него")
+
+
+def test_prefix_fill_is_a_position_mean_that_ignores_padding():
+    """Якорь закрытых позиций -- позиционное среднее по СОДЕРЖАТЕЛЬНЫМ примерам.
+
+    Encoder кладет в паддинг zero_emb. Усреднение вместе с ним тянуло бы хвост
+    последовательности к нулю тем сильнее, чем позиция дальше, то есть якорь
+    нес бы информацию о ДЛИНЕ -- ровно то, что эта ось мерить не должна."""
+    from probes.degrade import content_position_mean
+
+    target = torch.zeros(4, 3, 2)
+    content = torch.zeros(4, 3, dtype=torch.bool)
+    # В позиции 1 настоящие токены только у двух примеров из четырех,
+    # у остальных там "паддинг" с огромным значением.
+    content[:2, 1] = True
+    target[:2, 1] = torch.tensor([[1.0, 3.0], [3.0, 5.0]])
+    target[2:, 1] = 1000.0
+    content[:, 0] = True
+
+    got = content_position_mean(target, content)
+    assert got.shape == (3, 2), (
+        f"ожидалось позиционное среднее [L, D], получено {tuple(got.shape)} -- "
+        f"общее среднее по батчу и позициям схлопывает структуру позиций")
+    assert got[1].tolist() == pytest.approx([2.0, 4.0]), (
+        f"паддинг попал в среднее: {got[1].tolist()}")
+
+
+def test_signal_survival_measures_alignment_in_x0_space():
+    """Классификатор и оракульные деградации обязаны мериться ОДНОЙ линейкой.
+
+    probe_information_axis перешел на cos_x0 после того, как замер показал,
+    что косинус в пространстве x_t измеряет не то: при t -> 1 mu ~ 5e-9, и
+    mu*true - x_t вырождается в -x_t, то есть в 'убрать шум'. Если
+    probe_signal_survival останется на снятой оси, 0.009 у классификатора и
+    косинусы оракульных деградаций будут числами с разных шкал, и ставить их
+    в одно предложение нельзя."""
+    import probe_signal_survival
+
+    src = inspect.getsource(probe_signal_survival.main)
+    assert 'trg_x - out["x_0"]' in src, (
+        "нет направления к истине в пространстве x_0")
+    for key in ("cos_x0_grad", "cos_x0_score", "cos_x0_random_rms"):
+        assert key in src, f"не считается {key}"
+    # Снятая ось остается рядом: расхождение двух линеек -- результат, а не
+    # предположение, и выбрасывать старую величину нельзя.
+    assert "dir_true = mu * trg_x - x_t" in src, (
+        "снятая ось удалена -- расхождение с ней больше нечем показать")
+
+
+def test_signed_random_cosine_cannot_be_a_baseline():
+    """Почему рядом с косинусом печатается именно RMS, а не среднее.
+
+    Косинус случайного вектора симметричен, поэтому его знаковое среднее
+    сходится к нулю с ростом выборки: отношение 'во сколько раз градиент лучше
+    случайного' по такому знаменателю можно сделать любым, просто взяв больше
+    примеров. Так и появилось '0.009 против 0.0001, в 90 раз лучше'. Честный
+    масштаб -- СКО, и оно равно 1/sqrt(dim)."""
+    torch.manual_seed(0)
+    dim, n = 4096, 4000
+    ref = torch.randn(dim)
+    ref = ref / ref.norm()
+    v = torch.randn(n, dim)
+    cos = (v @ ref) / v.norm(dim=1)
+
+    signed_mean = cos.mean().abs().item()
+    root_mean_square = cos.pow(2).mean().sqrt().item()
+    expected = dim ** -0.5
+
+    assert root_mean_square == pytest.approx(expected, rel=0.1), (
+        f"СКО случайного косинуса {root_mean_square:.5f} "
+        f"против 1/sqrt(dim) = {expected:.5f}")
+    assert signed_mean < root_mean_square / 10, (
+        "знаковое среднее не сходится к нулю -- тест не воспроизводит эффект")
+
+
+def test_position_stats_keep_the_position_structure():
+    """dilute и noisy обязаны опираться на ПОЗИЦИОННЫЕ статистики.
+
+    Докстринг всегда обещал позиционное среднее, а код считал общее по батчу и
+    позициям. При alpha=0 это делало якорь не «средним продолжением», а
+    постоянной последовательностью -- и портило именно нижние уровни dilute
+    (стадия пускает 1%, 2%, 5%), ради которых режим и вводился."""
+    from probes.degrade import content_position_stats, degrade_target
+
+    torch.manual_seed(0)
+    target = torch.randn(8, 5, 4)
+    # Позиции заведомо разные по масштабу: так общее среднее от позиционного
+    # отличается, и подмена одного другим видна.
+    target[:, 0] += 50.0
+    content = torch.ones(8, 5, dtype=torch.bool)
+
+    mean, std = content_position_stats(target, content)
+    assert mean.shape == (5, 4) and std.shape == (5, 4)
+    assert mean[0].mean() > 40, "позиционное среднее схлопнуто в общее"
+
+    z, _, _ = degrade_target("dilute", target, 0, content=content)
+    assert torch.allclose(z, mean.unsqueeze(0).expand_as(z), atol=1e-4), (
+        "alpha=0 обязан давать СРЕДНЕЕ ПРОДОЛЖЕНИЕ, а не постоянный вектор")
+    assert not torch.allclose(z[0, 0], z[0, 1], atol=1.0), (
+        "все позиции совпали -- структура позиций потеряна")
+
+    full, _, _ = degrade_target("dilute", target, 100, content=content)
+    assert torch.allclose(full, target, atol=1e-3), "alpha=1 обязан быть оракулом"
+
+
+def test_commitment_has_a_deterministic_drift_branch():
+    """Ветвление по шуму не отвечает на вопрос про guidance.
+
+    Пересев дает возмущение НУЛЕВОГО СРЕДНЕГО, которое вдоль траектории
+    частично гасится; guidance -- согласованный дрейф, он копится. Поэтому
+    divergence по шуму занижает управляемость, причем в сторону исходной
+    гипотезы работы. Нужна вторая ветка: тот же сид (значит тот же шум
+    побитово) плюс дрейф той же доли шага."""
+    import probe_commitment
+
+    src = inspect.getsource(probe_commitment)
+    assert "def make_drift" in src, "нет ветки детерминированного дрейфа"
+    assert "divergence_drift" in src and "tau_commit_drift" in src, (
+        "дрейф не доходит до результата")
+    # Ключевое: обе ветки стартуют с ОДНОГО сида, иначе шум разный и
+    # расхождение нельзя приписать дрейфу.
+    body = inspect.getsource(probe_commitment.main)
+    assert body.count("set_seed(branch_seed)") == 2, (
+        "ветки с дрейфом и без идут по разному шуму -- сравнивать нечего")
+    # И дрейф не должен трогать глобальный генератор.
+    assert "generator=g_cpu" in body, (
+        "случайное направление берется из глобального RNG -- оно сдвинет шум "
+        "одной из веток")
+
+
+def test_geometry_has_a_matched_gaussian_null():
+    """H(q) без нуля не читается.
+
+    Это отношение двух медиан расстояний, и в высокой размерности сама
+    концентрация меры загоняет середины случайных пар в разреженные области.
+    whitened -- те же точки, только декоррелированные (проверка анизотропии),
+    images -- D=4 против 768. Нужен гауссиан тех же N и D."""
+    import probe_latent_geometry
+
+    src = inspect.getsource(probe_latent_geometry.main)
+    assert "matched_gaussian" in src, "нет гауссова нуля"
+    assert '"gauss"' in src
+    assert "encodings,gauss" in src, "нуль не считается по умолчанию"
+
+
 def test_kmeans_recovers_known_clusters():
     """Если k-means не находит очевидные кластеры на синтетике, числа режима
     quantize на реальных латентах ничего не значат."""
@@ -897,11 +1111,14 @@ def test_dilute_endpoints_and_monotonicity():
 
     torch.manual_seed(0)
     target = torch.randn(4, 6, 12)
-    mean = target.reshape(-1, 12).mean(dim=0)
+    # Среднее ПОЗИЦИОННОЕ, [L, D]: якорь нулевой информации -- это среднее
+    # продолжение, а не один вектор на все позиции.
+    mean = target.mean(dim=0)
+    assert mean.shape == (6, 12)
 
     assert torch.allclose(dilute_target(target, 1.0), target, atol=1e-5)
     z0 = dilute_target(target, 0.0)
-    assert torch.allclose(z0, mean.expand_as(z0), atol=1e-5)
+    assert torch.allclose(z0, mean.unsqueeze(0).expand_as(z0), atol=1e-5)
 
     def closeness(z):
         return -(z - target).pow(2).mean().item()

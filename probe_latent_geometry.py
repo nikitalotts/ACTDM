@@ -51,7 +51,9 @@
     ./probe_latent_geometry.sh
 
 Настройки через окружение:
-    PROBE_SPACES         (encodings,embeddings,whitened)  через запятую
+    PROBE_SPACES         (encodings,gauss,embeddings,whitened)  через запятую.
+                         gauss -- НУЛЬ: гауссиан с той же средней, ковариацией,
+                         тем же N и D. Без него H ни о чем не говорит
     PROBE_IMAGE_LATENTS  ()      путь к .npy с латентами картинок
     PROBE_BANK           (20000) сколько векторов в банке
     PROBE_ANCHORS        (512)   сколько опорных точек для H(q)
@@ -230,7 +232,8 @@ def main():
     config.training.batch_size_per_gpu = config.training.batch_size // dist.get_world_size()
 
     spaces = [s.strip() for s in os.environ.get(
-        "PROBE_SPACES", "encodings,embeddings,whitened").split(",") if s.strip()]
+        "PROBE_SPACES",
+        "encodings,gauss,embeddings,whitened").split(",") if s.strip()]
     image_path = os.environ.get("PROBE_IMAGE_LATENTS", "")
     bank_size = int(os.environ.get("PROBE_BANK", "20000"))
     n_anchors = int(os.environ.get("PROBE_ANCHORS", "512"))
@@ -305,9 +308,33 @@ def main():
         w = evecs @ torch.diag(evals.clamp_min(1e-8).rsqrt()) @ evecs.T
         return (x - mu) @ w
 
+    def matched_gaussian(x):
+        """Гауссиан с той же средней, ковариацией, тем же N и той же D.
+
+        ЭТО НУЛЬ ДЛЯ hole_ratio, и без него H читать нельзя. H -- отношение
+        двух медиан расстояний, и у него нет аналитического значения «нет
+        дыр»: в высокой размерности концентрация меры сама по себе загоняет
+        середины случайных пар в разреженные области, так что H заметно больше
+        единицы получается и на данных без всякой кластерной структуры.
+        `whitened` этот вопрос не закрывает -- это те же точки, только
+        декоррелированные, то есть проверка анизотропии, а не наличия дыр. А
+        `images` имеет D=4 против 768, и конечновыборочное смещение H сильно
+        зависит и от N, и от D, так что сравнение с ним тоже не яблоки к
+        яблокам. Сравнивать надо с гауссианом ТЕХ ЖЕ N и D.
+        """
+        mu = x.mean(dim=0, keepdim=True)
+        cov = torch.cov((x - mu).T)
+        cov = cov + 1e-4 * torch.eye(x.shape[1], device=x.device, dtype=cov.dtype)
+        chol = torch.linalg.cholesky(cov.double()).to(x.dtype)
+        g = torch.Generator(device="cpu").manual_seed(config.seed)
+        z = torch.randn(x.shape, generator=g).to(x.device)
+        return mu + z @ chol.T
+
     banks = {}
     if "encodings" in spaces:
         banks["encodings"] = enc
+    if "gauss" in spaces:
+        banks["gauss"] = matched_gaussian(enc)
     if "embeddings" in spaces:
         banks["embeddings"] = emb
     if "whitened" in spaces:

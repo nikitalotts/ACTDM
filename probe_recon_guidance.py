@@ -89,7 +89,7 @@ from utils.util import parse, set_seed
 def make_recon_guidance(runner, scale, jacobian, gamma2, diag,
                         scale_mode="adaptive", target_ratio=0.1):
     """Градиент log N(z; x_0(x_t), gamma^2 I) по x_t. Цель задается на батч."""
-    state = {"target": None}
+    state = {"target": None, "content": None}
 
     def fn(x_t, t, out, cond=None, cond_mask=None, attention_mask=None,
            x_0_self_cond=None, **kwargs):
@@ -130,19 +130,29 @@ def make_recon_guidance(runner, scale, jacobian, gamma2, diag,
                 logp = -((target - x0) ** 2).sum() / (2.0 * gamma2)
                 grad = torch.autograd.grad(logp, xg)[0]
 
-        n_s = out["score"].flatten(1).norm(dim=1).clamp_min(1e-12)
+        # Нормы МАСКИРОВАННЫЕ. На паддинг-позициях цель это zero_emb, а x_0 --
+        # что предскажет сеть; у режима shuffled скелет соседнего примера еще и
+        # другой, так что их разность вполне заметна. Входя в n_g, она занижала
+        # бы коэффициент, и доля шага на содержательных позициях оказывалась бы
+        # меньше запрошенной -- по-разному у разных режимов цели, то есть
+        # ровно там, где режимы сравниваются между собой.
+        cm = state["content"]
+        nrm = ((lambda v: masked_norm(v, cm)) if cm is not None
+               else (lambda v: v.flatten(1).norm(dim=1)))
+
+        n_s = nrm(out["score"]).clamp_min(1e-12)
         if scale_mode == "adaptive":
             # Сила задается ДОЛЕЙ шага, а не постоянным множителем: иначе
             # 1/mu_t выносит траекторию на первом же шаге, а на остальных
             # guidance оказывается рассогласован по уровню шума в сотни раз.
-            n_g = grad.flatten(1).norm(dim=1).clamp_min(1e-12)
+            n_g = nrm(grad).clamp_min(1e-12)
             coef = (target_ratio * n_s / n_g).view(-1, 1, 1)
         else:
             coef = torch.full_like(n_s, scale).view(-1, 1, 1)
 
         g = coef * grad
         with torch.no_grad():
-            diag["rel_norm"] += (g.flatten(1).norm(dim=1) / n_s).cpu().tolist()
+            diag["rel_norm"] += (nrm(g) / n_s).cpu().tolist()
         return g
 
     fn.state = state
@@ -299,6 +309,7 @@ def main():
                     attention_mask=tok["attention_mask"].to(runner.device))
 
         guidance_fn.state["target"] = target
+        guidance_fn.state["content"] = content_mask(runner, batch["input_ids_trg"])
 
         set_seed(config.seed + b_idx)
         lat = reverse_process(

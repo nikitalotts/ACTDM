@@ -43,8 +43,8 @@ def kmeans(x: torch.Tensor, k: int, iters: int = 25, seed: int = 0,
 
     Своя реализация, а не sklearn: данные уже на карте, и гонять 8192x768 через
     CPU дороже, чем посчитать два десятка итераций Ллойда прямо здесь.
-    Инициализация детерминированная (первые k точек случайной перестановки) --
-    точки оси должны воспроизводиться между прогонами.
+    Инициализация -- k-means++ с фиксированным сидом (см. комментарий ниже):
+    детерминированная, то есть точки оси воспроизводятся между прогонами.
     """
     if k >= x.shape[0]:
         raise ValueError(f"центроидов ({k}) не меньше точек банка ({x.shape[0]})")
@@ -109,19 +109,52 @@ def content_position_mean(target: torch.Tensor,
     позиция дальше, то есть якорь нес бы информацию о ДЛИНЕ. Позиции, где
     содержательных примеров не нашлось вовсе, получают общее среднее.
     """
+    return content_position_stats(target, content)[0]
+
+
+def content_position_stats(target: torch.Tensor, content: torch.Tensor):
+    """Позиционные среднее и СКО по содержательным позициям. -> ([L,D], [L,D]).
+
+    ПОЧЕМУ ПОЗИЦИОННЫЕ, А НЕ ОБЩИЕ. Позиционная статистика энкодингов BERT
+    сильно неоднородна: нулевая позиция это всегда [CLS], последняя
+    содержательная соседствует с [SEP], пунктуация тяготеет к концу
+    предложения. Общее среднее по батчу и позициям схлопывает эту структуру в
+    одну точку, и якорь «нулевой информации» перестает быть средним
+    продолжением -- он становится постоянной последовательностью, которая
+    декодируется вырожденным повтором. Для dilute это портит именно НИЖНИЕ
+    уровни (стадия пускает 1%, 2%, 5%), ради которых режим и вводился.
+
+    Паддинг исключен по той же причине, что и в среднем: иначе статистика
+    хвоста несла бы информацию о длине.
+    """
     m = content.unsqueeze(-1).to(torch.float32)
     x = target.float() * m
-    s = x.sum(dim=0)                                      # [L, D]
     n = m.sum(dim=0)                                      # [L, 1]
-    glob = x.flatten(0, 1).sum(dim=0) / m.sum().clamp_min(1.0)   # [D]
-    out = torch.where(n > 0, s / n.clamp_min(1.0),
-                      glob.unsqueeze(0).expand_as(s))
-    return out.to(target.dtype)
+    s = x.sum(dim=0)                                      # [L, D]
+    total = m.sum().clamp_min(1.0)
+
+    glob_mean = x.flatten(0, 1).sum(dim=0) / total        # [D]
+    mean = torch.where(n > 0, s / n.clamp_min(1.0),
+                       glob_mean.unsqueeze(0).expand_as(s))
+
+    # Дисперсия тоже только по содержательным: (E[x^2] - E[x]^2), смещенная
+    # оценка -- на позиции может оказаться один пример, и несмещенная там
+    # делилась бы на ноль.
+    s2 = (x * target.float() * m).sum(dim=0)              # [L, D]
+    var = torch.where(n > 0, s2 / n.clamp_min(1.0) - mean ** 2,
+                      torch.zeros_like(mean))
+    glob_std = (x.flatten(0, 1).pow(2).sum(dim=0) / total
+                - glob_mean ** 2).clamp_min(0).sqrt()     # [D]
+    std = torch.where(n > 0, var.clamp_min(0).sqrt(),
+                      glob_std.unsqueeze(0).expand_as(mean))
+
+    return mean.to(target.dtype), std.to(target.dtype)
 
 
 def degrade_target(mode: str, target: torch.Tensor, level: int,
                    bank=None, content: Optional[torch.Tensor] = None,
-                   seed: int = 0, fill: Optional[torch.Tensor] = None):
+                   seed: int = 0, pos_mean: Optional[torch.Tensor] = None,
+                   pos_std: Optional[torch.Tensor] = None):
     """Вернуть (деградированная цель, маска позиций или None, описание).
 
     mode:
@@ -158,10 +191,10 @@ def degrade_target(mode: str, target: torch.Tensor, level: int,
         # уровнях одинаков, поэтому восстановимость меряет СОДЕРЖАНИЕ, а не
         # длину. Утечка длины при этом постоянна вдоль оси и тренд дать не
         # может.
-        if fill is None:
-            fill = content_position_mean(target, content)
+        if pos_mean is None:
+            pos_mean = content_position_mean(target, content)
         keep = (mask | ~content).unsqueeze(-1)
-        z = torch.where(keep, target, fill.unsqueeze(0).to(target.dtype))
+        z = torch.where(keep, target, pos_mean.unsqueeze(0).to(target.dtype))
         # На градиент подмена не влияет: corr домножается на ту же mask, а
         # внутри нее z совпадает с target побитово. Закреплено тестом
         # test_prefix_display_target_does_not_touch_the_gradient.
@@ -192,13 +225,17 @@ def degrade_target(mode: str, target: torch.Tensor, level: int,
     if mode == "dilute":
         # level -- проценты: 100 это оракул, 0 это среднее (нулевая информация)
         a = level / 100.0
-        return (dilute_target(target, a), None,
+        if pos_mean is None and content is not None:
+            pos_mean = content_position_mean(target, content)
+        return (dilute_target(target, a, mean=pos_mean), None,
                 f"сжатие к среднему, alpha={a:g}")
 
     if mode == "noisy":
         # level -- проценты от собственного std данных
         f = level / 100.0
-        return (noisy_target(target, f, seed=seed), None,
+        if pos_std is None and content is not None:
+            pos_std = content_position_stats(target, content)[1]
+        return (noisy_target(target, f, seed=seed, std=pos_std), None,
                 f"изотропный шум, {level}% std")
 
     if mode == "rank":
@@ -265,19 +302,30 @@ def estimated_bits(mode: str, level: int, seq_len: int) -> Optional[float]:
 
 def dilute_target(target: torch.Tensor, alpha: float,
                   mean: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """z = mean + alpha * (target - mean). alpha=1 -- оракул, alpha=0 -- среднее."""
+    """z = mean + alpha * (target - mean). alpha=1 -- оракул, alpha=0 -- среднее.
+
+    mean ожидается ПОЗИЦИОННЫМ, [L, D]: якорь нулевой информации -- это среднее
+    продолжение, а не постоянный вектор. Считать его надо через
+    content_position_stats (исключает паддинг) и ОДИН раз на прогон, иначе
+    якорь дрожит между батчами. Откат без него -- позиционное среднее по
+    батчу: паддинг в него попадает, но структура позиций хотя бы сохраняется.
+    """
     if mean is None:
-        # Среднее по позициям внутри батча: позиционная статистика энкодингов
-        # сильно неоднородна ([CLS], пунктуация), общее среднее смазало бы ее.
-        mean = target.reshape(-1, target.shape[-1]).mean(dim=0)
+        mean = target.float().mean(dim=0)                 # [L, D]
     return (mean + alpha * (target.float() - mean)).to(target.dtype)
 
 
 def noisy_target(target: torch.Tensor, frac: float, seed: int = 0,
                  std: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """z = target + frac * std * eps, std -- поканальный масштаб самих данных."""
+    """z = target + frac * std * eps, std -- ПОЗИЦИОННЫЙ масштаб самих данных.
+
+    std ожидается [L, D] по той же причине, что и mean у dilute: разброс
+    энкодингов на позиции [CLS] и в середине продолжения отличается на
+    порядок, и один поканальный масштаб портил бы одни позиции и недошумлял
+    другие. Откат без него -- позиционное СКО по батчу.
+    """
     if std is None:
-        std = target.reshape(-1, target.shape[-1]).float().std(dim=0)
+        std = target.float().std(dim=0)                   # [L, D]
     g = torch.Generator(device="cpu").manual_seed(seed)
     eps = torch.randn(target.shape, generator=g).to(target.device)
     return (target.float() + frac * std * eps).to(target.dtype)

@@ -129,10 +129,10 @@ from create_config import create_config, metrics_for_mode
 from estimation_utils.metrics import compute_metric
 from probes.common import (
     build_probe_runner, content_mask, dump_json, encode_batch,
-    latents_to_tokens, log, masked_cosine, probe_loader, progress,
-    reverse_process,
+    latents_to_tokens, log, masked_cosine, masked_norm, probe_loader,
+    progress, reverse_process,
 )
-from probes.degrade import (cluster_bundle, content_position_mean,
+from probes.degrade import (cluster_bundle, content_position_stats,
                             degrade_target, estimated_bits)
 from probes.manifold import LatentBank
 from utils.util import parse, set_seed
@@ -181,8 +181,13 @@ def make_axis_guidance(runner, target_ratio, diag):
 
         grad = corr / mu
 
-        n_s = out["score"].flatten(1).norm(dim=1).clamp_min(1e-12)
-        n_g = grad.flatten(1).norm(dim=1).clamp_min(1e-12)
+        # Нормы МАСКИРОВАННЫЕ. На паддинг-позициях цель это zero_emb, а x_0 --
+        # что предскажет сеть; их разность входила бы в n_g и занижала бы
+        # коэффициент, то есть доля шага на содержательных позициях
+        # оказывалась бы меньше запрошенной, причем по-разному у режимов с
+        # разной длиной цели. Все соседние статистики здесь уже маскированы.
+        n_s = masked_norm(out["score"], content).clamp_min(1e-12)
+        n_g = masked_norm(grad, content).clamp_min(1e-12)
         g = (target_ratio * n_s / n_g).view(-1, 1, 1) * grad
 
         with torch.no_grad():
@@ -198,7 +203,7 @@ def make_axis_guidance(runner, target_ratio, diag):
             true_dir = mu * state["true"] - x_t
             diag["cos_to_true"] += masked_cosine(
                 g, true_dir, content).cpu().tolist()
-            diag["rel_norm"] += (g.flatten(1).norm(dim=1) / n_s).cpu().tolist()
+            diag["rel_norm"] += (masked_norm(g, content) / n_s).cpu().tolist()
         return g
 
     fn.state = state
@@ -305,7 +310,7 @@ def main():
     gen_texts, trg_texts, src_texts, steer_texts = [], [], [], []
     started = time.time()
     desc = ""
-    prefix_fill = None
+    anchor = None
 
     for b_idx, batch in enumerate(loader):
         if len(gen_texts) >= num_texts:
@@ -315,18 +320,19 @@ def main():
         cond_mask = batch.get("attention_mask_src")
         content = content_mask(runner, batch["input_ids_trg"])
 
-        if mode == "prefix" and prefix_fill is None:
-            # Якорь закрытых позиций считаем ОДИН раз, по первому батчу, и
-            # переиспользуем. Иначе «про эти позиции ничего не известно»
+        if mode in ("prefix", "dilute", "noisy") and anchor is None:
+            # Якорь считаем ОДИН раз, по первому батчу, и переиспользуем на
+            # всех остальных. Иначе «про это условие не говорит ничего»
             # означало бы разное на разных батчах, и ось x дрожала бы внутри
-            # одной точки -- при том что вся ось строится из 16 отдельных
-            # заданий, которые обязаны отличаться только уровнем.
-            prefix_fill = content_position_mean(trg_x, content)
+            # одной точки -- при том что вся ось собирается из отдельных
+            # заданий, которые обязаны отличаться ТОЛЬКО уровнем.
+            anchor = content_position_stats(trg_x, content)
 
-        z, pos_mask, desc = degrade_target(mode, trg_x, level, bank=bank,
-                                           content=content,
-                                           seed=config.seed + b_idx,
-                                           fill=prefix_fill)
+        z, pos_mask, desc = degrade_target(
+            mode, trg_x, level, bank=bank, content=content,
+            seed=config.seed + b_idx,
+            pos_mean=None if anchor is None else anchor[0],
+            pos_std=None if anchor is None else anchor[1])
         cand = None
         if set_mode != "centroid":
             centroid, medoid, members = cluster_bundle(
@@ -418,9 +424,10 @@ def main():
                   f"{math.log(set_members):.3f}")
         print("=" * 72)
         print("Точка оси: (восстановимость цели, качество генерации).")
-        print("Реальный классификатор: bert 0.5081 при поле 0.4605. Его "
-              "условие несет один бит, то есть восстановимость цели "
-              "на уровне пола.")
+        print("Сравнивать с полом без guidance и с реальным классификатором "
+              "надо по json\nтех прогонов, а не по числам в этой подписи: "
+              "они снимаются другой стадией,\nи зашитая здесь копия молча "
+              "устареет при любом перезапуске.")
 
     dump_json({
         "probe": "information_axis",
