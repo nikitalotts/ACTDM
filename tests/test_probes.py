@@ -11,6 +11,7 @@
 """
 import argparse
 import inspect
+import math
 import os
 import sys
 import types
@@ -794,6 +795,155 @@ def test_geometry_has_a_matched_gaussian_null():
     assert "matched_gaussian" in src, "нет гауссова нуля"
     assert '"gauss"' in src
     assert "encodings,gauss" in src, "нуль не считается по умолчанию"
+
+
+def _topic_bank(n_topics=4, per=24, L=5, D=12, seed=0):
+    """Банк, где темы РАЗЛИЧИМЫ по смыслу, но порядок слов случаен.
+
+    Так и устроены реальные данные: тему несёт средняя семантика абзаца, а не
+    конкретная последовательность. Банк, собранный иначе, не проверил бы то,
+    ради чего кластеризация переехала на пулированные векторы."""
+    from probes.manifold import LatentBank
+
+    torch.manual_seed(seed)
+    centres = torch.randn(n_topics, D) * 20.0
+    # Тема -- ПЛОТНО ВЫБРАННАЯ КРИВАЯ (кольцо) вокруг центра, а не гауссов шар
+    # и не разреженная оболочка. Это и есть геометрия, ради которой всё
+    # затевалось: середина кольца пуста, то есть среднее кластера лежит вне
+    # данных по построению, и удалённость от многообразия растёт монотонно,
+    # когда цель едет от кольца к центру.
+    #
+    # Шар не годится -- там центроид попадает в самую плотную область.
+    # Разреженная оболочка в высокой размерности тоже: соседи по ней дальше,
+    # чем её радиус, и зазор сначала ПАДАЕТ при движении внутрь. Оба варианта
+    # проверены и отвергнуты.
+    R = 2.5
+    idx = torch.arange(n_topics * per).float()
+    phase = (idx % per) / per * 2 * math.pi
+    ang = phase.unsqueeze(1) + torch.arange(L).float().unsqueeze(0) * 0.3
+    seqs = centres.repeat_interleave(per, dim=0).unsqueeze(1).expand(-1, L, -1).clone()
+    seqs[:, :, 0] += R * torch.cos(ang)
+    seqs[:, :, 1] += R * torch.sin(ang)
+    return LatentBank(seqs.reshape(-1, D).contiguous(), knn=8, dim=4,
+                      sequences=seqs.contiguous()), centres
+
+
+def test_sequence_clustering_survives_high_dimension():
+    """ПРИЧИНА ПОЧИНКИ. k-means по развёрнутым последовательностям вырождался.
+
+    Прогон 25.10: K = 4, 16, 64, 256 дали bert 0.3882 / 0.3943 / 0.3957 /
+    0.3973, то есть рост числа тем в 64 раза не изменил ничего, а три разных
+    примера получили один и тот же медоид. 1024 точки в 49152 измерениях почти
+    равноудалены, и кластеры схлопываются. Кластеризация переехала на
+    пулированные векторы; тест требует, чтобы темы РАЗЛИЧАЛИСЬ."""
+    from probes.degrade import cluster_bundle, sequence_codebook
+
+    bank, centres = _topic_bank()
+    centers, assign, pooled = sequence_codebook(bank, 4)
+    assert len(set(assign.tolist())) == 4, (
+        f"кластеры схлопнулись: занято {len(set(assign.tolist()))} из 4")
+
+    # Две цели из РАЗНЫХ тем обязаны получить разные медоиды. Именно это и
+    # сломалось на боевом прогоне.
+    a = bank.sequences[0:1]
+    b = bank.sequences[-1:]
+    _, med_a, _ = cluster_bundle(bank, a, 4)
+    _, med_b, _ = cluster_bundle(bank, b, 4)
+    assert not torch.allclose(med_a, med_b, atol=1e-3), (
+        "цели из разных тем получили один медоид -- кластеризация вырождена")
+
+
+def test_medoid_is_real_data_and_centroid_is_not():
+    """Вся конструкция держится на том, что медоид лежит НА многообразии, а
+    центроид -- нет. Если это перестанет быть так, цена схода с многообразия
+    измеряет не то."""
+    from probes.degrade import cluster_bundle
+
+    bank, _ = _topic_bank()
+    target = bank.sequences[5:9]
+    centroid, medoid, _ = cluster_bundle(bank, target, 4)
+
+    # Медоид обязан СОВПАДАТЬ с каким-то элементом банка.
+    d = (bank.sequences.unsqueeze(0) - medoid.unsqueeze(1)).pow(2).flatten(2).sum(2)
+    assert d.min(dim=1).values.max() < 1e-6, "медоид не является реальной точкой"
+    # Центроид -- нет.
+    dc = (bank.sequences.unsqueeze(0) - centroid.unsqueeze(1)).pow(2).flatten(2).sum(2)
+    assert dc.min(dim=1).values.min() > 1e-3, "центроид совпал с точкой банка"
+
+
+def test_candidates_are_spread_not_collapsed():
+    """Почему mixture дал ноль на боевом прогоне.
+
+    Кандидаты брались как четыре ближайших к центроиду и почти совпадали, так
+    что STEER у medoid и mixture выходил дословно одинаковым: множество было
+    неотличимо от точки. Теперь дальняя выборка, и набор обязан покрывать
+    кластер шире, чем его ближайшая окрестность."""
+    from probes.degrade import cluster_bundle
+
+    bank, _ = _topic_bank()
+    target = bank.sequences[3:5]
+    _, medoid, cand = cluster_bundle(bank, target, 4, members=4)
+
+    spread = (cand - medoid.unsqueeze(1)).pow(2).flatten(2).sum(2)   # [B, M]
+    assert spread[:, 0].max() < 1e-6, "первый кандидат обязан быть медоидом"
+    assert spread[:, 1:].min() > 1e-2, (
+        "кандидаты схлопнулись в медоид -- множества снова нет")
+    # И они должны отличаться друг от друга, а не только от медоида.
+    pair = (cand[:, 1:2] - cand[:, 2:3]).pow(2).flatten(2).sum(2)
+    assert pair.min() > 1e-3, "кандидаты совпали между собой"
+
+
+def test_offmanifold_sweep_keeps_information_and_moves_off_data():
+    """РЕШАЮЩИЙ ИНВАРИАНТ. beta меняет ТОЛЬКО удалённость цели от данных.
+
+    Концы свипа -- медоид и центроид одного кластера, то есть обе точки, как и
+    любая промежуточная, определяются ровно меткой кластера. Если beta начнёт
+    менять информацию, свип перестанет отвечать на свой вопрос."""
+    from probes.degrade import cluster_bundle, offmanifold_mix
+
+    bank, _ = _topic_bank()
+    target = bank.sequences[7:11]
+    centroid, medoid, _ = cluster_bundle(bank, target, 4)
+
+    assert torch.allclose(offmanifold_mix(bank, target, 4, 0.0), medoid, atol=1e-5)
+    assert torch.allclose(offmanifold_mix(bank, target, 4, 1.0), centroid, atol=1e-5)
+
+    # Удалённость от данных обязана расти монотонно по beta -- это ось x замера.
+    gaps = [bank.manifold_gap(offmanifold_mix(bank, target, 4, b)).mean().item()
+            for b in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    assert gaps == sorted(gaps), f"удалённость не растёт по beta: {gaps}"
+    assert gaps[-1] > gaps[0] * 1.5, (
+        f"центроид не дальше от данных, чем медоид: {gaps[0]:.3f} -> {gaps[-1]:.3f}")
+
+
+def test_manifold_gap_is_one_for_real_data():
+    """Шкала обязана быть безразмерной: у реальной точки данных зазор около 1.
+
+    Иначе число нельзя сравнивать между прогонами и чекпоинтами, и оно
+    повторит судьбу косинуса -- величина без базы."""
+    from probes.manifold import LatentBank
+
+    torch.manual_seed(0)
+    vecs = torch.randn(600, 8)
+    bank = LatentBank(vecs, knn=8, dim=3)
+    real = vecs[:16].reshape(4, 4, 8)
+
+    gap = bank.manifold_gap(real)
+    assert 0.5 < gap.median().item() < 2.0, (
+        f"зазор у реальных точек {gap.median().item():.3f}, ожидалось около 1")
+    far = bank.manifold_gap(real + 50.0)
+    assert far.min() > 10 * gap.max(), "точка в пустоте не отличается от данных"
+
+
+def test_offmanifold_stage_sweeps_beta_at_fixed_information():
+    """Свип обязан быть в оркестраторе, с обоими концами и серединой."""
+    stage = _probes_stage()
+    assert "probes-offmanifold" in stage, "нет стадии цены схода с многообразия"
+    assert "PROBE_DEGRADE=offmanifold" in stage
+    assert "PROBE_BETAS:-0 10 25 50 75 90 100" in stage, (
+        "свип обязан включать оба конца: beta=0 это медоид, 100 -- центроид")
+    assert "PROBE_TOPICS_LEVEL" in stage, (
+        "число тем задаётся отдельно от beta, иначе информация поедет вдоль свипа")
 
 
 def test_kmeans_recovers_known_clusters():

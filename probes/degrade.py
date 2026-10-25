@@ -154,7 +154,8 @@ def content_position_stats(target: torch.Tensor, content: torch.Tensor):
 def degrade_target(mode: str, target: torch.Tensor, level: int,
                    bank=None, content: Optional[torch.Tensor] = None,
                    seed: int = 0, pos_mean: Optional[torch.Tensor] = None,
-                   pos_std: Optional[torch.Tensor] = None):
+                   pos_std: Optional[torch.Tensor] = None,
+                   topic_level: Optional[int] = None):
     """Вернуть (деградированная цель, маска позиций или None, описание).
 
     mode:
@@ -212,15 +213,24 @@ def degrade_target(mode: str, target: torch.Tensor, level: int,
     if mode == "seqquant":
         if bank is None:
             raise ValueError("seqquant требует банк латентов")
-        seq = bank.sequences
-        if seq is None:
+        if bank.sequences is None:
             raise ValueError("для seqquant банк должен хранить последовательности")
-        flat_bank = seq.reshape(seq.shape[0], -1).float()
-        centers = kmeans(flat_bank, level)
-        flat = target.reshape(target.shape[0], -1).float()
-        idx = torch.cdist(flat, centers).argmin(dim=1)
-        z = centers[idx].reshape(target.shape).to(target.dtype)
-        return z, None, f"{level} тем (центроиды последовательностей)"
+        # Идёт через ту же кодовую книгу, что и cluster_bundle: кластеризация
+        # по пулированным векторам, цель -- среднее ПОЛНЫХ последовательностей
+        # кластера. Так seqquant и форма условия сравнимы между собой, и обе
+        # свободны от вырождения k-means в 49152 измерениях.
+        centroid, _, _ = cluster_bundle(bank, target, level, members=1)
+        return centroid, None, f"{level} тем (среднее кластера)"
+
+    if mode == "offmanifold":
+        if bank is None or bank.sequences is None:
+            raise ValueError("offmanifold требует банк с последовательностями")
+        # level -- проценты: 0 это медоид (на многообразии), 100 -- центроид
+        # кластера (вне его). Информация постоянна на всём свипе.
+        b = level / 100.0
+        topics = int(topic_level or 16)
+        return (offmanifold_mix(bank, target, topics, b), None,
+                f"медоид->центроид, beta={b:g} при {topics} темах")
 
     if mode == "dilute":
         # level -- проценты: 100 это оракул, 0 это среднее (нулевая информация)
@@ -270,6 +280,9 @@ def estimated_bits(mode: str, level: int, seq_len: int) -> Optional[float]:
         return seq_len * math.log2(level)
     if mode == "seqquant":
         return math.log2(level)
+    if mode == "offmanifold":
+        # Информация постоянна вдоль свипа -- в этом весь смысл режима.
+        return math.log2(max(2, level if level > 1 else 2))
     if mode in ("dilute", "noisy", "rank"):
         # Для непрерывных осей номинальных бит нет, и это к лучшему: замеры
         # 24.10 показали, что номинальные биты качество НЕ предсказывают --
@@ -354,8 +367,31 @@ def noisy_target(target: torch.Tensor, frac: float, seed: int = 0,
 _CODEBOOK_CACHE = {}
 
 
+def pool_sequences(seq: torch.Tensor) -> torch.Tensor:
+    """Последовательности -> по вектору на каждую. [N,L,D] -> [N,D].
+
+    ПОЧЕМУ НЕ СЫРЫЕ 49152 ИЗМЕРЕНИЯ. Прогон 25.10 показал, что k-means по
+    развёрнутым последовательностям вырождается: уровни K=4, 16, 64 и 256 дали
+    bert 0.3882 / 0.3943 / 0.3957 / 0.3973 -- рост числа тем в 64 раза не
+    изменил ничего, три разных примера получили один и тот же медоид, а все
+    центроиды декодировались в «s the the the the». Причина не в том, что тема
+    не несёт информации, а в том, что 1024 точки в 49152 измерениях почти
+    равноудалены, и кластеры схлопываются в один.
+
+    Усреднение по позициям даёт 768 измерений и ровно ту величину, которая
+    отвечает за тему: средняя семантика токенов абзаца. Порядок слов при этом
+    теряется, и это правильно -- метка кластера и должна нести тему, а не
+    синтаксис.
+    """
+    return seq.reshape(seq.shape[0], -1, seq.shape[-1]).float().mean(dim=1)
+
+
 def sequence_codebook(bank, level: int):
-    """Центроиды и приписки по последовательностям банка. Считается один раз.
+    """Кодовая книга тем: (центры [K,D], приписки [N]) в ПУЛИРОВАННОМ пространстве.
+
+    Кластеризация идёт по pool_sequences, а не по сырым последовательностям --
+    см. его докстринг. Сами цели остаются полноразмерными: кластеризуем по
+    теме, а ведём к последовательности.
 
     Без кеша k-means пересчитывался бы на каждом батче: тот же банк, тот же
     сид, тот же ответ -- но при level=512 это минуты на пустом месте.
@@ -363,12 +399,12 @@ def sequence_codebook(bank, level: int):
     seq = bank.sequences
     if seq is None:
         raise ValueError("нужен банк с последовательностями")
-    key = (id(bank), "seq", level)
+    key = (id(bank), "seq-pooled", level)
     if key not in _CODEBOOK_CACHE:
-        flat = seq.reshape(seq.shape[0], -1).float()
-        centers = kmeans(flat, level)
-        assign = torch.cdist(flat, centers).argmin(dim=1)
-        _CODEBOOK_CACHE[key] = (centers, assign)
+        pooled = pool_sequences(seq)
+        centers = kmeans(pooled, level)
+        assign = torch.cdist(pooled, centers).argmin(dim=1)
+        _CODEBOOK_CACHE[key] = (centers, assign, pooled)
     return _CODEBOOK_CACHE[key]
 
 
@@ -380,37 +416,85 @@ def cluster_bundle(bank, target: torch.Tensor, level: int, members: int = 4):
     Возвращает centroid [B,L,D], medoid [B,L,D], cand [B,M,L,D].
     """
     seq = bank.sequences
-    centers, assign = sequence_codebook(bank, level)
+    centers, assign, pooled = sequence_codebook(bank, level)
     B, L, D = target.shape
-    flat = target.reshape(B, -1).float()
-    mine = torch.cdist(flat, centers).argmin(dim=1)              # [B]
+    mine = torch.cdist(pool_sequences(target), centers).argmin(dim=1)   # [B]
 
-    centroid = centers[mine].reshape(B, L, D)
-    flat_bank = seq.reshape(seq.shape[0], -1).float()
-
-    medoid = torch.empty(B, L * D, device=target.device, dtype=torch.float32)
-    cand = torch.empty(B, members, L * D, device=target.device,
+    centroid = torch.empty(B, L, D, device=target.device, dtype=torch.float32)
+    medoid = torch.empty(B, L, D, device=target.device, dtype=torch.float32)
+    cand = torch.empty(B, members, L, D, device=target.device,
                        dtype=torch.float32)
+    seqf = seq.float()
+
     for i in range(B):
         c = int(mine[i].item())
         idx = (assign == c).nonzero(as_tuple=True)[0]
         if idx.numel() == 0:
-            # Пустой кластер: кандидатов нет, честнее отступить к центроиду,
-            # чем молча подменить его соседним кластером.
-            medoid[i] = centers[c]
-            cand[i] = centers[c].unsqueeze(0).expand(members, -1)
+            # Пустой кластер: кандидатов нет. Честнее отступить к глобальному
+            # среднему, чем молча подменить кластер соседним.
+            centroid[i] = seqf.mean(dim=0)
+            medoid[i] = seqf.mean(dim=0)
+            cand[i] = seqf.mean(dim=0).unsqueeze(0).expand(members, -1, -1)
             continue
-        d = (flat_bank[idx] - centers[c]).pow(2).sum(dim=1)
-        order = idx[d.argsort()]
-        medoid[i] = flat_bank[order[0]]
-        take = order[:members]
-        if take.numel() < members:
+
+        # ЦЕНТРОИД -- среднее ПОЛНЫХ последовательностей кластера. Это точка
+        # ВНЕ многообразия по построению: усреднение реальных текстов текстом
+        # не является. Раньше здесь стоял центр k-means из 49152-мерного
+        # пространства, который вырождался в глобальное среднее и
+        # декодировался в «the the the» независимо от темы.
+        centroid[i] = seqf[idx].mean(dim=0)
+
+        # МЕДОИД -- самая центральная РЕАЛЬНАЯ последовательность кластера.
+        # Выбор по пулированному вектору, то есть по той же метке кластера;
+        # истина при выборе не используется, утечки сверх метки нет.
+        d = (pooled[idx] - centers[c]).pow(2).sum(dim=1)
+        medoid_pos = int(d.argmin().item())
+        medoid[i] = seqf[idx[medoid_pos]]
+
+        # КАНДИДАТЫ -- РАЗНЕСЁННЫЕ по кластеру, а не ближайшие к его центру.
+        # Прогон 25.10: четыре ближайших к центроиду почти совпадали, STEER у
+        # medoid и mixture выходил дословно одинаковым, и «множество» было
+        # неотличимо от точки. Берём жадную дальнюю выборку от медоида -- так
+        # набор покрывает кластер, то есть действительно задаёт МНОЖЕСТВО
+        # допустимых продолжений при той же метке.
+        chosen = [medoid_pos]
+        far = (pooled[idx] - pooled[idx][medoid_pos]).pow(2).sum(dim=1)
+        while len(chosen) < members and len(chosen) < idx.numel():
+            nxt = int(far.argmax().item())
+            chosen.append(nxt)
+            far = torch.minimum(
+                far, (pooled[idx] - pooled[idx][nxt]).pow(2).sum(dim=1))
+            far[torch.tensor(chosen, device=far.device)] = -1.0
+        while len(chosen) < members:
             # Кластер меньше M: добираем повторами. Повтор не добавляет
             # информации и не смещает softmax -- он лишь делит вес кандидата.
-            reps = members - take.numel()
-            take = torch.cat([take, take[:1].expand(reps)])
-        cand[i] = flat_bank[take]
+            chosen.append(chosen[0])
+        cand[i] = seqf[idx[torch.tensor(chosen, device=idx.device)]]
 
-    return (centroid.to(target.dtype),
-            medoid.reshape(B, L, D).to(target.dtype),
-            cand.reshape(B, members, L, D).to(target.dtype))
+    return (centroid.to(target.dtype), medoid.to(target.dtype),
+            cand.to(target.dtype))
+
+
+def offmanifold_mix(bank, target: torch.Tensor, level: int,
+                    beta: float):
+    """Интерполяция медоид -> центроид при НЕИЗМЕННОЙ информации.
+
+    РЕШАЮЩИЙ ЗАМЕР. Прогон 25.10 дал главный факт работы: при одной и той же
+    метке кластера цель-центроид даёт bert 0.394, а реальный элемент того же
+    кластера -- 0.496. Но это ОДНА пара точек, и законом она не является:
+    рецензент справедливо спросит, наблюдение это или правило.
+
+    Здесь beta непрерывно ведёт цель с многообразия в пустоту:
+        z(beta) = medoid + beta * (centroid - medoid)
+    beta=0 -- реальная последовательность кластера, beta=1 -- его среднее.
+    Информация при этом ПОСТОЯННА на всём свипе: обе крайние точки, как и
+    любая промежуточная, определяются ровно меткой кластера (log2 K бит) и
+    ничем больше. Меняется только удалённость цели от данных, и её измеряет
+    LatentBank.manifold_gap.
+
+    Если качество падает монотонно по beta и предсказывается этим
+    расстоянием -- «цель вне многообразия» становится измеримым законом, а не
+    наблюдением из двух точек.
+    """
+    centroid, medoid, _ = cluster_bundle(bank, target, level, members=1)
+    return medoid + beta * (centroid - medoid)

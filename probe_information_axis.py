@@ -229,7 +229,8 @@ def main():
     dist.barrier()
     config.training.batch_size_per_gpu = config.training.batch_size // dist.get_world_size()
 
-    modes = ("none", "prefix", "quantize", "seqquant", "dilute", "noisy", "rank")
+    modes = ("none", "prefix", "quantize", "seqquant", "dilute", "noisy",
+             "rank", "offmanifold")
     mode = os.environ.get("PROBE_DEGRADE", "prefix")
     if mode not in modes:
         raise SystemExit(f"PROBE_DEGRADE={mode!r}: ожидается "
@@ -273,12 +274,16 @@ def main():
     set_seed(config.seed)
     runner = build_probe_runner(config)
 
+    # Сколько тем у offmanifold: метка кластера фиксирована вдоль свипа, но
+    # сам уровень квантизации задаётся отдельно, потому что level занят beta.
+    topic_level = int(os.environ.get("PROBE_TOPICS_LEVEL", "16"))
+
     bank = None
-    if mode in ("quantize", "seqquant", "rank"):
+    if mode in ("quantize", "seqquant", "rank", "offmanifold"):
         # Для seqquant банк должен быть заметно больше числа тем: при 8192
         # позициях целых последовательностей набиралось всего 192, и level=256
         # падал. Просим последовательности отдельным бюджетом.
-        need_seq = seq_bank if mode == "seqquant" else 0
+        need_seq = seq_bank if mode in ("seqquant", "offmanifold") else 0
         if mode == "seqquant" and need_seq <= level:
             raise SystemExit(
                 f"PROBE_SEQ_BANK={need_seq} не больше числа тем {level}: "
@@ -303,7 +308,7 @@ def main():
         print("=" * 72)
 
     diag = {"cos_to_true": [], "cos_x0": [], "rel_norm": [],
-            "set_entropy": [], "target_recovery": []}
+            "set_entropy": [], "target_recovery": [], "manifold_gap": []}
     guidance_fn = make_axis_guidance(runner, target_ratio, diag)
 
     loader = probe_loader(runner, split="test", batch_size=batch_size)
@@ -332,7 +337,8 @@ def main():
             mode, trg_x, level, bank=bank, content=content,
             seed=config.seed + b_idx,
             pos_mean=None if anchor is None else anchor[0],
-            pos_std=None if anchor is None else anchor[1])
+            pos_std=None if anchor is None else anchor[1],
+            topic_level=topic_level)
         cand = None
         if set_mode != "centroid":
             centroid, medoid, members = cluster_bundle(
@@ -348,6 +354,16 @@ def main():
         guidance_fn.state.update({"target": z, "true": trg_x, "cand": cand,
                                   "mask": pos_mask, "content": content,
                                   "sigma_frac": sigma_frac})
+
+        # НАСКОЛЬКО ЦЕЛЬ УДАЛЕНА ОТ ДАННЫХ. Вторая ось работы рядом с
+        # восстановимостью: 25.10 выяснилось, что при РОВНО одной информации
+        # (метка кластера) центроид даёт 0.394, а реальный элемент кластера --
+        # 0.496. Разницу между ними объясняет не информация, а вот эта
+        # величина, и без неё главный вывод держится на двух точках.
+        if bank is not None:
+            with torch.no_grad():
+                diag["manifold_gap"] += bank.manifold_gap(
+                    z, content).cpu().tolist()
 
         # Во что превращается сама ЦЕЛЬ после деградации -- вторая проверка
         # информативности, независимая от генерации.
@@ -415,6 +431,8 @@ def main():
             print(f"{k}: {v:0.5f}")
         print(f"\nвосстановимость цели (bert)      : {recovery['bert-score']:.5f}   <- ОСЬ X")
         print(f"качество генерации   (bert)      : {metrics['bert-score']:.5f}   <- ОСЬ Y")
+        print(f"удалённость цели от данных       : {fmt(mean(diag['manifold_gap']))}   "
+              f"<- ВТОРАЯ ОСЬ (1.0 = как у реальной точки)")
         print(f"cos(x0) условия с истиной        : {fmt(mean(diag['cos_x0']))}")
         print(f"cos(x_t) старая ось, непригодна  : {fmt(mean(diag['cos_to_true']))}")
         print(f"доля шага                        : {mean(diag['rel_norm']):.4f}")
@@ -445,6 +463,8 @@ def main():
         "target_recovery": recovery,
         "cos_to_true": mean(diag["cos_to_true"]),
         "cos_x0": mean(diag["cos_x0"]),
+        "manifold_gap": mean(diag["manifold_gap"]),
+        "topic_level": topic_level if mode == "offmanifold" else None,
         "set_shape": set_mode,
         "set_members": set_members if set_mode == "mixture" else None,
         "set_sigma_frac": sigma_frac if set_mode == "mixture" else None,

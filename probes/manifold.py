@@ -204,3 +204,64 @@ class LatentBank:
     def tangent_fraction(self, g: torch.Tensor, x: torch.Tensor,
                          mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         return self.fraction(g, self.project(g, x), mask)
+
+    @property
+    def nn_scale(self) -> float:
+        """Медианное расстояние от точки банка до ближайшего соседа.
+
+        Собственный масштаб данных. Все расстояния до многообразия делятся на
+        него, чтобы число было безразмерным и сравнивалось между прогонами и
+        чекпоинтами: 1.0 означает «так же далеко от данных, как типичная точка
+        данных от своего соседа».
+        """
+        if getattr(self, "_nn_scale", None) is None:
+            sub = self.bank[:min(2048, self.bank.shape[0])]
+            d = torch.cdist(sub, self.bank)
+            d.scatter_(1, torch.arange(sub.shape[0], device=d.device)
+                       .unsqueeze(1), float("inf"))
+            self._nn_scale = float(d.min(dim=1).values.median().item())
+        return self._nn_scale
+
+    def manifold_gap(self, x: torch.Tensor,
+                     mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Насколько точка удалена от многообразия данных. [B,L,D] -> [B].
+
+        ЗАЧЕМ ЭТО НУЖНО. Замер 25.10 дал главный факт работы: при РОВНО
+        одинаковой информации (метка кластера) цель-центроид даёт bert 0.394, а
+        реальный элемент того же кластера -- 0.496. Но это ОДНА пара точек, и
+        как закон она не читается: нужна непрерывная величина, по которой
+        падение качества предсказуемо. Вот она.
+
+        Считается как медианное по содержательным позициям расстояние до
+        ближайшего вектора банка, делённое на собственный масштаб данных
+        (nn_scale). У реальной точки данных значение около 1, у точки в
+        пустоте -- заметно больше.
+        """
+        xx = x.reshape(-1, x.shape[-1]).float()
+        # Держим ДВА ближайших, а не одно. Медоид -- это буквально элемент
+        # банка, и по одному ближайшему его зазор вышел бы нулевым, то есть
+        # нижний конец свипа схлопнулся бы в ноль и ось перестала бы работать.
+        # Та же причина, по которой hole_ratio исключает концы отрезка из
+        # поиска соседа. Закреплено тестом.
+        two = None
+        for s in range(0, self.bank.shape[0], self.bank_chunk):
+            d = torch.cdist(xx, self.bank[s:s + self.bank_chunk])
+            k = min(2, d.shape[1])
+            dv = torch.topk(d, k, dim=1, largest=False).values
+            if dv.shape[1] < 2:
+                dv = torch.cat([dv, dv[:, -1:]], dim=1)
+            two = dv if two is None else torch.topk(
+                torch.cat([two, dv], dim=1), 2, dim=1, largest=False).values
+        scale = max(self.nn_scale, 1e-12)
+        eps = 1e-4 * scale
+        best = torch.where(two[:, 0] > eps, two[:, 0], two[:, 1])
+        best = best.reshape(x.shape[0], x.shape[1]) / scale
+        if mask is None:
+            return best.median(dim=1).values
+        # Позиции паддинга исключаем: там у всех примеров один и тот же
+        # zero_emb, расстояние до него вырождено и занижало бы медиану.
+        out = torch.empty(x.shape[0], device=x.device, dtype=best.dtype)
+        for i in range(x.shape[0]):
+            m = mask[i]
+            out[i] = best[i][m].median() if m.any() else best[i].median()
+        return out

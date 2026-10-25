@@ -80,6 +80,9 @@
 #                                   разные по характеру оси; если лягут на
 #                                   одну кривую -- важен объем информации, а
 #                                   не способ порчи. Двенадцать заданий
+#   ./run_wikipedia.sh probes-offmanifold  ЦЕНА СХОДА С МНОГООБРАЗИЯ: свип
+#                                   medoid -> centroid при неизменной
+#                                   информации. 7 заданий.
 #   ./run_wikipedia.sh probes-set   МНОЖЕСТВО против ТОЧКИ при равной
 #                                   информации: центроид, медоид, смесь.
 #                                   Проверяет, почему один бит классификатора
@@ -363,7 +366,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -538,10 +541,44 @@ case "$1" in
             #
             # Банк последовательностей берем больше числа тем: при бюджете в
             # 8192 позиции их набиралось всего 192, и K=256 падал.
+            #
+            # ПЕРЕСНЯТО 25.10 ПОСЛЕ ПОЧИНКИ. Первый заход дал medoid-mixture
+            # ровно ноль, но эксперимент не состоялся: энтропия softmax была
+            # 1.239 из 1.386 (89% от равномерной), то есть mixture сводился к
+            # усреднению, а кандидаты брались как ближайшие к центроиду и
+            # почти совпадали. Теперь sigma 0.05 вместо 0.5, кандидаты
+            # разнесены по кластеру дальней выборкой, кластеризация идет по
+            # пулированным векторам (768 вместо 49152 измерений).
             for K in ${PROBE_TOPICS:-16 64}; do
                 for SHAPE in ${PROBE_SHAPES:-centroid medoid mixture}; do
-                    ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant PROBE_LEVEL=${K} PROBE_SET=${SHAPE} PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-1024} sbatch --time="${TIME_LIMIT:-04:00:00}" --job-name=probe-set-${SHAPE}-${K} probe_information_axis.sh
+                    ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant PROBE_LEVEL=${K} PROBE_SET=${SHAPE} PROBE_SET_SIGMA="${PROBE_SET_SIGMA:-0.05}" PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-8192} sbatch --time="${TIME_LIMIT:-04:00:00}" --job-name=probe-set-${SHAPE}-${K} probe_information_axis.sh
                 done
+            done
+        fi
+
+        if [ "$1" = "probes-offmanifold" ]; then
+            # РЕШАЮЩИЙ СВИП: цена схода с многообразия при НЕИЗМЕННОЙ информации.
+            #
+            # Замер 25.10 дал главный факт работы -- при одной и той же метке
+            # кластера центроид дает bert 0.394, а реальный элемент того же
+            # кластера 0.496. Но это ОДНА пара точек, и законом она не
+            # является. Здесь beta непрерывно ведет цель от медоида (на
+            # многообразии) к центроиду (вне его):
+            #   z(beta) = medoid + beta * (centroid - medoid).
+            # Информация постоянна на всем свипе -- обе крайние точки и любая
+            # промежуточная определяются ровно меткой кластера. Меняется
+            # только удаленность цели от данных, и ее меряет manifold_gap.
+            #
+            # Если качество падает монотонно по beta и предсказывается этим
+            # расстоянием, "цель вне многообразия" становится измеримым
+            # законом вместо наблюдения из двух точек. Это то, чего не хватает
+            # разделу, и стоит оно семь заданий.
+            for B in ${PROBE_BETAS:-0 10 25 50 75 90 100}; do
+                ARCH_TYPE=unconditional PROBE_DEGRADE=offmanifold PROBE_LEVEL=${B} \
+                    PROBE_TOPICS_LEVEL="${PROBE_TOPICS_LEVEL:-16}" \
+                    PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-8192} \
+                    sbatch --time="${TIME_LIMIT:-03:00:00}" \
+                    --job-name=probe-offman-${B} probe_information_axis.sh
             done
         fi
 
@@ -583,7 +620,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,97p' "$0"
+        sed -n '2,100p' "$0"
         exit 1
         ;;
 esac
