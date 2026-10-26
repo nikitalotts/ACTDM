@@ -51,7 +51,8 @@ class LatentBank:
 
     def __init__(self, vectors: torch.Tensor, knn: int = 32, dim: int = 16,
                  query_chunk: int = 1024, bank_chunk: int = 8192,
-                 sequences: Optional[torch.Tensor] = None):
+                 sequences: Optional[torch.Tensor] = None,
+                 sequence_masks: Optional[torch.Tensor] = None):
         if vectors.dim() != 2:
             raise ValueError(f"банк ожидается [N, D], получено {tuple(vectors.shape)}")
         if knn <= dim:
@@ -67,6 +68,15 @@ class LatentBank:
         # (probes/degrade.py, режим seqquant -- квантизация по темам); для
         # касательного пространства работаем на уровне позиций.
         self.sequences = sequences
+        # Содержательные позиции последовательностей банка [N, L]. Нужны
+        # sequence_gap: расстояние меряется по позициям запроса, и у
+        # последовательностей банка паддинг обязан исключаться по тому же
+        # правилу, иначе числитель и знаменатель нормировки считаются по
+        # разным правилам и отношение теряет смысл.
+        if sequences is not None and sequence_masks is None:
+            sequence_masks = torch.ones(sequences.shape[:2], dtype=torch.bool,
+                                        device=sequences.device)
+        self.sequence_masks = sequence_masks
 
     @property
     def D(self) -> int:
@@ -101,7 +111,7 @@ class LatentBank:
         log(f"собираю банк латентов: {size} векторов "
             f"(пропускаю первые {skip_examples} примеров)")
         loader = probe_loader(runner, split=split, batch_size=batch_size)
-        chunks, seqs, seen, taken = [], [], 0, 0
+        chunks, seqs, seq_masks, seen, taken = [], [], [], 0, 0
         for batch in loader:
             n = len(batch["text_trg"])
             if seen + n <= skip_examples:
@@ -113,6 +123,7 @@ class LatentBank:
             v = trg_x[mask].detach().float()
             chunks.append(v)
             seqs.append(trg_x.detach().float())
+            seq_masks.append(mask.detach())
             taken += v.shape[0]
             got_seq = sum(c.shape[0] for c in seqs)
             if taken >= size and got_seq >= min_sequences:
@@ -122,9 +133,11 @@ class LatentBank:
                 "банк пуст: skip_examples больше размера сплита")
         bank = torch.cat(chunks)[:size].contiguous()
         sequences = torch.cat(seqs).contiguous()
+        sequence_masks = torch.cat(seq_masks).contiguous()
         log(f"банк готов: позиции {tuple(bank.shape)}, "
             f"последовательности {tuple(sequences.shape)}")
-        return cls(bank, sequences=sequences, **kw)
+        return cls(bank, sequences=sequences,
+                   sequence_masks=sequence_masks, **kw)
 
     def _knn_index(self, x: torch.Tensor) -> torch.Tensor:
         """Индексы k ближайших точек банка. x: [M, D] -> [M, k]."""
@@ -236,6 +249,11 @@ class LatentBank:
         ближайшего вектора банка, делённое на собственный масштаб данных
         (nn_scale). У реальной точки данных значение около 1, у точки в
         пустоте -- заметно больше.
+
+        ВНИМАНИЕ: это зазор по ОТДЕЛЬНЫМ ПОЗИЦИЯМ, и как главная ось он не
+        годится -- см. sequence_gap, где разобрано, почему на свипе он едет в
+        обратную сторону. Здесь он оставлен второй колонкой: он отвечает на
+        другой вопрос -- правдоподобна ли каждая позиция сама по себе.
         """
         xx = x.reshape(-1, x.shape[-1]).float()
         # Держим ДВА ближайших, а не одно. Медоид -- это буквально элемент
@@ -265,3 +283,96 @@ class LatentBank:
             m = mask[i]
             out[i] = best[i][m].median() if m.any() else best[i].median()
         return out
+
+    # --- зазор в пространстве ПОСЛЕДОВАТЕЛЬНОСТЕЙ ------------------------
+
+    @property
+    def _seq_sqnorm(self) -> torch.Tensor:
+        """Квадраты норм позиционных векторов банка. [N, L]."""
+        if getattr(self, "_seq_sqnorm_cache", None) is None:
+            self._seq_sqnorm_cache = self.sequences.pow(2).sum(dim=-1)
+        return self._seq_sqnorm_cache
+
+    def _seq_dist(self, x: torch.Tensor,
+                  mask: torch.Tensor) -> torch.Tensor:
+        """Расстояния от x до последовательностей банка. [B,L,D] -> [B, N].
+
+        Нормировано на одну содержательную позицию: иначе сравнивались бы
+        суммы по разному числу позиций, и у длинного примера зазор выходил бы
+        больше просто из-за длины.
+
+        Маска запроса применяется к ОБЕИМ сторонам, но банк при этом не
+        копируется: раскрываем |x-s|^2 = |x|^2 - 2<x,s> + |s|^2 и маскируем
+        слагаемые по отдельности. Прямой путь требовал бы маскированной копии
+        банка на каждый пример -- 6040 x 49152 float, около 1.2 ГБ.
+        """
+        if self.sequences is None:
+            raise RuntimeError(
+                "банк собран без последовательностей: зазор по "
+                "последовательностям мерить нечем (нужен min_sequences > 0)")
+        n, L, D = self.sequences.shape
+        if tuple(x.shape[1:]) != (L, D):
+            raise ValueError(
+                f"ожидается [B, {L}, {D}], получено {tuple(x.shape)}")
+        xf = x.float()
+        m = mask.to(xf.dtype)                                   # [B, L]
+        cross = (xf * m.unsqueeze(-1)).reshape(x.shape[0], L * D) \
+            @ self.sequences.reshape(n, L * D).t()              # [B, N]
+        a = (xf.pow(2).sum(dim=-1) * m).sum(dim=-1)             # [B]
+        b = m @ self._seq_sqnorm.t()                            # [B, N]
+        d2 = (a.unsqueeze(1) + b - 2 * cross).clamp_min(0)
+        cnt = m.sum(dim=1).clamp_min(1.0).unsqueeze(1)
+        return (d2 / cnt).sqrt()
+
+    @property
+    def seq_nn_scale(self) -> float:
+        """Медианное расстояние от последовательности банка до ближайшей.
+
+        Собственный масштаб данных на уровне последовательностей -- ровно то
+        же, чем nn_scale служит для позиций. Считается по подвыборке банка,
+        каждая со своей маской: числитель зазора тоже маскируется маской
+        запроса, и правило должно быть одно.
+        """
+        if getattr(self, "_seq_nn_scale", None) is None:
+            n = self.sequences.shape[0]
+            k = min(256, n)
+            idx = torch.arange(0, n, max(1, n // k),
+                               device=self.sequences.device)[:k]
+            d = self._seq_dist(self.sequences[idx], self.sequence_masks[idx])
+            d.scatter_(1, idx.unsqueeze(1), float("inf"))
+            self._seq_nn_scale = float(d.min(dim=1).values.median().item())
+        return self._seq_nn_scale
+
+    def sequence_gap(self, x: torch.Tensor,
+                     mask: torch.Tensor) -> torch.Tensor:
+        """Удалённость ЦЕЛОЙ последовательности от данных. [B,L,D] -> [B].
+
+        ГЛАВНАЯ ось геометрии работы, и именно она, а не manifold_gap.
+
+        ПОЧЕМУ ПОЗИЦИОННОГО ЗАЗОРА НЕ ХВАТИЛО. Свип 26.10 (offmanifold, beta
+        ведёт цель от медоида к центроиду) дал по manifold_gap падение
+        1.110 -> 0.795: центроид вышел БЛИЖЕ к данным, чем реальная
+        последовательность. Это не ошибка счёта, а не то многообразие.
+        Центроид усредняет сотни последовательностей поэлементно, поэтому
+        каждый его позиционный вектор съезжает к среднему по позиции, то есть
+        в САМУЮ ПЛОТНУЮ область позиционного облака -- туда, где живут "the",
+        запятая и точка. Каждая позиция по отдельности правдоподобна; а
+        последовательность невозможна, и это прямо видно в тексте: STEER
+        центроида декодируется в "s the the the the". Сеть шумоподавления
+        определена на целой последовательности, значит и многообразие, с
+        которого цель сходит, -- многообразие последовательностей.
+
+        Считается как расстояние до ближайшей РЕАЛЬНОЙ последовательности
+        банка, делённое на собственный масштаб данных (seq_nn_scale). У
+        реального элемента банка значение около 1, у точки в пустоте больше.
+        """
+        d = self._seq_dist(x, mask)
+        two = torch.topk(d, min(2, d.shape[1]), dim=1, largest=False).values
+        if two.shape[1] < 2:
+            two = torch.cat([two, two[:, -1:]], dim=1)
+        scale = max(self.seq_nn_scale, 1e-12)
+        eps = 1e-4 * scale
+        # Медоид -- буквально элемент банка, и по одному ближайшему его зазор
+        # вышел бы нулевым: нижний конец свипа схлопнулся бы, а с ним и ось.
+        # Та же причина, по которой hole_ratio исключает концы отрезка.
+        return torch.where(two[:, 0] > eps, two[:, 0], two[:, 1]) / scale

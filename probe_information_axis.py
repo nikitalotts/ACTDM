@@ -108,8 +108,10 @@ mixture -- выигрыш от множественной формы при то
     PROBE_SET          (centroid) centroid | medoid | mixture -- форма условия
                                   при равной информации, только с seqquant
     PROBE_SET_MEMBERS  (4)        кандидатов в множестве для mixture
-    PROBE_SET_SIGMA    (0.5)      ширина мягкого минимума, в долях медианного
-                                  расстояния до кандидатов
+    PROBE_SET_SIGMA    (0.3)      ширина мягкого минимума, в долях РАЗБРОСА
+                                  расстояний по кандидатам: ->0 жесткий
+                                  argmin (цель на данных), ->inf равномерный
+                                  вес (цель -- среднее кандидатов)
     PROBE_SEQ_BANK     (1024)     последовательностей в банке (должно быть
                                   больше числа тем, иначе k-means падает)
     PROBE_TARGET_RATIO (0.1)      доля шага ||lam*grad||/||score||
@@ -133,7 +135,7 @@ from probes.common import (
     progress, reverse_process,
 )
 from probes.degrade import (cluster_bundle, content_position_stats,
-                            degrade_target, estimated_bits)
+                            degrade_target, estimated_bits, set_weights)
 from probes.manifold import LatentBank
 from utils.util import parse, set_seed
 
@@ -165,11 +167,10 @@ def make_axis_guidance(runner, target_ratio, diag):
             w2 = content.unsqueeze(1).unsqueeze(-1).to(cand.dtype)
             diff = cand - x0.unsqueeze(1)
             d2 = (diff * w2).pow(2).flatten(2).sum(dim=2)         # [B, M]
-            # sigma задаем от самих расстояний: абсолютный масштаб латентов
-            # меняется между чекпоинтами, фиксированная sigma не переносится.
-            scale = d2.clamp_min(1e-12).sqrt().median(dim=1, keepdim=True).values
-            sigma = (state["sigma_frac"] * scale).clamp_min(1e-12)
-            w = torch.softmax(-d2 / (2 * sigma ** 2), dim=1)      # [B, M]
+            # Температура берётся от РАЗБРОСА расстояний по кандидатам, а не
+            # от их величины -- разбор в probes.degrade.set_weights, там же
+            # обе неудачные попытки с числами.
+            w = set_weights(d2, state["sigma_frac"])              # [B, M]
             corr = (w.view(*w.shape, 1, 1) * diff).sum(dim=1)     # [B, L, D]
             with torch.no_grad():
                 diag["set_entropy"] += (
@@ -256,7 +257,7 @@ def main():
                          "форму условия сравниваем при равной информации, а ее "
                          "задает метка кластера последовательностей")
     set_members = int(os.environ.get("PROBE_SET_MEMBERS", "4"))
-    sigma_frac = float(os.environ.get("PROBE_SET_SIGMA", "0.5"))
+    sigma_frac = float(os.environ.get("PROBE_SET_SIGMA", "0.3"))
     seq_bank = int(os.environ.get("PROBE_SEQ_BANK", "1024"))
 
     tag = mode if set_mode == "centroid" else f"{mode}-{set_mode}"
@@ -308,7 +309,8 @@ def main():
         print("=" * 72)
 
     diag = {"cos_to_true": [], "cos_x0": [], "rel_norm": [],
-            "set_entropy": [], "target_recovery": [], "manifold_gap": []}
+            "set_entropy": [], "target_recovery": [], "manifold_gap": [],
+            "sequence_gap": []}
     guidance_fn = make_axis_guidance(runner, target_ratio, diag)
 
     loader = probe_loader(runner, split="test", batch_size=batch_size)
@@ -362,6 +364,16 @@ def main():
         # величина, и без неё главный вывод держится на двух точках.
         if bank is not None:
             with torch.no_grad():
+                # Главная колонка -- по ЦЕЛЫМ последовательностям. Позиционный
+                # зазор на свипе 26.10 поехал в обратную сторону (центроид
+                # 0.795 против реального медоида 1.110): усреднение сотен
+                # последовательностей сносит каждую позицию в плотное ядро
+                # позиционного облака, туда, где "the" и запятая. Разбор в
+                # LatentBank.sequence_gap. Позиционный оставлен второй
+                # колонкой -- он про другое: правдоподобна ли позиция сама по
+                # себе. Их расхождение и есть содержание наблюдения.
+                diag["sequence_gap"] += bank.sequence_gap(
+                    z, content).cpu().tolist()
                 diag["manifold_gap"] += bank.manifold_gap(
                     z, content).cpu().tolist()
 
@@ -414,6 +426,13 @@ def main():
     # Сколько информации о цели осталось в самой деградированной цели -- шкала,
     # не зависящая от того, насколько хорошо guidance ее реализовал.
     recovery = score(steer_texts, trg_texts, "STEER vs TRG")
+    # ДОШЁЛ ЛИ сэмплер до цели, которую ему дали. Без этого числа свип
+    # 26.10 не читается: на beta=0.9 и выше падают СРАЗУ две вещи -- цель
+    # перестаёт декодироваться в текст ("s the the the") и сэмплер перестаёт
+    # её отслеживать, и по одному GEN vs TRG их не различить. Верность
+    # отвечает ровно на вторую половину вопроса и от информативности цели не
+    # зависит: сравнение идёт с тем, что цель есть, а не с истиной.
+    fidelity = score(gen_texts, steer_texts, "GEN vs STEER")
 
     def mean(xs):
         return float(sum(xs) / len(xs)) if xs else None
@@ -431,8 +450,12 @@ def main():
             print(f"{k}: {v:0.5f}")
         print(f"\nвосстановимость цели (bert)      : {recovery['bert-score']:.5f}   <- ОСЬ X")
         print(f"качество генерации   (bert)      : {metrics['bert-score']:.5f}   <- ОСЬ Y")
-        print(f"удалённость цели от данных       : {fmt(mean(diag['manifold_gap']))}   "
-              f"<- ВТОРАЯ ОСЬ (1.0 = как у реальной точки)")
+        print(f"удалённость цели от данных       : {fmt(mean(diag['sequence_gap']))}   "
+              f"<- ВТОРАЯ ОСЬ (1.0 = как у реальной последовательности)")
+        print(f"верность цели (GEN vs STEER)     : {fidelity['bert-score']:.5f}   "
+              f"<- ДОШЁЛ ЛИ сэмплер до цели")
+        print(f"зазор по отдельным позициям      : {fmt(mean(diag['manifold_gap']))}   "
+              f"(другая величина, не главная ось)")
         print(f"cos(x0) условия с истиной        : {fmt(mean(diag['cos_x0']))}")
         print(f"cos(x_t) старая ось, непригодна  : {fmt(mean(diag['cos_to_true']))}")
         print(f"доля шага                        : {mean(diag['rel_norm']):.4f}")
@@ -461,8 +484,10 @@ def main():
         "n_texts": len(gen_texts),
         "metrics": metrics,
         "target_recovery": recovery,
+        "target_fidelity": fidelity,
         "cos_to_true": mean(diag["cos_to_true"]),
         "cos_x0": mean(diag["cos_x0"]),
+        "sequence_gap": mean(diag["sequence_gap"]),
         "manifold_gap": mean(diag["manifold_gap"]),
         "topic_level": topic_level if mode == "offmanifold" else None,
         "set_shape": set_mode,

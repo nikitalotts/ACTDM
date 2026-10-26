@@ -82,7 +82,12 @@
 #                                   не способ порчи. Двенадцать заданий
 #   ./run_wikipedia.sh probes-offmanifold  ЦЕНА СХОДА С МНОГООБРАЗИЯ: свип
 #                                   medoid -> centroid при неизменной
-#                                   информации. 7 заданий.
+#                                   информации. Сетка сгущена у излома
+#                                   beta 0.75-0.95. 10 заданий.
+#   ./run_wikipedia.sh probes-sigma  тот же сход с многообразия, но через
+#                                   температуру множества: sigma от argmin
+#                                   (цель на данных) до равномерного веса
+#                                   (цель -- среднее). 6 заданий
 #   ./run_wikipedia.sh probes-set   МНОЖЕСТВО против ТОЧКИ при равной
 #                                   информации: центроид, медоид, смесь.
 #                                   Проверяет, почему один бит классификатора
@@ -366,7 +371,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold|probes-sigma)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -542,17 +547,51 @@ case "$1" in
             # Банк последовательностей берем больше числа тем: при бюджете в
             # 8192 позиции их набиралось всего 192, и K=256 падал.
             #
-            # ПЕРЕСНЯТО 25.10 ПОСЛЕ ПОЧИНКИ. Первый заход дал medoid-mixture
-            # ровно ноль, но эксперимент не состоялся: энтропия softmax была
-            # 1.239 из 1.386 (89% от равномерной), то есть mixture сводился к
-            # усреднению, а кандидаты брались как ближайшие к центроиду и
-            # почти совпадали. Теперь sigma 0.05 вместо 0.5, кандидаты
-            # разнесены по кластеру дальней выборкой, кластеризация идет по
-            # пулированным векторам (768 вместо 49152 измерений).
+            # ЧТО УЖЕ ВЫЯСНЕНО, ЧТОБЫ НЕ СНИМАТЬ ТРЕТИЙ РАЗ ВПУСТУЮ.
+            # Заход 25.10 (sigma 0.5): энтропия 1.239 из 1.386, mixture
+            # сводился к среднему кандидатов, кандидаты брались ближайшими к
+            # центроиду и почти совпадали.
+            # Заход 26.10 (sigma 0.05, кандидаты разнесены дальней выборкой,
+            # кластеризация по пулированным векторам): энтропия 0.00003 из
+            # 1.386 -- жесткий argmin. Цель вышла ДОСЛОВНО медоидом: STEER
+            # побуквенно совпал с медоидным прогоном, зазор совпал до пятого
+            # знака, bert разошелся на 0.0002. Множества опять не было.
+            # Причина -- не величина sigma, а параметризация: показатель
+            # softmax брался как d2/sigma^2 с sigma от МАСШТАБА расстояний, а
+            # в 49152 измерениях расстояния концентрируются, и середины между
+            # "равномерно" и "argmin" там нет ни при каком sigma. Теперь
+            # температура берется от РАЗБРОСА расстояний по кандидатам, и
+            # sigma_frac ~ 1 дает настоящую середину. Сам свип по sigma --
+            # отдельная стадия probes-sigma.
             for K in ${PROBE_TOPICS:-16 64}; do
                 for SHAPE in ${PROBE_SHAPES:-centroid medoid mixture}; do
-                    ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant PROBE_LEVEL=${K} PROBE_SET=${SHAPE} PROBE_SET_SIGMA="${PROBE_SET_SIGMA:-0.05}" PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-8192} sbatch --time="${TIME_LIMIT:-04:00:00}" --job-name=probe-set-${SHAPE}-${K} probe_information_axis.sh
+                    ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant PROBE_LEVEL=${K} PROBE_SET=${SHAPE} PROBE_SET_SIGMA="${PROBE_SET_SIGMA:-0.3}" PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-8192} sbatch --time="${TIME_LIMIT:-04:00:00}" --job-name=probe-set-${SHAPE}-${K} probe_information_axis.sh
                 done
+            done
+        fi
+
+        if [ "$1" = "probes-sigma" ]; then
+            # СВИП ПО ТЕМПЕРАТУРЕ МНОЖЕСТВА -- вторая, независимая реализация
+            # того же закона.
+            #
+            # После починки параметризации sigma_frac непрерывно ведет форму
+            # условия от одного конца к другому при НЕИЗМЕННОЙ информации
+            # (метка кластера, кандидаты те же):
+            #   sigma -> 0   вес на ближайшем кандидате, цель = реальная
+            #                последовательность, то есть НА многообразии;
+            #   sigma -> inf равномерный вес, цель = среднее кандидатов, то
+            #                есть ВНЕ многообразия.
+            # Это ровно та же ось, что в probes-offmanifold, но построенная
+            # другим механизмом: там цель двигали вручную по отрезку, здесь
+            # она смещается сама, через веса. Если обе стадии дадут одно и то
+            # же падение по sequence_gap, закон держится на двух независимых
+            # способах сойти с многообразия, а не на одном приеме.
+            for S in ${PROBE_SIGMAS:-0.02 0.05 0.1 0.3 1.0 3.0}; do
+                ARCH_TYPE=unconditional PROBE_DEGRADE=seqquant \
+                    PROBE_LEVEL=${PROBE_TOPICS_LEVEL:-16} PROBE_SET=mixture \
+                    PROBE_SET_SIGMA=${S} PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-8192} \
+                    sbatch --time="${TIME_LIMIT:-03:00:00}" \
+                    --job-name=probe-sigma-${S} probe_information_axis.sh
             done
         fi
 
@@ -567,13 +606,20 @@ case "$1" in
             #   z(beta) = medoid + beta * (centroid - medoid).
             # Информация постоянна на всем свипе -- обе крайние точки и любая
             # промежуточная определяются ровно меткой кластера. Меняется
-            # только удаленность цели от данных, и ее меряет manifold_gap.
+            # только удаленность цели от данных, и ее меряет sequence_gap.
             #
             # Если качество падает монотонно по beta и предсказывается этим
             # расстоянием, "цель вне многообразия" становится измеримым
             # законом вместо наблюдения из двух точек. Это то, чего не хватает
-            # разделу, и стоит оно семь заданий.
-            for B in ${PROBE_BETAS:-0 10 25 50 75 90 100}; do
+            # разделу.
+            #
+            # СЕТКА ПО РЕЗУЛЬТАТАМ 26.10. Первый заход (0 10 25 50 75 90 100)
+            # показал, что падение не размазано по beta, а собрано в излом:
+            # bert 0.5059 / 0.5058 / 0.5055 / 0.5036 / 0.4956 / 0.4266 /
+            # 0.4019, то есть до 0.5 не происходит ничего, а весь обвал лежит
+            # между 0.75 и 0.9. Половина заданий ушла на плоский участок,
+            # а излом остался неразрешенным. Сетка сгущена там, где он есть.
+            for B in ${PROBE_BETAS:-0 25 50 65 75 80 85 90 95 100}; do
                 ARCH_TYPE=unconditional PROBE_DEGRADE=offmanifold PROBE_LEVEL=${B} \
                     PROBE_TOPICS_LEVEL="${PROBE_TOPICS_LEVEL:-16}" \
                     PROBE_SEQ_BANK=${PROBE_SEQ_BANK:-8192} \
@@ -620,7 +666,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,100p' "$0"
+        sed -n '2,106p' "$0"
         exit 1
         ;;
 esac
