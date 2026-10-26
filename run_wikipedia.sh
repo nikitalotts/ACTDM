@@ -491,12 +491,18 @@ case "$1" in
             # Банк берется из train (см. PROBE_BANK_SPLIT в самом probe):
             # притягивать генерации к латентам теста значит подглядывать в
             # ответ.
+            #
+            # ДОЛЯ ШАГА 0.005, А НЕ 0.1. Свип 24.10 нашел пик raw именно там
+            # (bert 0.5081 против пола 0.4605), а при 0.1 ВСЕ режимы ниже пола.
+            # Контрольный прогон 26.10 при 0.1 дал 0.4499 и пустые генерации --
+            # чинить guidance надо там, где он работает, а не там, где он уже
+            # разрушен силой шага: иначе свип меряет починку поверх поломки.
             for MODE in ${PROBE_SNAP_MODES:-snap-pos snap-seq}; do
                 for A in ${PROBE_SNAP_ALPHAS:-0 0.1 0.25 0.5 1.0}; do
                     ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
                         PROBE_GRAD_MODE=${MODE} PROBE_SCALE_MODE=adaptive \
                         PROBE_SNAP_ALPHA=${A} \
-                        PROBE_TARGET_RATIO="${PROBE_TARGET_RATIO:-0.1}" \
+                        PROBE_TARGET_RATIO="${PROBE_TARGET_RATIO:-0.005}" \
                         PROBE_SEQ_BANK="${PROBE_SEQ_BANK:-8192}" \
                         sbatch --time="${TIME_LIMIT:-04:00:00}" \
                         --job-name=probe-snap-${MODE}-${A} \

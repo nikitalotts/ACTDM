@@ -142,9 +142,13 @@ def _blend_with_manifold(bank, mode, alpha, g, out, score_norm,
     снимается нормировкой.
 
     alpha=0 обязан воспроизводить raw побитово -- это встроенный контроль.
+    ДИАГНОСТИКИ ПРИ ЭТОМ СЧИТАЮТСЯ ВСЁ РАВНО. Прогон 26.10 с alpha=0 вернул
+    «нет (guidance выключен)» ровно в тех двух колонках, ради которых
+    контрольная точка и запускалась первой: удалённость x_0 от данных и
+    косинус градиента с направлением к ним не зависят от того, применяем мы
+    притягивание или нет, и в контроле они нужны больше всего -- это замер
+    НЕТРОНУТОГО guidance.
     """
-    if alpha <= 0.0:
-        return g
     with torch.no_grad():
         x0 = out["x_0"]
         if mode == "snap-pos":
@@ -161,8 +165,6 @@ def _blend_with_manifold(bank, mode, alpha, g, out, score_norm,
             return v / v.flatten(1).norm(dim=1).clamp_min(1e-12).view(-1, 1, 1)
 
         dir_cls, dir_man = unit(g), unit(delta)
-        blended = (1.0 - alpha) * dir_cls + alpha * dir_man
-        out_g = (target_ratio * score_norm).view(-1, 1, 1) * unit(blended)
 
         # Две диагностики, которые сами по себе проверяют диагноз работы:
         # насколько текущая оценка далека от ближайшего реального объекта и
@@ -173,7 +175,11 @@ def _blend_with_manifold(bank, mode, alpha, g, out, score_norm,
             / x0.flatten(1).norm(dim=1).clamp_min(1e-12)).cpu().tolist()
         diag["cos_cls_manifold"] += (
             (dir_cls * dir_man).flatten(1).sum(dim=1)).cpu().tolist()
-    return out_g
+
+        if alpha <= 0.0:
+            return g
+        blended = (1.0 - alpha) * dir_cls + alpha * dir_man
+        return (target_ratio * score_norm).view(-1, 1, 1) * unit(blended)
 
 
 def make_guidance(runner, bank, mode, scale_mode, target_ratio, lam,
@@ -383,7 +389,7 @@ def main():
             print(f"{k}: {v:0.5f}")
         print(f"\nсредняя доля шага ||lam*grad||/||score||: "
               f"{fmt(mean(diag['rel_norm']))}")
-        if bank is not None and mode != "raw":
+        if bank is not None and mode in ("tangent", "normal"):
             # В режиме normal здесь лежит доля ОСТАВШЕЙСЯ (нормальной)
             # компоненты, а не касательной: считается ||grad после проекции|| /
             # ||grad до||, а проекция там берет дополнение. В raw проекции нет

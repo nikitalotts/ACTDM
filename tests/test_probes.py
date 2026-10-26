@@ -1743,6 +1743,12 @@ def test_snap_alpha_zero_is_raw_and_alpha_keeps_the_step():
     same = _blend_with_manifold(bank, "snap-pos", 0.0, g, out, score_norm,
                                 ratio, diag)
     assert same is g, "alpha=0 изменил градиент -- контроль сломан"
+    # Но диагностики при alpha=0 обязаны считаться: прогон 26.10 вернул в них
+    # «нет (guidance выключен)» ровно в той точке, ради которой контроль и
+    # запускался первым. Они не зависят от того, применяем ли притягивание, и
+    # в контроле нужны больше всего -- это замер НЕТРОНУТОГО guidance.
+    assert diag["cos_cls_manifold"] and diag["snap_dist"], (
+        "при alpha=0 не померены удалённость от данных и косинус с ними")
 
     for mode in ("snap-pos", "snap-seq"):
         for alpha in (0.25, 0.5, 1.0):
@@ -1765,6 +1771,18 @@ def test_snap_stage_sweeps_alpha_from_the_control():
     alphas = [float(x) for x in m.group(1).split()]
     assert 0.0 in alphas, f"нет контрольной точки alpha=0: {alphas}"
     assert max(alphas) >= 1.0, f"свип не доходит до полного притягивания: {alphas}"
+
+    # Доля шага обязана быть рабочей. Свип 24.10 нашёл пик raw при 0.005, а при
+    # 0.1 ВСЕ режимы ниже пола; контрольный прогон 26.10 при 0.1 дал 0.4499 и
+    # пустые генерации. Чинить guidance поверх уже разрушенного шага -- значит
+    # мерить починку поверх поломки.
+    # Привязываемся к ТЕЛУ стадии: имя probes-snap встречается и раньше, в
+    # перечне стадий ветки, и срез оттуда поймал бы долю шага у probes-projected.
+    body = stage[stage.index('if [ "$1" = "probes-snap" ]'):]
+    r = re.search(r"PROBE_TARGET_RATIO:-([0-9.]+)\}", body)
+    assert r and float(r.group(1)) <= 0.01, (
+        f"стадия snap идёт на доле шага {r.group(1) if r else '?'} -- "
+        f"guidance там уже разрушен")
 
 
 def test_snap_bank_comes_from_train_not_test():
