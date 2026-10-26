@@ -39,11 +39,12 @@ lambda: ортогональная компонента разрушает сэ�
 x_t зашумлен и лежит вне многообразия по построению, локальные соседи там
 бессмысленны.
 """
-from typing import Optional
+from typing import Optional, Sequence
 
 import torch
 
-from probes.common import content_mask, encode_batch, log, probe_loader
+from probes.common import (content_mask, encode_batch, log, masked_norm,
+                           probe_loader)
 
 
 class LatentBank:
@@ -376,3 +377,65 @@ class LatentBank:
         # вышел бы нулевым: нижний конец свипа схлопнулся бы, а с ним и ось.
         # Та же причина, по которой hole_ratio исключает концы отрезка.
         return torch.where(two[:, 0] > eps, two[:, 0], two[:, 1]) / scale
+
+
+def denoiser_gap(runner, z: torch.Tensor, reference: torch.Tensor,
+                 mask: torch.Tensor,
+                 times: Sequence[float] = (0.1, 0.2, 0.4),
+                 seed: int = 0) -> torch.Tensor:
+    """Насколько цель НЕВОЗМОЖНА по мнению самой модели. [B,L,D] -> [B].
+
+    ПОЧЕМУ ГЕОМЕТРИЮ ПРИШЛОСЬ ОСТАВИТЬ. Свип 26.10 опроверг оба зазора по
+    расстояниям. Позиционный поехал вниз (1.110 -> 0.795). Зазор по
+    последовательностям, написанный ему на замену, оказался немонотонным:
+    beta 0 / .25 / .5 / .75 / 1 дали 0.625 / 0.184 / 0.368 / 0.552 / 0.657,
+    и он НИ РАЗУ не превысил 1, то есть центроид формально ближе к данным,
+    чем реальные последовательности друг к другу.
+
+    Это не ошибка нормировки, а свойство размерности. Среднее N независимых
+    точек лежит от каждой из них на расстоянии примерно 1/sqrt(2) типичного
+    межточечного, а минимум по банку в 49152 измерениях почти равен типичному
+    расстоянию -- расстояния концентрируются. Поэтому центроид обязан выйти
+    БЛИЖЕ к данным, чем сами данные друг к другу, при любой нормировке: весь
+    отрезок медоид->центроид (0.74 от nn) короче одного шага между соседями.
+    Евклидово расстояние до ближайшего соседа не отличает возможный текст от
+    невозможного, ни по позициям, ни по последовательностям.
+
+    Спрашиваем тогда не геометрию, а МОДЕЛЬ -- она и есть оценка плотности
+    данных. Шумим цель и смотрим, куда сеть тянет её обратно:
+        pull(z) = || x_0(mu*z + std*eps, t) - z ||
+    Для возможной последовательности сеть возвращает почти её же, pull мал.
+    Для невозможной тянет прочь, к многообразию, и pull велик. Делим на то же
+    у настоящей цели батча:
+        gap = pull(z) / pull(trg)
+    Величина безразмерна, равна 1 для реальных данных по построению, не
+    зависит от масштаба латентов и от размерности, и измеряет именно то, что
+    видит сэмплер. Шум eps берётся ОДИН И ТОТ ЖЕ для z и для trg -- парное
+    сравнение, иначе разброс по шуму съедает разницу.
+    """
+    if z.shape != reference.shape:
+        raise ValueError(
+            f"цель {tuple(z.shape)} и образец {tuple(reference.shape)} "
+            f"должны совпадать по форме: сравнение парное")
+    gen = torch.Generator(device="cpu").manual_seed(seed)
+    ratios = []
+    for t_val in times:
+        t = torch.full((z.shape[0],), float(t_val),
+                       device=z.device, dtype=z.dtype)
+        params = runner.dynamic.marginal_params(t)
+        mu, std = params["mu"], params["std"]
+        eps = torch.randn(z.shape, generator=gen, dtype=torch.float32)
+        eps = eps.to(device=z.device, dtype=z.dtype)
+
+        def pull(x):
+            out = runner.calc_score(
+                model=runner.ddp_score_estimator,
+                x_t=mu * x + std * eps, t=t,
+                attention_mask=None,
+                x_0_self_cond=torch.zeros_like(x))
+            return masked_norm(out["x_0"] - x, mask)
+
+        num = pull(z)
+        den = pull(reference).clamp_min(1e-12)
+        ratios.append(num / den)
+    return torch.stack(ratios).mean(dim=0)
