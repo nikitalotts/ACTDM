@@ -84,6 +84,10 @@
 #                                   medoid -> centroid при неизменной
 #                                   информации. Сетка сгущена у излома
 #                                   beta 0.75-0.95. 10 заданий.
+#   ./run_wikipedia.sh probes-snap  МЕТОД: к градиенту настоящего
+#                                   классификатора подмешивается сила, тянущая
+#                                   цель НА данные. Свип по alpha, alpha=0 это
+#                                   контроль (обязан совпасть с raw). 10 заданий
 #   ./run_wikipedia.sh probes-sigma  тот же сход с многообразия, но через
 #                                   температуру множества: sigma от argmin
 #                                   (цель на данных) до равномерного веса
@@ -371,7 +375,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold|probes-sigma)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold|probes-sigma|probes-snap)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -459,6 +463,46 @@ case "$1" in
                 PROBE_GRAD_MODE=raw PROBE_SCALE_MODE=const PROBE_LAMBDA=0 \
                 sbatch --time="${TIME_LIMIT:-04:00:00}" \
                 --job-name=probe-proj-baseline probe_projected_guidance.sh
+        fi
+
+        if [ "$1" = "probes-snap" ]; then
+            # МЕТОД, КОТОРЫЙ СЛЕДУЕТ ИЗ ЗАКОНА 26.10.
+            #
+            # Свип medoid -> centroid показал: при постоянной информации
+            # качество монотонно падает, когда цель едет от реальной
+            # последовательности к усреднению (bert 0.5059 -> 0.4019, верность
+            # 0.980 -> 0.464). Лучшая форма условия во всем исследовании --
+            # предел sigma -> 0, то есть "цель = ближайшая реальная
+            # последовательность". Здесь та же операция применяется не к
+            # оракульной цели, а к НАСТОЯЩЕМУ classifier guidance: к градиенту
+            # подмешивается сила, тянущая x_0 к данным, alpha задает долю.
+            #
+            # Смешиваются НАПРАВЛЕНИЯ при одной доле шага, поэтому alpha=0
+            # обязан воспроизвести raw побитово -- встроенный контроль на то,
+            # что свип меряет притягивание, а не побочный эффект правок.
+            #
+            # Два понятия "данных" проверяются отдельно, и их расхождение само
+            # по себе содержательно: snap-pos квантует каждую позицию по банку
+            # (результат не реальный текст, но каждая позиция реальна),
+            # snap-seq тянет к целой реальной последовательности. При alpha=1
+            # snap-seq это retrieval, а не генерация, и в статье он так и
+            # называется -- он нужен как верхний конец шкалы.
+            #
+            # Банк берется из train (см. PROBE_BANK_SPLIT в самом probe):
+            # притягивать генерации к латентам теста значит подглядывать в
+            # ответ.
+            for MODE in ${PROBE_SNAP_MODES:-snap-pos snap-seq}; do
+                for A in ${PROBE_SNAP_ALPHAS:-0 0.1 0.25 0.5 1.0}; do
+                    ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
+                        PROBE_GRAD_MODE=${MODE} PROBE_SCALE_MODE=adaptive \
+                        PROBE_SNAP_ALPHA=${A} \
+                        PROBE_TARGET_RATIO="${PROBE_TARGET_RATIO:-0.1}" \
+                        PROBE_SEQ_BANK="${PROBE_SEQ_BANK:-8192}" \
+                        sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                        --job-name=probe-snap-${MODE}-${A} \
+                        probe_projected_guidance.sh
+                done
+            done
         fi
 
         if [ "$1" = "probes-sweep" ]; then
@@ -666,7 +710,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,106p' "$0"
+        sed -n '2,110p' "$0"
         exit 1
         ;;
 esac

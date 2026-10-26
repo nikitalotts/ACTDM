@@ -379,6 +379,43 @@ class LatentBank:
         return torch.where(two[:, 0] > eps, two[:, 0], two[:, 1]) / scale
 
 
+    # --- притягивание цели к данным (метод, а не диагностика) -----------
+
+    def snap_positions(self, x: torch.Tensor) -> torch.Tensor:
+        """Каждую позицию -- в ближайший РЕАЛЬНЫЙ позиционный вектор. [B,L,D].
+
+        Квантизация по банку позиций. Результат не является реальной
+        последовательностью, но каждая его позиция реальна, то есть цель
+        перестаёт быть усреднением хотя бы поточечно. Промежуточный по силе
+        вариант между "ничего не делать" и retrieval.
+        """
+        xx = x.reshape(-1, x.shape[-1]).float()
+        best_d, best_i = None, None
+        for s in range(0, self.bank.shape[0], self.bank_chunk):
+            d = torch.cdist(xx, self.bank[s:s + self.bank_chunk])
+            dv, di = d.min(dim=1)
+            di = di + s
+            if best_d is None:
+                best_d, best_i = dv, di
+            else:
+                take = dv < best_d
+                best_d = torch.where(take, dv, best_d)
+                best_i = torch.where(take, di, best_i)
+        return self.bank[best_i].reshape(x.shape).to(x.dtype)
+
+    def snap_sequence(self, x: torch.Tensor,
+                      mask: torch.Tensor) -> torch.Tensor:
+        """Всю последовательность -- в ближайшую РЕАЛЬНУЮ из банка. [B,L,D].
+
+        Это предельный случай закона: цель заведомо возможна, потому что она
+        буквально взята из данных. При полной силе притягивания это уже не
+        генерация, а retrieval, и так это и надо называть; содержательна
+        промежуточная сила, где цель лишь подтянута к данным.
+        """
+        idx = self._seq_dist(x, mask).argmin(dim=1)
+        return self.sequences[idx].to(x.dtype)
+
+
 def denoiser_gap(runner, z: torch.Tensor, reference: torch.Tensor,
                  mask: torch.Tensor,
                  times: Sequence[float] = (0.1, 0.2, 0.4),

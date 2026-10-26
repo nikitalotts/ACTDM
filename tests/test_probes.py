@@ -1694,3 +1694,87 @@ def test_eval_alignment_check_catches_different_example_sets(tmp_path):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([os.path.abspath(__file__), "-v"]))
+
+
+def test_snap_pulls_to_real_objects_of_the_bank():
+    """Притягивание обязано давать РЕАЛЬНЫЕ объекты, и именно ближайшие.
+
+    Весь метод держится на том, что цель после притягивания лежит на данных.
+    Если snap вернёт что-то своё, метод проверяет не то, что заявлено."""
+    from probes.manifold import LatentBank
+
+    torch.manual_seed(0)
+    vecs = torch.randn(200, 6)
+    seqs = torch.randn(30, 4, 6)
+    bank = LatentBank(vecs, knn=8, dim=3, sequences=seqs)
+    x = torch.randn(3, 4, 6)
+
+    pos = bank.snap_positions(x)
+    brute = vecs[torch.cdist(x.reshape(-1, 6), vecs).argmin(dim=1)]
+    assert torch.allclose(pos, brute.reshape(x.shape)), (
+        "позиционное притягивание вернуло не ближайший вектор банка")
+
+    seq = bank.snap_sequence(x, torch.ones(3, 4, dtype=torch.bool))
+    d = (seqs.unsqueeze(0) - seq.unsqueeze(1)).pow(2).flatten(2).sum(2)
+    assert d.min(dim=1).values.max() < 1e-5, (
+        "притягивание последовательности вернуло не элемент банка")
+
+
+def test_snap_alpha_zero_is_raw_and_alpha_keeps_the_step():
+    """ДВА ИНВАРИАНТА МЕТОДА, без которых свип по alpha не читается.
+
+    alpha=0 обязан воспроизводить raw ПОБИТОВО: это встроенный контроль на то,
+    что свип меряет притягивание к данным, а не побочный эффект переписанного
+    кода. И доля шага обязана сохраняться при любом alpha: смешиваются
+    НАПРАВЛЕНИЯ, иначе alpha менял бы заодно размер шага, и сравнение
+    показывало бы не «куда идти», а «как далеко»."""
+    from probe_projected_guidance import _blend_with_manifold
+    from probes.manifold import LatentBank
+
+    torch.manual_seed(0)
+    bank = LatentBank(torch.randn(200, 6), knn=8, dim=3,
+                      sequences=torch.randn(30, 4, 6))
+    g = torch.randn(3, 4, 6)
+    out = {"x_0": torch.randn(3, 4, 6)}
+    score_norm = torch.full((3,), 2.0)
+    ratio = 0.1
+    diag = {"snap_dist": [], "cos_cls_manifold": []}
+
+    same = _blend_with_manifold(bank, "snap-pos", 0.0, g, out, score_norm,
+                                ratio, diag)
+    assert same is g, "alpha=0 изменил градиент -- контроль сломан"
+
+    for mode in ("snap-pos", "snap-seq"):
+        for alpha in (0.25, 0.5, 1.0):
+            res = _blend_with_manifold(bank, mode, alpha, g, out, score_norm,
+                                       ratio, diag)
+            step = res.flatten(1).norm(dim=1)
+            assert torch.allclose(step, ratio * score_norm, atol=1e-5), (
+                f"{mode} при alpha={alpha} изменил долю шага: {step.tolist()}")
+
+
+def test_snap_stage_sweeps_alpha_from_the_control():
+    """Стадия обязана включать alpha=0 -- без него свип не с чем сравнивать."""
+    import re
+
+    stage = _probes_stage()
+    assert "probes-snap" in stage, "нет стадии притягивания цели к данным"
+    assert "PROBE_GRAD_MODE=${MODE}" in stage
+    m = re.search(r"PROBE_SNAP_ALPHAS:-([0-9 .]+)\}", stage)
+    assert m, "в стадии нет сетки по alpha"
+    alphas = [float(x) for x in m.group(1).split()]
+    assert 0.0 in alphas, f"нет контрольной точки alpha=0: {alphas}"
+    assert max(alphas) >= 1.0, f"свип не доходит до полного притягивания: {alphas}"
+
+
+def test_snap_bank_comes_from_train_not_test():
+    """Банк МЕТОДА берётся из train.
+
+    Притягивать генерации к латентам тестового сплита -- значит подглядывать в
+    ответ, и работа снимается на этом одном предложении. У диагностик (tangent)
+    остаётся test с пропуском оцениваемых примеров, там это допустимо."""
+    body = open("probe_projected_guidance.py", encoding="utf-8").read()
+    assert '"PROBE_BANK_SPLIT", "train" if mode.startswith("snap") else "test"' \
+        in body, "snap-режимы берут банк не из train"
+    assert 'skip_examples=0 if bank_split != "test" else num_texts' in body, (
+        "пропуск примеров применяется не только к test")

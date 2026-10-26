@@ -27,6 +27,17 @@ lambda >= 5000 все метрики обваливались.
              уменьшение шага, то normal при той же силе шага покажет то же
              самое. Если normal заметно хуже -- дело именно в направлении.
 
+  snap-pos  -- МЕТОД ИЗ ЗАКОНА 26.10: к градиенту подмешивается сила,
+               тянущая текущую оценку x_0 к ближайшим РЕАЛЬНЫМ
+               позиционным векторам (квантизация по банку).
+  snap-seq  -- то же, но к ближайшей реальной ПОСЛЕДОВАТЕЛЬНОСТИ целиком.
+               При alpha=1 это уже retrieval, а не генерация, и так его и надо
+               называть; содержательна промежуточная сила.
+
+У обоих snap-режимов alpha=0 обязан воспроизводить raw побитово -- это
+встроенный контроль на то, что свип меряет притягивание, а не побочный эффект
+переписанного кода. Банк для них берётся из train, а не из test.
+
 КАК ЗАДАЕТСЯ СИЛА (PROBE_SCALE_MODE)
 ------------------------------------
   const    -- постоянная lambda, как в ВКР.
@@ -65,6 +76,9 @@ adaptive именно поэтому.
     PROBE_TANGENT_DIM  (16)       размерность касательного
     PROBE_KNN          (32)       соседей для локального PCA
     PROBE_BANK         (8192)     векторов в банке
+    PROBE_SNAP_ALPHA   (0)        сила притягивания к данным, 0..1; 0 это raw
+    PROBE_SEQ_BANK     (8192)     последовательностей в банке для snap-seq
+    PROBE_BANK_SPLIT   (train у snap) сплит для банка; test у диагностик
     PROBE_NUM_TEXTS    (1000)     сколько текстов сгенерировать
     PROBE_BATCH_SIZE   (64)       размер батча
     PROBE_OUT          (...)      путь к json
@@ -101,8 +115,69 @@ def classifier_grad(runner, x_t, cond_x, t, cond_mask, sigmoid_factor=True):
     return grad
 
 
+def _blend_with_manifold(bank, mode, alpha, g, out, score_norm,
+                         target_ratio, diag):
+    """Подмешать к градиенту классификатора силу, тянущую цель НА данные.
+
+    МЕТОД, КОТОРЫЙ СЛЕДУЕТ ИЗ ЗАКОНА. Свип 26.10 показал: при постоянной
+    информации качество монотонно падает, когда цель едет от реальной
+    последовательности к усреднению (bert 0.5059 -> 0.4019, верность
+    0.980 -> 0.464). Лучшая форма условия во всём исследовании -- предел
+    sigma -> 0 у множества, то есть «цель = ближайшая реальная
+    последовательность». Здесь та же операция применяется не к оракульной
+    цели, а к настоящему classifier guidance.
+
+    СМЕШИВАЮТСЯ НАПРАВЛЕНИЯ, А НЕ ВЕЛИЧИНЫ, и результат возвращается к той же
+    доле шага. Иначе alpha менял бы заодно размер шага, и сравнение показывало
+    бы не «куда идти», а «как далеко», -- та же причина, по которой здесь
+    вообще заведён adaptive.
+
+    ЧЕРЕЗ x_0 ОБРАТНО НЕ ПЕРЕСЧИТЫВАЕМ. Подразумеваемая цель
+    x_0 + std^2 * g / mu при t -> 1 бессмысленна: mu ~ 5e-9 (CosineSD d=9),
+    и десятипроцентная правка score означает изменение x_0 в десятки
+    миллионов раз. Обратный ход (mu*x_0_target - x_t)/std^2 к тому же
+    вычитает почти равные числа и возвращает ошибку, усиленную на 1/mu ~ 2e8.
+    Поэтому тянем ОТ x_0, который сеть выдаёт напрямую, а сдвиг в пространстве
+    score отличается на положительный множитель mu/std^2, который всё равно
+    снимается нормировкой.
+
+    alpha=0 обязан воспроизводить raw побитово -- это встроенный контроль.
+    """
+    if alpha <= 0.0:
+        return g
+    with torch.no_grad():
+        x0 = out["x_0"]
+        if mode == "snap-pos":
+            target = bank.snap_positions(x0)
+        else:
+            # Маска из ЕДИНИЦ, а не содержательные позиции цели: длина цели
+            # методу неизвестна, и подсовывать её сюда значило бы протащить
+            # в метод информацию об ответе.
+            ones = torch.ones(x0.shape[:2], dtype=torch.bool, device=x0.device)
+            target = bank.snap_sequence(x0, ones)
+        delta = target - x0
+
+        def unit(v):
+            return v / v.flatten(1).norm(dim=1).clamp_min(1e-12).view(-1, 1, 1)
+
+        dir_cls, dir_man = unit(g), unit(delta)
+        blended = (1.0 - alpha) * dir_cls + alpha * dir_man
+        out_g = (target_ratio * score_norm).view(-1, 1, 1) * unit(blended)
+
+        # Две диагностики, которые сами по себе проверяют диагноз работы:
+        # насколько текущая оценка далека от ближайшего реального объекта и
+        # толкает ли классификатор ПРОЧЬ от него. Если косинус около нуля,
+        # классификатор с многообразия не уводит, и чинить надо не это.
+        diag["snap_dist"] += (
+            delta.flatten(1).norm(dim=1)
+            / x0.flatten(1).norm(dim=1).clamp_min(1e-12)).cpu().tolist()
+        diag["cos_cls_manifold"] += (
+            (dir_cls * dir_man).flatten(1).sum(dim=1)).cpu().tolist()
+    return out_g
+
+
 def make_guidance(runner, bank, mode, scale_mode, target_ratio, lam,
-                  sigmoid_factor, diag):
+                  sigmoid_factor, diag, snap_alpha=0.0):
     def fn(x_t, t, out, cond=None, cond_mask=None, **kwargs):
         if cond is None:
             raise RuntimeError("guidance требует энкодинги промпта")
@@ -113,7 +188,7 @@ def make_guidance(runner, bank, mode, scale_mode, target_ratio, lam,
             grad = classifier_grad(runner, x_t, cond, t, cond_mask, sigmoid_factor)
 
         raw_norm = grad.flatten(1).norm(dim=1)
-        if mode != "raw":
+        if mode in ("tangent", "normal"):
             # Касательное оценивается в x_0 -- текущей оценке ЧИСТОГО состояния.
             # В x_t его оценивать нельзя: x_t зашумлен и лежит вне многообразия
             # по построению, соседи там бессмысленны.
@@ -129,6 +204,11 @@ def make_guidance(runner, bank, mode, scale_mode, target_ratio, lam,
             coef = torch.full_like(score_norm, lam).view(-1, 1, 1)
 
         g = coef * grad
+
+        if mode.startswith("snap"):
+            g = _blend_with_manifold(bank, mode, snap_alpha, g, out,
+                                     score_norm, target_ratio, diag)
+
         with torch.no_grad():
             diag["rel_norm"] += (g.flatten(1).norm(dim=1) / score_norm).cpu().tolist()
             diag["tangent_frac"] += (grad_norm / raw_norm.clamp_min(1e-12)
@@ -158,8 +238,9 @@ def main():
     config.training.batch_size_per_gpu = config.training.batch_size // dist.get_world_size()
 
     mode = os.environ.get("PROBE_GRAD_MODE", "tangent")
-    if mode not in ("raw", "tangent", "normal"):
-        raise SystemExit(f"PROBE_GRAD_MODE={mode!r}: ожидается raw | tangent | normal")
+    if mode not in ("raw", "tangent", "normal", "snap-pos", "snap-seq"):
+        raise SystemExit(f"PROBE_GRAD_MODE={mode!r}: ожидается "
+                         f"raw | tangent | normal | snap-pos | snap-seq")
     scale_mode = os.environ.get("PROBE_SCALE_MODE", "adaptive")
     if scale_mode not in ("adaptive", "const"):
         raise SystemExit(f"PROBE_SCALE_MODE={scale_mode!r}: ожидается adaptive | const")
@@ -172,12 +253,29 @@ def main():
     bank_size = int(os.environ.get("PROBE_BANK", "8192"))
     num_texts = int(os.environ.get("PROBE_NUM_TEXTS", "1000"))
     batch_size = int(os.environ.get("PROBE_BATCH_SIZE", "64"))
+    snap_alpha = float(os.environ.get("PROBE_SNAP_ALPHA", "0"))
+    seq_bank = int(os.environ.get("PROBE_SEQ_BANK", "8192"))
+    # Банк для МЕТОДА берётся из train. Касательное -- диагностика, там сойдёт
+    # и test с пропуском оцениваемых примеров; но притягивать генерации к
+    # латентам тестового сплита значит подглядывать в ответ, и рецензент снимет
+    # работу на этом одном предложении.
+    bank_split = os.environ.get(
+        "PROBE_BANK_SPLIT", "train" if mode.startswith("snap") else "test")
+
+    if mode.startswith("snap"):
+        if scale_mode != "adaptive":
+            raise SystemExit(
+                "snap-режимы требуют PROBE_SCALE_MODE=adaptive: alpha смешивает "
+                "НАПРАВЛЕНИЯ при одной доле шага, иначе он менял бы и шаг")
+        if not 0.0 <= snap_alpha <= 1.0:
+            raise SystemExit(f"PROBE_SNAP_ALPHA={snap_alpha}: ожидается [0, 1]")
 
     strength = (f"r{target_ratio:g}" if scale_mode == "adaptive" else f"l{lam:g}")
+    tag = mode if not mode.startswith("snap") else f"{mode}-a{snap_alpha:g}"
     out_path = os.environ.get(
         "PROBE_OUT",
         f"probe_results/projected_guidance-{config.data.datasets.datasets_list[0]}"
-        f"-{config.cond_encoder.augmentation_scheme}-{mode}-{scale_mode}-{strength}"
+        f"-{config.cond_encoder.augmentation_scheme}-{tag}-{scale_mode}-{strength}"
         f"-sig{int(sigmoid_factor)}.json")
 
     set_seed(config.seed)
@@ -188,9 +286,13 @@ def main():
 
     bank = None
     if mode != "raw":
+        # skip_examples нужен только на test: там банк иначе собрался бы по тем
+        # же примерам, которые генерируются. На train пересечения нет.
         bank = LatentBank.from_runner(
-            runner, size=bank_size, skip_examples=num_texts,
-            batch_size=batch_size, knn=knn, dim=tangent_dim)
+            runner, size=bank_size,
+            skip_examples=0 if bank_split != "test" else num_texts,
+            split=bank_split, batch_size=batch_size, knn=knn, dim=tangent_dim,
+            min_sequences=seq_bank if mode == "snap-seq" else 0)
 
     if dist.get_rank() == 0:
         print("=" * 72)
@@ -211,9 +313,10 @@ def main():
         print(f"  текстов           : {num_texts} (батч {batch_size})")
         print("=" * 72)
 
-    diag = {"rel_norm": [], "tangent_frac": []}
+    diag = {"rel_norm": [], "tangent_frac": [],
+            "snap_dist": [], "cos_cls_manifold": []}
     guidance_fn = make_guidance(runner, bank, mode, scale_mode, target_ratio,
-                                lam, sigmoid_factor, diag)
+                                lam, sigmoid_factor, diag, snap_alpha)
 
     loader = probe_loader(runner, split="test", batch_size=batch_size)
     gen_texts, trg_texts, src_texts = [], [], []
@@ -290,6 +393,15 @@ def main():
             print(f"средняя {what} доля энергии градиента: "
                   f"{fmt(mean(diag['tangent_frac']))} "
                   f"(у случайного вектора {bank.random_tangent_fraction:.4f})")
+        if mode.startswith("snap"):
+            print(f"alpha притягивания к данным      : {snap_alpha:g}"
+                  + ("   <- КОНТРОЛЬ: обязан совпасть с raw"
+                     if snap_alpha == 0 else ""))
+            print(f"удалённость x_0 от ближайшего реального: "
+                  f"{fmt(mean(diag['snap_dist']))}")
+            print(f"cos(градиент классификатора, к данным): "
+                  f"{fmt(mean(diag['cos_cls_manifold']))}   "
+                  f"<- около нуля = классификатор не уводит с данных")
         print("=" * 72)
 
     dump_json({
@@ -299,6 +411,10 @@ def main():
         "diffusion_checkpoint": runner.loaded_checkpoint_path,
         "step": runner.step,
         "grad_mode": mode,
+        "snap_alpha": snap_alpha if mode.startswith("snap") else None,
+        "bank_split": bank_split if bank is not None else None,
+        "snap_dist_mean": mean(diag["snap_dist"]),
+        "cos_cls_manifold_mean": mean(diag["cos_cls_manifold"]),
         "scale_mode": scale_mode,
         "target_ratio": target_ratio,
         "lambda": lam,
