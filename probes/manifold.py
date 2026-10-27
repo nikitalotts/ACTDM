@@ -39,6 +39,7 @@ lambda: ортогональная компонента разрушает сэ�
 x_t зашумлен и лежит вне многообразия по построению, локальные соседи там
 бессмысленны.
 """
+import os
 from typing import Optional, Sequence
 
 import torch
@@ -96,7 +97,8 @@ class LatentBank:
     @classmethod
     def from_runner(cls, runner, size: int = 8192, skip_examples: int = 0,
                     split: str = "test", batch_size: int = 64,
-                    min_sequences: int = 0, **kw) -> "LatentBank":
+                    min_sequences: int = 0, cache_path: Optional[str] = None,
+                    **kw) -> "LatentBank":
         """Собрать банк позиционных векторов чистых энкодингов.
 
         skip_examples пропускает начало сплита -- те примеры, на которых потом
@@ -109,6 +111,14 @@ class LatentBank:
         падал на «центроидов не меньше точек банка». Квантизация по темам
         требует банка заметно больше числа тем.
         """
+        meta = {"split": split, "size": size, "skip": skip_examples,
+                "min_sequences": min_sequences,
+                "checkpoint": getattr(runner, "loaded_checkpoint_path", None)}
+        if cache_path is not None:
+            cached = cls._load_cache(cache_path, meta, **kw)
+            if cached is not None:
+                return cached
+
         log(f"собираю банк латентов: {size} векторов "
             f"(пропускаю первые {skip_examples} примеров)")
         loader = probe_loader(runner, split=split, batch_size=batch_size)
@@ -137,8 +147,66 @@ class LatentBank:
         sequence_masks = torch.cat(seq_masks).contiguous()
         log(f"банк готов: позиции {tuple(bank.shape)}, "
             f"последовательности {tuple(sequences.shape)}")
+        if cache_path is not None:
+            cls._save_cache(cache_path, bank, sequences, sequence_masks, meta)
         return cls(bank, sequences=sequences,
                    sequence_masks=sequence_masks, **kw)
+
+    # --- кэш банка на диске ---------------------------------------------
+    #
+    # ЗАЧЕМ. Препроцессинг сплита в data/dataset_wiki.py идёт с
+    # load_from_cache_file=False и keep_in_memory=True, то есть НИКОГДА не
+    # кэшируется: шард train (1.5 млн пар) обрабатывается заново в каждом
+    # задании. Замер 26.10: 1 час 22 минуты на одно задание против секунд на
+    # test. Свип из десяти заданий потратил бы на это 13 GPU-часов -- треть
+    # остатка бюджета -- и ровно ноль из них на сам эксперимент.
+    #
+    # Поэтому кэшируем не датасет, а результат: сам банк. Первое задание
+    # собирает и пишет, остальные читают за секунды.
+
+    @staticmethod
+    def _cache_device() -> torch.device:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    @classmethod
+    def _load_cache(cls, path: str, meta: dict, **kw):
+        if not os.path.exists(path):
+            return None
+        blob = torch.load(path, map_location="cpu")
+        got = blob.get("meta", {})
+        # Несовпадение молча принимать нельзя: банк, собранный под другой
+        # чекпоинт или другой сплит, описывал бы не ту модель и не те данные, а
+        # прогон выглядел бы успешным. Для числа последовательностей условие
+        # односторонее: большего банка хватает, меньшего -- нет.
+        for key in ("split", "size", "checkpoint"):
+            if got.get(key) != meta.get(key):
+                raise RuntimeError(
+                    f"кэш банка {path} снят при {key}={got.get(key)!r}, "
+                    f"а запрошено {meta.get(key)!r}: удалите файл или укажите "
+                    f"другой PROBE_BANK_CACHE")
+        if got.get("min_sequences", 0) < meta.get("min_sequences", 0):
+            raise RuntimeError(
+                f"в кэше {path} последовательностей на "
+                f"{got.get('min_sequences')}, а нужно {meta.get('min_sequences')}")
+        dev = cls._cache_device()
+        log(f"банк прочитан из кэша {path}: позиции "
+            f"{tuple(blob['bank'].shape)}, последовательности "
+            f"{tuple(blob['sequences'].shape)}")
+        return cls(blob["bank"].to(dev), sequences=blob["sequences"].to(dev),
+                   sequence_masks=blob["sequence_masks"].to(dev), **kw)
+
+    @staticmethod
+    def _save_cache(path: str, bank, sequences, sequence_masks, meta) -> None:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        # Пишем через временный файл и переименовываем: десять заданий могут
+        # стартовать разом, и читатель не должен увидеть недописанный банк.
+        tmp = f"{path}.tmp{os.getpid()}"
+        torch.save({"bank": bank.cpu(), "sequences": sequences.cpu(),
+                    "sequence_masks": sequence_masks.cpu(), "meta": meta}, tmp)
+        os.replace(tmp, path)
+        log(f"банк сохранён в кэш {path}")
 
     def _knn_index(self, x: torch.Tensor) -> torch.Tensor:
         """Индексы k ближайших точек банка. x: [M, D] -> [M, k]."""

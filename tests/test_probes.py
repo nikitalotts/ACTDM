@@ -1796,3 +1796,50 @@ def test_snap_bank_comes_from_train_not_test():
         in body, "snap-режимы берут банк не из train"
     assert 'skip_examples=0 if bank_split != "test" else num_texts' in body, (
         "пропуск примеров применяется не только к test")
+
+
+def test_bank_cache_round_trips_and_refuses_a_stale_file(tmp_path):
+    """Кэш банка обязан читаться и ОТКАЗЫВАТЬСЯ при несовпадении.
+
+    Препроцессинг сплита в data/dataset_wiki.py идёт с
+    load_from_cache_file=False, то есть повторяется в каждом задании: на train
+    это 1 час 22 минуты (замер 26.10). Свип из десяти заданий отдал бы этому 13
+    GPU-часов, поэтому кэшируется результат -- сам банк.
+
+    Молча принять чужой кэш нельзя: банк, снятый под другой чекпоинт или сплит,
+    описывал бы не ту модель и не те данные, а прогон выглядел бы успешным."""
+    from probes.manifold import LatentBank
+
+    torch.manual_seed(0)
+    path = str(tmp_path / "bank.pt")
+    bank = torch.randn(64, 6)
+    seqs = torch.randn(8, 4, 6)
+    masks = torch.ones(8, 4, dtype=torch.bool)
+    meta = {"split": "train", "size": 64, "skip": 0,
+            "min_sequences": 8, "checkpoint": "ck/87500.pth"}
+    LatentBank._save_cache(path, bank, seqs, masks, meta)
+
+    got = LatentBank._load_cache(path, dict(meta), knn=8, dim=3)
+    assert got is not None and torch.allclose(got.bank.cpu(), bank), (
+        "кэш не прочитался или вернул другие векторы")
+
+    assert LatentBank._load_cache(str(tmp_path / "нет.pt"), dict(meta)) is None, (
+        "отсутствующий кэш должен молча означать «собрать заново»")
+
+    for key, bad in (("checkpoint", "ck/50000.pth"), ("split", "test"),
+                     ("size", 128)):
+        spoiled = dict(meta)
+        spoiled[key] = bad
+        with pytest.raises(RuntimeError):
+            LatentBank._load_cache(path, spoiled, knn=8, dim=3)
+
+    # Для числа последовательностей условие односторонее: большего банка
+    # хватает, меньшего -- нет.
+    more = dict(meta)
+    more["min_sequences"] = 16
+    with pytest.raises(RuntimeError):
+        LatentBank._load_cache(path, more, knn=8, dim=3)
+    less = dict(meta)
+    less["min_sequences"] = 4
+    assert LatentBank._load_cache(path, less, knn=8, dim=3) is not None, (
+        "кэш с ИЗБЫТКОМ последовательностей отвергать не за что")

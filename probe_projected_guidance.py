@@ -79,6 +79,9 @@ adaptive именно поэтому.
     PROBE_SNAP_ALPHA   (0)        сила притягивания к данным, 0..1; 0 это raw
     PROBE_SEQ_BANK     (8192)     последовательностей в банке для snap-seq
     PROBE_BANK_SPLIT   (train у snap) сплит для банка; test у диагностик
+    PROBE_BANK_CACHE   (авто)     файл кэша банка; пустая строка отключает.
+                                  На train препроцессинг стоит ~1.5 часа и
+                                  не кэшируется сам (см. data/dataset_wiki.py)
     PROBE_NUM_TEXTS    (1000)     сколько текстов сгенерировать
     PROBE_BATCH_SIZE   (64)       размер батча
     PROBE_OUT          (...)      путь к json
@@ -292,13 +295,23 @@ def main():
 
     bank = None
     if mode != "raw":
+        need_seq = seq_bank if mode == "snap-seq" else 0
+        # Кэш банка на диске. Препроцессинг сплита в data/dataset_wiki.py идёт
+        # с load_from_cache_file=False, то есть повторяется в КАЖДОМ задании:
+        # на train это 1 час 22 минуты (замер 26.10) против секунд на test.
+        # Свип из десяти заданий отдал бы этому 13 GPU-часов. Первое задание
+        # собирает банк и пишет, остальные читают за секунды.
+        default_cache = (
+            f"probe_results/latent_bank-{config.data.datasets.datasets_list[0]}"
+            f"-{bank_split}-{bank_size}-s{need_seq}-{runner.step}.pt")
+        cache_path = os.environ.get("PROBE_BANK_CACHE", default_cache) or None
         # skip_examples нужен только на test: там банк иначе собрался бы по тем
         # же примерам, которые генерируются. На train пересечения нет.
         bank = LatentBank.from_runner(
             runner, size=bank_size,
             skip_examples=0 if bank_split != "test" else num_texts,
             split=bank_split, batch_size=batch_size, knn=knn, dim=tangent_dim,
-            min_sequences=seq_bank if mode == "snap-seq" else 0)
+            min_sequences=need_seq, cache_path=cache_path)
 
     if dist.get_rank() == 0:
         print("=" * 72)
