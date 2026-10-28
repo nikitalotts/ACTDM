@@ -32,7 +32,7 @@ from data.util import tokenize, BatchEncoding, available_cpus
 from model.score_estimator import ScoreEstimatorEMB
 from model.encoder import Encoder
 from model.enc_normalizer import EncNormalizer
-from model.decoder import Decoder
+from model.decoder import Decoder, remap_legacy_decoder_state
 from model.conditional_encoder import ConditionalEncoder
 
 from estimation_utils.util import gather_texts, compute_metric
@@ -304,7 +304,7 @@ class DiffusionRunner:
             self.encoder.load_state_dict(load["encoder"])
             print("Encoder loaded from checkpoint")
         if "decoder" in load:
-            self.decoder.load_state_dict(load["decoder"])
+            self.decoder.load_state_dict(remap_legacy_decoder_state(load["decoder"]))
             print("Decoder loaded from checkpoint")
         
     def save_checkpoint(self, last: bool = False) -> None:
@@ -455,7 +455,7 @@ class DiffusionRunner:
             )
         checkpoint = torch.load(decoder_path)
         print('DECINCH', "decoder" in checkpoint, checkpoint.keys())
-        self.decoder.load_state_dict(checkpoint["decoder"])
+        self.decoder.load_state_dict(remap_legacy_decoder_state(checkpoint["decoder"]))
 
     def switch_to_ema(self) -> None:
         ema = self.ema

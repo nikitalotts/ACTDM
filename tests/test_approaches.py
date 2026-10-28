@@ -3879,3 +3879,46 @@ def test_decoder_error_names_everything_it_looked_for():
 
     src = inspect.getsource(DiffusionRunner.restore_decoder)
     assert "name_candidates" in src, "ошибка молчит про второе имя"
+
+
+def test_legacy_decoder_checkpoint_loads_into_the_current_class():
+    """Чекпоинт исходного BertDecoder обязан грузиться в текущий Decoder.
+
+    На rocstories декодер обучен кодом из tencdm, где три слоя лежали внутри HF
+    BertEncoder (bert.layer.{i}.*), а в форке тот же слой называется
+    blocks.{i}.*. Модули совпадают один в один, но strict-загрузка падает на
+    именах -- на этом встали все 16 заданий 28.10.
+    """
+    from model.decoder import Decoder, remap_legacy_decoder_state
+
+    cfg = create_config(make_args("unconditional", dataset_name="rocstories"))
+    decoder = Decoder(decoder_config=cfg.decoder, diffusion_config=cfg.se_config)
+    current = decoder.state_dict()
+
+    legacy = {("bert.layer." + k[len("blocks."):] if k.startswith("blocks.") else k): v
+              for k, v in current.items()}
+    assert sum(k.startswith("bert.layer.") for k in legacy) >= 3, "подделка не похожа на старый формат"
+
+    # strict: переименование обязано покрыть ВСЕ ключи, иначе часть весов
+    # осталась бы случайной, а декодер молча врал бы текст
+    decoder.load_state_dict(remap_legacy_decoder_state(legacy))
+
+    assert remap_legacy_decoder_state(current) is current, (
+        "современный чекпоинт не должен переписываться")
+
+
+def test_both_decoder_load_sites_go_through_the_remap():
+    """Переименование стоит на ОБОИХ путях загрузки.
+
+    Декодер грузится и из своего файла (restore_decoder), и из чекпоинта
+    диффузии (restore_parameters). Починка одного пути оставила бы второй
+    падать на тех же данных.
+    """
+    import re
+
+    body = open("diffusion_holder.py", encoding="utf-8").read()
+    loads = re.findall(r"self\.decoder\.load_state_dict\((.*?)\)\n", body)
+    assert len(loads) == 2, f"путей загрузки декодера стало {len(loads)}: {loads}"
+    for arg in loads:
+        assert arg.startswith("remap_legacy_decoder_state("), (
+            f"загрузка декодера мимо переименования: {arg}")

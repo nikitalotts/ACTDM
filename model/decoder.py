@@ -4,6 +4,39 @@ from copy import deepcopy
 from .score_estimator import BertBlock
 
 
+# Декодеры, обученные в исходном tencdm, это BertDecoder: там три слоя лежали
+# внутри HF BertEncoder, то есть под именами bert.layer.{i}.*, а здесь тот же
+# слой называется blocks.{i}.*. Веса переносимы один в один:
+#   * BertBlock здесь -- это переписанный BertLayer с теми же подмодулями
+#     attention / intermediate / output и тем же порядком операций;
+#   * в безусловном режиме исходный BertDecoder вызывался как decoder(latent),
+#     без attention_mask -- ровно так, как считает Decoder.forward ниже.
+# Совпадает и остальное пространство: score_estimator и encoder в форке не
+# менялись, так что чекпоинт диффузии грузится как есть.
+#
+# Так что достаточно переименовать префикс. Загрузка остаётся strict:
+# переименование обязано дать ТОЧНОЕ совпадение ключей, иначе часть весов
+# осталась бы случайной и декодер молча врал бы текст.
+LEGACY_BLOCK_PREFIX = "bert.layer."
+
+
+def remap_legacy_decoder_state(state):
+    """state_dict старого BertDecoder -> имена текущего Decoder.
+
+    Современный чекпоинт возвращается тем же объектом без копирования.
+    """
+    if not any(k.startswith(LEGACY_BLOCK_PREFIX) for k in state):
+        return state
+    remapped = {}
+    for key, value in state.items():
+        if key.startswith(LEGACY_BLOCK_PREFIX):
+            key = "blocks." + key[len(LEGACY_BLOCK_PREFIX):]
+        remapped[key] = value
+    print(f"Decoder: чекпоинт старого BertDecoder, "
+          f"{LEGACY_BLOCK_PREFIX}* переименованы в blocks.*")
+    return remapped
+
+
 class Decoder(nn.Module):
     def __init__(self, decoder_config, diffusion_config):
         super().__init__()
