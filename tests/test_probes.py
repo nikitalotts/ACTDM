@@ -1871,3 +1871,52 @@ def test_diagnostics_are_resolved_by_noise_level():
     # Пустая корзина -- это None, а не ноль: ноль читался бы как измеренное
     # значение.
     assert bins_by_t([0.9], [1.0])[0][3] is None
+
+
+def test_conditional_lift_is_zero_without_conditioning():
+    """УСЛОВНЫЙ ПРИРОСТ обязан быть нулевым у несвязанных генераций.
+
+    bert не различает "улучшилась обусловленность" и "улучшилась беглость": при
+    alpha=1, где условного сигнала нет вообще, он вышел 0.46596 против пола
+    0.4605. Прирост F1(своя цель) - F1(чужая цель) от беглости свободен -- всё,
+    что улучшает текст вообще, поднимает оба слагаемых и из разности уходит."""
+    from analyze_paired_lift import content_words, f1, per_example
+
+    assert content_words("The cat and THE dog") == ["cat", "dog"], (
+        "служебные слова не отфильтрованы -- они совпадают у любых двух "
+        "английских текстов и глушат сигнал")
+    assert f1(["a"], []) == 0.0 and f1([], ["a"]) == 0.0
+
+    # Генерации не связаны со своими целями: прирост обязан быть около нуля.
+    texts = [{"GEN": "alpha beta", "TRG": "gamma delta"},
+             {"GEN": "gamma delta", "TRG": "alpha beta"}]
+    own, other = per_example(texts)
+    assert sum(own) / 2 == 0.0, "несвязанные генерации дали ненулевое совпадение"
+
+    # Генерации совпадают со своими целями: прирост обязан быть большим.
+    texts = [{"GEN": "alpha beta", "TRG": "alpha beta"},
+             {"GEN": "gamma delta", "TRG": "gamma delta"}]
+    own, other = per_example(texts)
+    lift = sum(o - x for o, x in zip(own, other)) / 2
+    assert lift > 0.9, f"прирост у точного совпадения всего {lift:.3f}"
+
+
+def test_paired_analysis_refuses_runs_without_full_texts():
+    """Прогон, снятый до дампа всех текстов, парную статистику не даёт.
+
+    Молча посчитать по двадцати примерам из поля examples -- значит выдать
+    доверительный интервал, который в семь раз уже настоящего."""
+    import json as _json
+
+    from analyze_paired_lift import load
+
+    p = "probe_results/_тест_без_текстов.json"
+    os.makedirs("probe_results", exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        _json.dump({"metrics": {"bert-score": 0.5},
+                    "examples": [{"GEN": "a", "TRG": "b"}]}, f)
+    try:
+        with pytest.raises(SystemExit):
+            load(p)
+    finally:
+        os.remove(p)
