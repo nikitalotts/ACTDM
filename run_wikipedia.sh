@@ -109,7 +109,7 @@
 # (общий checkpoints_prefix) плюс классификатор на генерации.
 
 set -e
-export DATASET=wikipedia
+export DATASET="${DATASET:-wikipedia}"
 export PATH="$HOME/anaconda3/condabin:$PATH"
 # Боевой прогон обязан быть боевым. sbatch наследует окружение целиком, поэтому
 # любая переменная проверочных/замерочных режимов, случайно оставшаяся в шелле
