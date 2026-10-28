@@ -445,9 +445,12 @@ class DiffusionRunner:
     def restore_decoder(self):
         decoder_path = self.config.decoder.decoder_path
         if not os.path.exists(decoder_path):
+            # имён два (см. resolve_decoder_path): без них в логе не видно, что искали
+            tried = getattr(self.config.decoder, "name_candidates", None)
+            tried = ", ".join(f"{n}.pth" for n in tried) if tried else "имя из конфига"
             raise FileNotFoundError(
-                f"Не найден декодер: {decoder_path}. "
-                f"Имя вычисляется из конфига. Сначала обучите декодер: "
+                f"Не найден декодер в {os.path.dirname(decoder_path)}. "
+                f"Искали: {tried}. Сначала обучите декодер: "
                 f"ARCH_TYPE={self.config.architecture_type} bash train_decoder.sh"
             )
         checkpoint = torch.load(decoder_path)

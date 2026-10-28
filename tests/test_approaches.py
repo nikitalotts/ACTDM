@@ -3817,3 +3817,65 @@ def test_checkpoint_checker_reports_mismatches():
     assert cc.NUMBERED.match("last.pth") is None
     assert cc.NUMBERED.match("o87500.pth") is None, (
         "нечисловое имя не должно считаться нумерованным чекпоинтом")
+
+
+# =====================================================================
+# Имя декодера: один артефакт на два исторических написания
+# =====================================================================
+
+def _resolved_decoder(dataset, present, monkeypatch, at="guidance"):
+    """Путь декодера при условии, что на диске лежат ровно файлы present."""
+    import create_config as cc
+
+    monkeypatch.setattr(cc.os.path, "exists",
+                        lambda p: os.path.basename(p) in set(present))
+    return cc.create_config(make_args(at, dataset_name=dataset)).decoder
+
+
+@pytest.mark.parametrize("dataset", ["wikipedia", "rocstories"])
+def test_decoder_name_offers_both_historical_lengths(dataset, monkeypatch):
+    """Одна и та же архитектура декодера лежит под двумя именами.
+
+    max_sequence_len декодера равен 80 для всех датасетов, но в имя первых
+    версий шла константа 128. wikipedia обучена под 128, rocstories под 80 --
+    веса взаимозаменяемы, поэтому код обязан проверять оба имени, иначе один из
+    датасетов недоступен.
+    """
+    dec = _resolved_decoder(dataset, [], monkeypatch)
+    lens = [n.split("-")[-2] for n in dec.name_candidates]
+    assert lens == ["128", str(dec.max_sequence_len)], dec.name_candidates
+    assert dec.max_sequence_len == 80, (
+        "если длина декодера изменилась, обученные файлы больше не подходят")
+
+
+def test_decoder_prefers_the_file_that_exists(monkeypatch):
+    """Берётся то имя, под которым файл реально лежит, а не первое по списку."""
+    legacy, actual = _resolved_decoder("rocstories", [], monkeypatch).name_candidates
+    assert legacy != actual
+
+    only_legacy = _resolved_decoder("wikipedia", [f"{legacy}.pth"], monkeypatch)
+    assert only_legacy.name == legacy, "wikipedia обучена под именем со 128"
+
+    only_actual = _resolved_decoder("rocstories", [f"{actual}.pth"], monkeypatch)
+    assert only_actual.name == actual, "rocstories обучена под именем со 80"
+    assert only_actual.decoder_path.endswith(f"/{actual}.pth")
+
+
+def test_decoder_without_any_file_keeps_the_legacy_name(monkeypatch):
+    """Если нет ни одного файла, имя остаётся прежним.
+
+    train_decoder.py ПИШЕТ в decoder_path, и смена имени на пустом каталоге
+    развела бы обучение и загрузку по разным файлам.
+    """
+    dec = _resolved_decoder("rocstories", [], monkeypatch)
+    assert dec.name == dec.name_candidates[0]
+    assert "-128-transformer" in dec.name
+
+
+def test_decoder_error_names_everything_it_looked_for():
+    """В логе кластера должно быть видно оба имени, иначе причину не найти."""
+    import inspect
+    from diffusion_holder import DiffusionRunner
+
+    src = inspect.getsource(DiffusionRunner.restore_decoder)
+    assert "name_candidates" in src, "ошибка молчит про второе имя"

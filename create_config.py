@@ -293,18 +293,10 @@ def create_config(args):
 
     decoder = config.decoder = create_decoder_config()
     decoder.dataset = data.datasets.datasets_list[0]
-    decoder.name = f"decoder-{model.encoder_name_hash}-128-transformer"
-    decoder.name += decoder.suffix
     decoder.is_conditional = config.use_cross_attention
-    if decoder.is_conditional:
-        decoder.name += "-conditional"
-    if config.emb:
-        decoder.name += "-emb"
-    # декодер обязан жить в том же пространстве латентов и на той же нарезке данных
-    decoder.name += artifact_suffix(config)
-    decoder.decoder_path = f"{data.base_path}/{data.datasets.datasets_list[0]}/{decoder.name}.pth"
     if decoder.max_sequence_len < data.max_sequence_len:
         raise Exception("Decoder max_sequence_len is less than required")
+    resolve_decoder_path(config)
 
     cond_encoder = config.cond_encoder = create_cond_encoder_config()
     cond_encoder.dataset = data.datasets.datasets_list[0]
@@ -711,6 +703,55 @@ def metrics_for_mode(is_pipeline_conditional):
         "metrics": ["mauve", "div", "ppl"],
         "tracked_metric": "mauve",
     }
+
+
+# Длина, зашитая в имя декодера первыми версиями. Она не равна ни длине
+# данных (wikipedia 64, rocstories 35), ни собственному max_sequence_len декодера
+# (80), то есть смысла не несёт и является частью строки.
+LEGACY_DECODER_NAME_LEN = 128
+
+
+def decoder_artifact_name(config, name_len):
+    """Имя артефакта декодера с заданной длиной в имени."""
+    name = f"decoder-{config.model.encoder_name_hash}-{name_len}-transformer"
+    name += config.decoder.suffix
+    if config.decoder.is_conditional:
+        name += "-conditional"
+    if config.emb:
+        name += "-emb"
+    # декодер обязан жить в том же пространстве латентов и на той же нарезке данных
+    name += artifact_suffix(config)
+    return name
+
+
+def resolve_decoder_path(config):
+    """Выбрать имя декодера среди допустимых по тому, что лежит на диске.
+
+    Архитектура декодера одна для всех датасетов (max_sequence_len=80), а вот
+    ИМЕНА файлов расходятся исторически: wikipedia обучалась, когда в имя
+    шла константа 128, rocstories -- когда фактическая длина декодера 80.
+    Веса совместимы в любую сторону, поэтому просто ищем оба имени.
+
+    Первым в списке стоит легаси-имя: если нет ни одного файла, именно оно
+    останется в decoder.name, и train_decoder.py напишет туда, куда писал до этой
+    правки -- обучение не меняет поведения.
+    """
+    decoder = config.decoder
+    data = config.data
+    artifacts_dir = f"{data.base_path}/{data.datasets.datasets_list[0]}"
+    names = []
+    for name_len in (LEGACY_DECODER_NAME_LEN, decoder.max_sequence_len):
+        name = decoder_artifact_name(config, name_len)
+        if name not in names:
+            names.append(name)
+    decoder.name_candidates = names
+    decoder.name = names[0]
+    for name in names:
+        if os.path.exists(f"{artifacts_dir}/{name}.pth"):
+            decoder.name = name
+            break
+    decoder.decoder_path = f"{artifacts_dir}/{decoder.name}.pth"
+    return decoder.decoder_path
 
 
 def artifact_suffix(config):
