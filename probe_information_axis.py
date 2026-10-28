@@ -128,8 +128,7 @@ import torch
 import torch.distributed as dist
 
 from create_config import create_config, metrics_for_mode
-from estimation_utils.metrics import compute_metric
-from estimation_utils.metrics import compute_mauve
+from estimation_utils.metrics import compute_mauve, compute_metric
 from probes.common import (
     build_probe_runner, content_mask, dump_json, encode_batch,
     latents_to_tokens, log, masked_cosine, masked_norm, probe_loader,
@@ -460,6 +459,30 @@ def main():
     target_mauve = mauve_or_none(steer_texts, trg_texts, "цель против реальных")
     gen_mauve = mauve_or_none(gen_texts, trg_texts, "генерация против реальных")
 
+    # MAUVE НЕ РАБОТАЕТ НА ТЫСЯЧЕ ТЕКСТОВ -- замер 28.10.
+    #
+    # На обоих датасетах MAUVE цели вышел 0.004 на ВСЕХ beta, включая
+    # beta=0, где цель -- буквально реальная последовательность из банка.
+    # На rocstories все десять значений совпали до пятого знака (0.00407):
+    # два корпуса по 1000 текстов в признаках gpt2-large разделяются
+    # идеально, и метрика возвращает своё минимальное значение, которое
+    # зависит только от числа текстов. Разрешения здесь у неё нет.
+    # Для сравнения: на 5000 сэмплов безусловная модель даёт MAUVE 0.88.
+    #
+    # Перплексия такой беды не имеет: она считается по КАЖДОМУ тексту
+    # отдельно, от размера корпуса не зависит и растёт ровно тогда, когда
+    # текст перестаёт быть текстом. Это и есть прямая мера утверждения.
+    def ppl_or_none(texts, label):
+        try:
+            log(f"перплексия {label} (gpt-neo-1.3B)...")
+            return float(compute_metric("ppl", predictions=texts, references=texts))
+        except Exception as exc:  # noqa: BLE001 -- диагностика не должна падать
+            print(f"[PROBE] перплексия {label} не посчитана: {exc}", flush=True)
+            return None
+
+    target_ppl = ppl_or_none(steer_texts, "ЦЕЛИ")
+    gen_ppl = ppl_or_none(gen_texts, "генерации")
+
     def mean(xs):
         return float(sum(xs) / len(xs)) if xs else None
 
@@ -483,6 +506,9 @@ def main():
         print(f"MAUVE ЦЕЛИ против реальных     : {fmt(target_mauve)}   "
               f"<- ЯВЛЯЕТСЯ ЛИ ЦЕЛЬ ЕЩЁ ТЕКСТОМ")
         print(f"MAUVE генерации против реальных: {fmt(gen_mauve)}")
+        print(f"перплексия ЦЕЛИ              : {fmt(target_ppl)}   "
+              f"<- ЯВЛЯЕТСЯ ЛИ ЦЕЛЬ ЕЩЁ ТЕКСТОМ (MAUVE здесь слеп)")
+        print(f"перплексия генерации         : {fmt(gen_ppl)}")
         print(f"верность цели (GEN vs STEER)     : {fidelity['bert-score']:.5f}   "
               f"<- ДОШЁЛ ЛИ сэмплер до цели")
         print(f"зазор по отдельным позициям      : {fmt(mean(diag['manifold_gap']))}   "
@@ -528,6 +554,8 @@ def main():
         "rel_norm_mean": mean(diag["rel_norm"]),
         "target_mauve": target_mauve,
         "gen_mauve": gen_mauve,
+        "target_ppl": target_ppl,
+        "gen_ppl": gen_ppl,
         # ВСЕ тексты, а не двадцать: по двадцати примерам не посчитать ни
         # парную статистику, ни распределённые метрики задним числом, а
         # пересъёмка прогона стоит GPU-часов.
