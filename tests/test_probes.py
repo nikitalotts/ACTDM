@@ -2105,7 +2105,8 @@ def test_separation_estimator_is_offline_and_unbiased():
     а не данные, поэтому нужна поправка.
     """
     src = open("estimate_separation.py", encoding="utf-8").read()
-    assert "sqrt(d_eff)" in src, "sigma не делится на корень из размерности"
+    assert "rms_within / math.sqrt(de)" in src, (
+        "sigma не делится на корень из эффективной размерности")
     assert "pr_corrected" in src, "нет поправки на нехватку точек"
     assert "ln K" in src, "условие из THEORY.md не проверяется"
     for forbidden in ("cuda", "runner", "generate"):
@@ -2113,3 +2114,42 @@ def test_separation_estimator_is_offline_and_unbiased():
 
     # кластеры обязаны строиться ТЕМ ЖЕ кодом, иначе числа не про нашу ось
     assert "from probes.degrade import kmeans, pool_sequences" in src
+
+
+def test_separation_estimator_refuses_a_thin_bank():
+    """Оценщик обязан кричать, когда точек мало относительно размерности.
+
+    Прогон 28.10 прочитал банк со 192 последовательностями в 49152
+    измерениях: при K=64 это по три точки на кластер, а поправка Марченко--
+    Пастура умножала d_eff на 260 -- то есть экстраполяция, а не измерение.
+    Вердикт «ВЫПОЛНЕНО» там ничего не значил, и без предупреждения его бы
+    унесли в статью.
+    """
+    src = open("estimate_separation.py", encoding="utf-8").read()
+    assert "РЕЗУЛЬТАТ НЕНАДЁЖЕН" in src, "нет предупреждения о негодных данных"
+    assert "gamma" in src and "> 10" in src, "не проверяется нехватка точек"
+    assert "20 * level" in src, "не проверяется число точек на кластер"
+    # вывод печатается по ОБЕИМ оценкам d_eff: сырая делает условие строже,
+    # и если расходятся -- верить нельзя
+    assert "lhs_min_raw" in src, "нет консервативной оценки"
+    assert "КОНСЕРВАТИВНО" in src
+
+
+def test_axis_probe_caches_its_bank():
+    """Ось обязана сохранять банк на диск.
+
+    Во-первых, десять заданий свипа собирают один и тот же банк. Во-вторых,
+    без файла на диске посчитать по банку что-либо задним числом (спектр,
+    разнесённость мод) нельзя без нового GPU-прогона -- ровно на это мы и
+    напоролись: единственный кэш на диске был чужой, от snap, с другим
+    сплитом и без требования по последовательностям.
+    """
+    src = open("probe_information_axis.py", encoding="utf-8").read()
+    assert "cache_path=os.environ.get(\"PROBE_BANK_CACHE\"" in src, (
+        "ось не кэширует банк")
+    # min_sequences ОБЯЗАН быть в имени: банк с требованием и без -- разные,
+    # и при need_seq=0 последовательностей набираются сотни вместо тысяч
+    cache = src[src.index("default_cache = ("):]
+    cache = cache[:cache.index(")\n")]
+    assert "{need_seq}" in cache, "в имени кэша нет min_sequences"
+    assert "{runner.step}" in cache, "в имени кэша нет шага чекпоинта"

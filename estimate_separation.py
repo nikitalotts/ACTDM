@@ -139,8 +139,18 @@ def analyse(seq: torch.Tensor, level: int, seed: int = 0) -> dict:
     delta_med = float(between.median())
 
     spec = spectrum_stats(torch.cat(resid), L * D) if resid else {}
+
+    # ДВЕ ОЦЕНКИ, А НЕ ОДНА. Сырой PR занижает d_eff, то есть завышает
+    # sigma и делает условие ТРУДНЕЕ для выполнения; поправка МП точна
+    # только для изотропного шума и при большом gamma является экстраполяцией.
+    # Вывод надёжен только если обе оценки говорят одно и то же.
+    def _sigma(de):
+        return rms_within / math.sqrt(de) if de == de and de > 0 else float("nan")
+
     d_eff = spec.get("pr_corrected", float("nan"))
-    sigma = rms_within / math.sqrt(d_eff) if d_eff == d_eff and d_eff > 0 else float("nan")
+    d_eff_raw = spec.get("pr", float("nan"))
+    sigma = _sigma(d_eff)
+    sigma_raw = _sigma(d_eff_raw)
 
     return {
         "level": level,
@@ -148,7 +158,12 @@ def analyse(seq: torch.Tensor, level: int, seed: int = 0) -> dict:
         "min_size": min(sizes), "max_size": max(sizes),
         "nominal_dim": L * D,
         "d_eff": d_eff,
-        "d_eff_raw": spec.get("pr", float("nan")),
+        "d_eff_raw": d_eff_raw,
+        "sigma_raw": sigma_raw,
+        "lhs_min_raw": (delta_min ** 2) / (4 * sigma_raw ** 2) if sigma_raw == sigma_raw else float("nan"),
+        "gamma": spec.get("gamma", float("nan")),
+        "n_seq": n,
+        "sizes": sizes,
         "top": spec.get("top", {}),
         "spec_n": spec.get("n_used"),
         "rms_within": rms_within,
@@ -211,9 +226,33 @@ def report(path: str, levels: List[int]) -> None:
         print(f"    по медианному  Delta: {r['lhs_median']:.1f}  "
               f"-> {'ВЫПОЛНЕНО' if ok_med else 'НЕ ВЫПОЛНЕНО'}")
         print("")
-        print(f"  запас по экспоненте: exp(-Delta^2(K-1)/(4K sigma^2)) * K = "
-              f"{level * math.exp(-r['lhs_min'] * (level - 1) / level):.3e}")
-        print("    (это оценка p(центроид)/p(мода) из THEORY.md, формула (2))")
+        print(f"    КОНСЕРВАТИВНО (сырой d_eff): {r['lhs_min_raw']:.1f}  "
+              f"-> {'ВЫПОЛНЕНО' if r['lhs_min_raw'] > r['rhs'] else 'НЕ ВЫПОЛНЕНО'}")
+
+        warn = []
+        if r["gamma"] == r["gamma"] and r["gamma"] > 10:
+            warn.append(
+                f"точек мало относительно размерности: gamma = d/n = {r['gamma']:.0f}. "
+                f"Поправка МП умножает d_eff на {1 + r['gamma']:.0f}, то есть это "
+                f"экстраполяция, а не измерение")
+        small = sum(1 for x in r["sizes"] if x < 5)
+        if small:
+            warn.append(f"кластеров меньше 5 точек: {small} из {r['clusters']}")
+        if r["n_seq"] < 20 * level:
+            warn.append(f"на K={level} нужно хотя бы {20 * level} последовательностей, "
+                        f"есть {r['n_seq']}")
+        if warn:
+            print("")
+            print("  !!! РЕЗУЛЬТАТ НЕНАДЁЖЕН:")
+            for w in warn:
+                print(f"      - {w}")
+            print("      Банк с достаточным числом последовательностей пишет стадия")
+            print("      probes-offmanifold (PROBE_SEQ_BANK=8192), файл latent_bank-*-s8192-*.pt")
+        else:
+            print("")
+            print(f"  запас по экспоненте: exp(-Delta^2(K-1)/(4K sigma^2)) * K = "
+                  f"{level * math.exp(-min(r['lhs_min'], 700) * (level - 1) / level):.3e}")
+            print("    (оценка p(центроид)/p(мода) из THEORY.md, формула (2))")
 
 
 def main() -> None:

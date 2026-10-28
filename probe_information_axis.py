@@ -112,6 +112,7 @@ mixture -- выигрыш от множественной формы при то
                                   расстояний по кандидатам: ->0 жесткий
                                   argmin (цель на данных), ->inf равномерный
                                   вес (цель -- среднее кандидатов)
+    PROBE_BANK_CACHE   (авто)      файл кэша банка; пустая строка отключает
     PROBE_SEQ_BANK     (1024)     последовательностей в банке (должно быть
                                   больше числа тем, иначе k-means падает)
     PROBE_TARGET_RATIO (0.1)      доля шага ||lam*grad||/||score||
@@ -289,9 +290,22 @@ def main():
             raise SystemExit(
                 f"PROBE_SEQ_BANK={need_seq} не больше числа тем {level}: "
                 f"квантизация по темам требует банка больше числа центроидов")
+        # КЭШ БАНКА. Десять заданий свипа собирают ОДИН И ТОТ ЖЕ банк:
+        # тот же сплит, чекпоинт и сид. Без кэша это десять пересборок подряд,
+        # а главное -- банк не остаётся на диске, и посчитать по нему что-то
+        # задним числом (разнесённость мод, спектр) нельзя без нового GPU-прогона.
+        #
+        # min_sequences в имени обязательно: банк с требованием по
+        # последовательностям и без него -- разные банки. При need_seq=0
+        # последовательностей набирается сотни вместо тысяч, и перепутать их
+        # значит посчитать кластеры по сотне точек и не заметить.
+        default_cache = (
+            f"probe_results/latent_bank-{config.data.datasets.datasets_list[0]}"
+            f"-test-{bank_size}-s{need_seq}-{runner.step}.pt")
         bank = LatentBank.from_runner(
             runner, size=bank_size, skip_examples=num_texts,
-            batch_size=batch_size, min_sequences=need_seq)
+            batch_size=batch_size, min_sequences=need_seq,
+            cache_path=os.environ.get("PROBE_BANK_CACHE", default_cache) or None)
 
     if dist.get_rank() == 0:
         print("=" * 72)
