@@ -2067,3 +2067,49 @@ def test_axis_has_a_direct_measure_with_resolution():
     # пол MAUVE задокументирован рядом с кодом, иначе 0.004 прочтут как
     # «цель совсем не текст» и припишут это закону
     assert "0.00407" in src, "наблюдение про пол MAUVE нигде не зафиксировано"
+
+
+def test_gs_sweep_stage_exists_and_varies_the_scale():
+    """Свип по силе guidance на wikipedia.
+
+    На rocstories в дипломе перебраны lambda от 10 до 100000 и показано, что
+    лучше не становится. На wikipedia взято только lambda=10, и без свипа
+    вывод «guidance проигрывает» там держится на одной точке -- первое, что
+    спросит рецензент.
+    """
+    import re
+
+    body = open("run_wikipedia.sh", encoding="utf-8").read()
+    assert "gs-sweep)" in body, "нет стадии свипа по силе guidance"
+    stage = body[body.index("    gs-sweep)"):]
+    stage = stage[:stage.index(";;")]
+
+    assert "CG_SCALE=${GS}" in stage, "стадия не меняет силу guidance"
+    m = re.search(r"CG_SCALES:-([0-9 .]+)\}", stage)
+    assert m, "в стадии нет сетки по lambda"
+    scales = [float(x) for x in m.group(1).split()]
+    assert 10.0 in scales, f"нет рабочей точки lambda=10: {scales}"
+    assert min(scales) < 10.0 < max(scales), (
+        f"сетка не окружает рабочую точку с обеих сторон: {scales}")
+    # шаг сравнения обязан быть приколот, иначе точки свипа снимутся с разных
+    # чекпоинтов и кривая будет не про силу guidance
+    assert "CHECKPOINT_STEP" in stage
+
+
+def test_separation_estimator_is_offline_and_unbiased():
+    """Оценка Delta и sigma считается по диску и не путает RMS с sigma.
+
+    Для N(mu, sigma^2 I_d) выполнено E||x-mu||^2 = d sigma^2, то есть брать
+    среднее расстояние до центра за sigma -- ошибка в sqrt(d) раз, а d здесь
+    десятки тысяч. Плюс participation ratio при n <~ d меряет нехватку точек,
+    а не данные, поэтому нужна поправка.
+    """
+    src = open("estimate_separation.py", encoding="utf-8").read()
+    assert "sqrt(d_eff)" in src, "sigma не делится на корень из размерности"
+    assert "pr_corrected" in src, "нет поправки на нехватку точек"
+    assert "ln K" in src, "условие из THEORY.md не проверяется"
+    for forbidden in ("cuda", "runner", "generate"):
+        assert forbidden not in src, f"скрипт требует большего, чем диск: {forbidden}"
+
+    # кластеры обязаны строиться ТЕМ ЖЕ кодом, иначе числа не про нашу ось
+    assert "from probes.degrade import kmeans, pool_sequences" in src

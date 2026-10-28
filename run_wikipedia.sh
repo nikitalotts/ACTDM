@@ -31,6 +31,9 @@
 #                                   потому что eval переоценивает и уже
 #                                   посчитанные genie/diffuseq/uncond/gpt
 #   ./run_wikipedia.sh eval         финальная оценка всех подходов (после всего)
+#   ./run_wikipedia.sh gs-sweep  СИЛА GUIDANCE на wikipedia: lambda по сетке
+#                                   1..250, один сид. На rocstories такой свип
+#                                   был в дипломе, на wikipedia не было. 6 заданий
 #   ./run_wikipedia.sh stat         статистическая оценка: NUM_SEEDS прогонов
 #                                   на подход, mean +- std и 95% CI. Шесть
 #                                   заданий -- genie, diffuseq, guidance x3, gpt.
@@ -314,6 +317,27 @@ case "$1" in
         ARCH_TYPE=gpt sbatch eval_gpt2.sh
         echo "==> метрики в логах slurm, тексты в generated_texts/<checkpoints_prefix>/"
         echo "==> для std и 95% CI по сидам: ./run_wikipedia.sh stat"
+        ;;
+    gs-sweep)
+        # СВИП ПО СИЛЕ GUIDANCE НА WIKIPEDIA.
+        #
+        # На rocstories в дипломе перебраны lambda от 10 до 100000 и показано,
+        # что лучше не становится: BERTScore 0.5564 при 10 и 0.2835 при 100000.
+        # На wikipedia взято только lambda = 10, и рецензент справедливо
+        # спросит, подбирали ли мы силу вообще. Без этого свипа вывод
+        # «guidance проигрывает» на wikipedia держится на одной точке.
+        #
+        # Сид один: свип нужен для выбора точки, а не для доверительных
+        # интервалов -- именно так он снимался и в дипломе (таблица 5.3).
+        # Итоговая точка потом считается стадией stat на 20 сидах.
+        export CHECKPOINT_STEP="${_CKPT_STEP:-87500}"
+        echo "==> CHECKPOINT_STEP=${CHECKPOINT_STEP}  схема=${AUG_SCHEME:-shuffled}"
+        for GS in ${CG_SCALES:-1 5 10 50 100 250}; do
+            ARCH_TYPE=guidance CG_SCALE=${GS} AUG_SCHEME="${AUG_SCHEME:-shuffled}" \
+                sbatch --time="${TIME_LIMIT:-06:00:00}" \
+                --job-name=gs-sweep-${GS} eval_diffusion.sh
+        done
+        echo "==> собрать: grep -h -A6 'wikipedia-test' slurm_logs/*gs-sweep*.log"
         ;;
     sweep-gpt)
         # У gpt есть температура и top_p, у диффузий таких ручек нет. Если взять
@@ -751,7 +775,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,113p' "$0"
+        sed -n '2,117p' "$0"
         exit 1
         ;;
 esac
