@@ -440,8 +440,12 @@ def main():
         print(f"  текстов           : {num_texts} (батч {batch_size})")
         print("=" * 72)
 
+    # Ключи объявляются ЗДЕСЬ, а не создаются по ходу: обычный dict даёт
+    # KeyError на первом же шаге обратного процесса, то есть задание
+    # падает через минуту после старта, когда всё уже загружено.
     diag = {"rel_norm": [], "tangent_frac": [],
-            "snap_dist": [], "cos_cls_manifold": [], "snap_t": []}
+            "snap_dist": [], "cos_cls_manifold": [], "snap_t": [],
+            "mode_pick_is_nn": [], "mode_align_spread": [], "mode_dist": []}
     guidance_fn = make_guidance(runner, bank, mode, scale_mode, target_ratio,
                                 lam, sigmoid_factor, diag, snap_alpha, mode_members=mode_members,
                                 mode_temp=mode_temp, mode_gen=mode_gen)
@@ -551,6 +555,9 @@ def main():
         "grad_mode": mode,
         "snap_alpha": snap_alpha if mode.startswith("snap") else None,
         "mode_members": mode_members if mode in MODE_MODES else None,
+        "mode_pick_is_nn": mean(diag["mode_pick_is_nn"]),
+        "mode_align_spread": mean(diag["mode_align_spread"]),
+        "mode_dist_mean": mean(diag["mode_dist"]),
         "mode_temp": mode_temp if mode == "mode-mean" else None,
         "bank_split": bank_split if bank is not None else None,
         "snap_dist_mean": mean(diag["snap_dist"]),

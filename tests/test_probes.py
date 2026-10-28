@@ -2206,3 +2206,24 @@ def test_mode_stage_takes_candidates_from_train():
     assert "PROBE_BANK_SPLIT=train" in stage, "кандидаты берутся не из train"
     assert "mode-rand" in stage, "в стадии нет контроля"
     assert "PROBE_MODE_TEMPS" in stage, "нет свипа по температуре усреднения"
+
+
+def test_every_diag_key_is_declared_up_front():
+    """Каждый ключ диагностики объявлен в diag до старта.
+
+    Прогон 28.10: режимы mode-* писали в diag["mode_pick_is_nn"], которого в
+    словаре не было. Обычный dict даёт KeyError на ПЕРВОМ шаге обратного
+    процесса -- то есть все пять заданий упали через минуту после старта,
+    когда модель, банк и загрузчик уже были подняты. Полминуты GPU на
+    задание впустую, и так на каждом новом ключе.
+    """
+    import re
+
+    src = open("probe_projected_guidance.py", encoding="utf-8").read()
+    written = set(re.findall(r'diag\[["\']([a-z_]+)["\']\]\s*\+=', src))
+    decl = src[src.index("diag = {"):]
+    decl = decl[:decl.index("}") + 1]
+    declared = set(re.findall(r'["\']([a-z_]+)["\']\s*:', decl))
+
+    missing = sorted(written - declared)
+    assert not missing, f"пишутся, но не объявлены: {missing}"
