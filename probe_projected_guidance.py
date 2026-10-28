@@ -118,8 +118,34 @@ def classifier_grad(runner, x_t, cond_x, t, cond_mask, sigmoid_factor=True):
     return grad
 
 
+def bins_by_t(ts, values, edges=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0)):
+    """Средние values по корзинам уровня шума. -> [(lo, hi, n, mean)].
+
+    Нужна, потому что среднее по всей траектории отвечает не на тот вопрос.
+    Замер 27.10 дал удалённость 1.2617 и косинус -0.0656 в среднем по всем
+    шагам солвера -- но при t -> 1 оценка x_0 заведомо мусорна, уводить её
+    некуда, и среднее определяется именно этими шагами. Решается текст при
+    МАЛОМ t (там же классификатор уверен: AUC 0.9997), и содержателен сход с
+    данных именно там. Если он сосредоточен при большом t, притягивание надо
+    включать не на всей траектории, и это уже другой метод.
+
+    Правая граница последней корзины включается: t ровно 1.0 иначе выпал бы из
+    разбивки целиком, а это самый шумный конец, где и живёт артефакт.
+    """
+    if not ts or len(ts) != len(values):
+        return []
+    out = []
+    last = edges[-1]
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = [v for tv, v in zip(ts, values)
+               if lo <= tv < hi or (hi == last and tv == hi)]
+        out.append((lo, hi, len(sel),
+                    float(sum(sel) / len(sel)) if sel else None))
+    return out
+
+
 def _blend_with_manifold(bank, mode, alpha, g, out, score_norm,
-                         target_ratio, diag):
+                         target_ratio, diag, t=None):
     """Подмешать к градиенту классификатора силу, тянущую цель НА данные.
 
     МЕТОД, КОТОРЫЙ СЛЕДУЕТ ИЗ ЗАКОНА. Свип 26.10 показал: при постоянной
@@ -178,6 +204,13 @@ def _blend_with_manifold(bank, mode, alpha, g, out, score_norm,
             / x0.flatten(1).norm(dim=1).clamp_min(1e-12)).cpu().tolist()
         diag["cos_cls_manifold"] += (
             (dir_cls * dir_man).flatten(1).sum(dim=1)).cpu().tolist()
+        # Уровень шума пишем рядом с каждым замером. Среднее по всей
+        # траектории отвечает не на тот вопрос: при t -> 1 оценка x_0 заведомо
+        # мусорна, уводить её некуда, и среднее определяется именно этими
+        # шагами. Содержателен сход с данных там, где РЕШАЕТСЯ ТЕКСТ, то есть
+        # при малом t, -- а это видно только с разбивкой.
+        if t is not None:
+            diag["snap_t"] += t.detach().reshape(-1).cpu().tolist()
 
         if alpha <= 0.0:
             return g
@@ -216,7 +249,7 @@ def make_guidance(runner, bank, mode, scale_mode, target_ratio, lam,
 
         if mode.startswith("snap"):
             g = _blend_with_manifold(bank, mode, snap_alpha, g, out,
-                                     score_norm, target_ratio, diag)
+                                     score_norm, target_ratio, diag, t)
 
         with torch.no_grad():
             diag["rel_norm"] += (g.flatten(1).norm(dim=1) / score_norm).cpu().tolist()
@@ -333,7 +366,7 @@ def main():
         print("=" * 72)
 
     diag = {"rel_norm": [], "tangent_frac": [],
-            "snap_dist": [], "cos_cls_manifold": []}
+            "snap_dist": [], "cos_cls_manifold": [], "snap_t": []}
     guidance_fn = make_guidance(runner, bank, mode, scale_mode, target_ratio,
                                 lam, sigmoid_factor, diag, snap_alpha)
 
@@ -421,6 +454,16 @@ def main():
             print(f"cos(градиент классификатора, к данным): "
                   f"{fmt(mean(diag['cos_cls_manifold']))}   "
                   f"<- около нуля = классификатор не уводит с данных")
+            rows = list(zip(
+                bins_by_t(diag["snap_t"], diag["snap_dist"]),
+                bins_by_t(diag["snap_t"], diag["cos_cls_manifold"])))
+            if rows:
+                print("")
+                print("разбивка по уровню шума (текст решается при МАЛОМ t):")
+                print("      t          замеров   удалённость   cos к данным")
+                for (lo, hi, n, dv), (_, _, _, cv) in rows:
+                    print(f"  {lo:.1f}-{hi:.1f}   {n:9d}   "
+                          f"{fmt(dv):>11}   {fmt(cv):>12}")
         print("=" * 72)
 
     dump_json({
@@ -434,6 +477,9 @@ def main():
         "bank_split": bank_split if bank is not None else None,
         "snap_dist_mean": mean(diag["snap_dist"]),
         "cos_cls_manifold_mean": mean(diag["cos_cls_manifold"]),
+        "snap_dist_by_t": bins_by_t(diag["snap_t"], diag["snap_dist"]),
+        "cos_cls_manifold_by_t": bins_by_t(diag["snap_t"],
+                                           diag["cos_cls_manifold"]),
         "scale_mode": scale_mode,
         "target_ratio": target_ratio,
         "lambda": lam,
