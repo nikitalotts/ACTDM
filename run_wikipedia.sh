@@ -162,10 +162,23 @@ case "$1" in
         # Активируем окружение сами -- иначе возьмется системный python2.7
         source ~/anaconda3/etc/profile.d/conda.sh
         conda activate /home/amshabalin/anaconda3/envs/pgwtd
-        python -m data.load --dataset_name wikipedia \
+        # Датасет берётся из DATASET, а не забивается: rocstories нужны тем же
+        # диагностикам на втором датасете. Тащить их из соседнего проекта опасно:
+        # схема нарезки запечёна в колонки text_src/text_trg ПРИ СКАЧИВАНИИ,
+        # и чужая нарезка не упадёт, а тихо даст ДРУГУЮ задачу, чем та, на
+        # которой учился чекпоинт. Здесь скачивание детерминировано (seed 0,
+        # 3000/7000), так что повторный запуск даёт те же самые сплиты.
+        #
+        # save_to_disk кладёт только dataset_dict.json и подкаталоги сплитов,
+        # так что лежащие рядом decoder-*.pth и statistics/ остаются на месте.
+        python -m data.load --dataset_name "${DATASET}" \
+            ${SPLIT_SCHEME:+--split_scheme ${SPLIT_SCHEME}} \
             ${NUM_TEXTS:+--num_texts ${NUM_TEXTS}}
-        echo "==> обучение читает только datasets/wikipedia; сырой кэш можно удалить:"
-        echo "==>   rm -rf ${HF_DATASETS_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/datasets}/wikimedia___wikipedia*"
+        echo "==> обучение читает только datasets/${DATASET}"
+        if [ "${DATASET}" = "wikipedia" ]; then
+            echo "==> сырой кэш можно удалить:"
+            echo "==>   rm -rf ${HF_DATASETS_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/datasets}/wikimedia___wikipedia*"
+        fi
         echo "==> дальше: ./run_wikipedia.sh stats   (и параллельно gpt)"
         ;;
     stats)

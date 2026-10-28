@@ -3922,3 +3922,23 @@ def test_both_decoder_load_sites_go_through_the_remap():
     for arg in loads:
         assert arg.startswith("remap_legacy_decoder_state("), (
             f"загрузка декодера мимо переименования: {arg}")
+
+
+def test_data_stage_downloads_the_requested_dataset():
+    """Стадия data качает тот датасет, который просят.
+
+    Нарезка на промпт/продолжение запекается в колонки text_src/text_trg ПРИ
+    СКАЧИВАНИИ, поэтому единственный безопасный способ получить rocstories --
+    тот же код, что задал нарезку. Забитое в стадию имя заставляло качать
+    вручную или тащить сплиты из соседнего проекта, где схема может быть
+    другой: это не падает, а тихо подменяет задачу.
+    """
+    body = open("run_wikipedia.sh", encoding="utf-8").read()
+    stage = body[body.index("\n    data)"):]
+    stage = stage[:stage.index(";;")]
+
+    assert "--dataset_name wikipedia" not in stage, "имя датасета забито в стадию"
+    assert '--dataset_name "${DATASET}"' in stage, "стадия не читает DATASET"
+    # схема нарезки обязана проходить насквозь: по умолчанию она берётся из
+    # default_split_scheme, но свериться с чужими артефактами иначе нечем
+    assert "SPLIT_SCHEME" in stage, "схему нарезки не передать"
