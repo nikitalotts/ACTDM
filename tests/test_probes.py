@@ -2005,3 +2005,43 @@ def test_axis_probe_dumps_every_text():
     assert '"texts"' in src, "нет поля texts"
     assert "min(20, len(gen_texts))" not in src, "дамп всё ещё обрезан до 20"
     assert "for i in range(len(gen_texts))" in src
+
+
+def test_axis_table_sorts_levels_as_numbers():
+    """Уровень -- число. При строковой сортировке 100 встаёт между 0 и 25.
+
+    Таблица оси читается как кривая по возрастанию beta, и переставленная
+    строка превращает монотонное падение в пилу.
+    """
+    import show_axis
+
+    rows = [{"level": 100, "shape": None, "sigma": None},
+            {"level": 0, "shape": None, "sigma": None},
+            {"level": 25, "shape": None, "sigma": None}]
+    rows.sort(key=lambda r: (r["level"] if r["level"] is not None else -1,
+                             str(r["shape"]), r["sigma"] or 0.0))
+    assert [r["level"] for r in rows] == [0, 25, 100]
+
+    src = open("show_axis.py", encoding="utf-8").read()
+    assert 'key=lambda r: (r["level"]' in src, "сортировка не по числовому уровню"
+
+
+def test_axis_table_reports_runs_without_mauve():
+    """Прогон без MAUVE обязан быть назван, а не слиться с остальными.
+
+    MAUVE добавлен позже свипов, и в старых дампах его нет. Пустая клетка,
+    поданная молча, читается как «ноль», то есть как «цель совсем не текст».
+    """
+    src = open("show_axis.py", encoding="utf-8").read()
+    assert "ВНИМАНИЕ" in src, "отсутствие метрики не выделено"
+    assert 'r["target_mauve"] is None' in src
+    # пустое значение печатается прочерком, а не нулём
+    assert 'return "—"' in src
+
+
+def test_axis_table_is_read_only():
+    """Скрипт только читает дампы: пересчёт стоил бы GPU-часов и мог бы
+    разойтись с тем, что уже записано в статью."""
+    src = open("show_axis.py", encoding="utf-8").read()
+    for forbidden in ("torch", "cuda", "dump_json", "open(path, \"w\")"):
+        assert forbidden not in src, f"скрипт делает больше, чем читает: {forbidden}"
