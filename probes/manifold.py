@@ -471,6 +471,20 @@ class LatentBank:
                 best_i = torch.where(take, di, best_i)
         return self.bank[best_i].reshape(x.shape).to(x.dtype)
 
+    def nearest_sequences(self, x: torch.Tensor, mask: torch.Tensor,
+                          k: int) -> torch.Tensor:
+        """k ближайших РЕАЛЬНЫХ последовательностей. [B,L,D] -> [B,k,L,D].
+
+        Нужны именно НЕСКОЛЬКО кандидатов, а не один ближайший: весь
+        смысл режимов mode-* в том, чтобы дать классификатору выбрать между
+        несколькими возможными продолжениями, а не вести к их среднему.
+        """
+        if self.sequences is None:
+            raise ValueError("нужен банк с последовательностями")
+        k = min(k, self.sequences.shape[0])
+        idx = self._seq_dist(x, mask).topk(k, dim=1, largest=False).indices
+        return self.sequences[idx].to(x.dtype)
+
     def snap_sequence(self, x: torch.Tensor,
                       mask: torch.Tensor) -> torch.Tensor:
         """Всю последовательность -- в ближайшую РЕАЛЬНУЮ из банка. [B,L,D].

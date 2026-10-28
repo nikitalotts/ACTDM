@@ -2153,3 +2153,56 @@ def test_axis_probe_caches_its_bank():
     cache = cache[:cache.index(")\n")]
     assert "{need_seq}" in cache, "в имени кэша нет min_sequences"
     assert "{runner.step}" in cache, "в имени кэша нет шага чекпоинта"
+
+
+def test_mode_guidance_targets_one_mode_not_the_average():
+    """Метод из выкладки: вести к ОДНОЙ моде, а не к их среднему.
+
+    Формула (3) в THEORY.md: score зашумлённой смеси -- выпуклая комбинация
+    направлений на моды, при большом шуме она указывает в центроид. Ось дала
+    цену усреднения при ОДНОЙ информации: реальная последовательность
+    кластера 0.5059 против среднего того же кластера 0.4019. Но там моду
+    выбирал оракул; здесь выбирает классификатор.
+    """
+    src = open("probe_projected_guidance.py", encoding="utf-8").read()
+    assert "MODE_MODES" in src
+    for m in ("mode-pick", "mode-mean", "mode-rand"):
+        assert m in src, f"нет режима {m}"
+
+    body = src[src.index("def _mode_guidance"):]
+    body = body[:body.index("\ndef ")]
+    # выбор делается по производной log p(y|x) вдоль направления к кандидату,
+    # то есть классификатором, а не по близости
+    assert "align" in body and "argmax" in body, "мода выбирается не классификатором"
+    # mode-mean обязан усреднять ТЕХ ЖЕ кандидатов, иначе сравнение не про
+    # усреднение, а про разные множества
+    assert "softmax" in body and "delta).sum(dim=1)" in body
+
+
+def test_mode_guidance_has_a_control_without_the_classifier():
+    """mode-rand -- контроль: та же механика, выбор без классификатора.
+
+    Без него прирост mode-pick нельзя отличить от эффекта самого притягивания
+    к реальным последовательностям: ровно на этом сгорел snap, где +0.004
+    оказались беглостью. Условный прирост у mode-rand обязан быть нулём.
+    """
+    src = open("probe_projected_guidance.py", encoding="utf-8").read()
+    body = src[src.index("def _mode_guidance"):]
+    body = body[:body.index("\ndef ")]
+    assert "mode-rand" in body and "randint" in body
+    assert "generator=generator" in body, "контроль невоспроизводим"
+
+
+def test_mode_stage_takes_candidates_from_train():
+    """Кандидаты берутся из TRAIN.
+
+    Притягивать генерацию к последовательностям тестового сплита -- значит
+    подглядывать в ответ, и работа снимается на этом одном предложении.
+    """
+    body = open("run_wikipedia.sh", encoding="utf-8").read()
+    assert 'if [ "$1" = "probes-mode" ]' in body, "нет стадии probes-mode"
+    stage = body[body.index('if [ "$1" = "probes-mode" ]'):]
+    stage = stage[:stage.index("\n        fi")]
+    assert "PROBE_BANK_SPLIT=train" in stage, "кандидаты берутся не из train"
+    assert "mode-rand" in stage, "в стадии нет контроля"
+    assert "PROBE_MODE_TEMPS" in stage, "нет свипа по температуре усреднения"

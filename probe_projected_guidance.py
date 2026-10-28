@@ -218,8 +218,70 @@ def _blend_with_manifold(bank, mode, alpha, g, out, score_norm,
         return (target_ratio * score_norm).view(-1, 1, 1) * unit(blended)
 
 
+MODE_MODES = ("mode-pick", "mode-mean", "mode-rand")
+
+
+def _mode_guidance(bank, mode, g, out, score_norm, target_ratio, diag,
+                   members, temp, generator):
+    """Вести к ОДНОЙ моде вместо усреднённой цели.
+
+    ПРЯМОЕ СЛЕДСТВИЕ ВЫКЛАДКИ. Формула (3) в THEORY.md говорит, что score
+    зашумлённой смеси есть ВЫПУКЛАЯ КОМБИНАЦИЯ направлений на моды, а при
+    большом шуме веса выравниваются и она указывает в центроид. Замер по оси
+    даёт цену этого усреднения: при ОДНОЙ И ТОЙ ЖЕ информации реальная
+    последовательность кластера даёт bert 0.5059, а среднее того же кластера --
+    0.4019. Разница 0.104 больше, чем весь разрыв между лучшим подходом и
+    полом. Но там мода выбиралась ОРАКУЛОМ (меткой кластера). Здесь моду
+    выбирает САМ КЛАССИФИКАТОР, без доступа к истине.
+
+    Как: берём M ближайших реальных последовательностей к текущей оценке
+    x_0 и считаем производную log p(y|x) вдоль направления к каждому из них --
+    это проекция градиента классификатора. Дальше три режима:
+
+      mode-pick -- вести к лучшему по этой производной (метод);
+      mode-mean -- вести к softmax-среднему тех же кандидатов (усреднение,
+                   то есть ровно то, что делает обычный guidance);
+      mode-rand -- вести к СЛУЧАЙНОМУ кандидату. КОНТРОЛЬ: та же
+                   механика, сигнала классификатора в выборе нет. Условный
+                   прирост здесь обязан быть нулём.
+
+    mode-pick против mode-mean при всём прочем равном -- и есть проверка
+    утверждения «беда в усреднении».
+    """
+    with torch.no_grad():
+        x0 = out["x_0"]
+        B = x0.shape[0]
+        ones = torch.ones(x0.shape[:2], device=x0.device, dtype=x0.dtype)
+        cand = bank.nearest_sequences(x0, ones, members)        # [B,M,L,D]
+        delta = cand - x0.unsqueeze(1)                          # [B,M,L,D]
+        dnorm = delta.flatten(2).norm(dim=2).clamp_min(1e-12)   # [B,M]
+
+        # производная log p(y|x) вдоль направления к кандидату
+        align = (g.unsqueeze(1) * delta).flatten(2).sum(dim=2) / dnorm
+
+        if mode == "mode-mean":
+            w = torch.softmax(align / max(temp, 1e-6), dim=1)
+            direction = (w.view(B, members, 1, 1) * delta).sum(dim=1)
+        else:
+            if mode == "mode-rand":
+                pick = torch.randint(members, (B,), generator=generator,
+                                     device="cpu").to(x0.device)
+            else:
+                pick = align.argmax(dim=1)
+            direction = delta[torch.arange(B, device=x0.device), pick]
+            diag["mode_pick_is_nn"] += (pick == 0).float().cpu().tolist()
+
+        spread = (align.max(dim=1).values - align.min(dim=1).values)
+        diag["mode_align_spread"] += spread.cpu().tolist()
+        diag["mode_dist"] += dnorm.min(dim=1).values.cpu().tolist()
+
+        dn = direction.flatten(1).norm(dim=1).clamp_min(1e-12).view(-1, 1, 1)
+        return (target_ratio * score_norm).view(-1, 1, 1) * (direction / dn)
+
+
 def make_guidance(runner, bank, mode, scale_mode, target_ratio, lam,
-                  sigmoid_factor, diag, snap_alpha=0.0):
+                  sigmoid_factor, diag, snap_alpha=0.0,
+                  mode_members=8, mode_temp=1.0, mode_gen=None):
     def fn(x_t, t, out, cond=None, cond_mask=None, **kwargs):
         if cond is None:
             raise RuntimeError("guidance требует энкодинги промпта")
@@ -250,6 +312,9 @@ def make_guidance(runner, bank, mode, scale_mode, target_ratio, lam,
         if mode.startswith("snap"):
             g = _blend_with_manifold(bank, mode, snap_alpha, g, out,
                                      score_norm, target_ratio, diag, t)
+        elif mode in MODE_MODES:
+            g = _mode_guidance(bank, mode, g, out, score_norm, target_ratio,
+                               diag, mode_members, mode_temp, mode_gen)
 
         with torch.no_grad():
             diag["rel_norm"] += (g.flatten(1).norm(dim=1) / score_norm).cpu().tolist()
@@ -280,9 +345,10 @@ def main():
     config.training.batch_size_per_gpu = config.training.batch_size // dist.get_world_size()
 
     mode = os.environ.get("PROBE_GRAD_MODE", "tangent")
-    if mode not in ("raw", "tangent", "normal", "snap-pos", "snap-seq"):
+    if mode not in ("raw", "tangent", "normal", "snap-pos", "snap-seq") + MODE_MODES:
         raise SystemExit(f"PROBE_GRAD_MODE={mode!r}: ожидается "
-                         f"raw | tangent | normal | snap-pos | snap-seq")
+                         f"raw | tangent | normal | snap-pos | snap-seq | "
+                         f"mode-pick | mode-mean | mode-rand")
     scale_mode = os.environ.get("PROBE_SCALE_MODE", "adaptive")
     if scale_mode not in ("adaptive", "const"):
         raise SystemExit(f"PROBE_SCALE_MODE={scale_mode!r}: ожидается adaptive | const")
@@ -296,6 +362,15 @@ def main():
     num_texts = int(os.environ.get("PROBE_NUM_TEXTS", "1000"))
     batch_size = int(os.environ.get("PROBE_BATCH_SIZE", "64"))
     snap_alpha = float(os.environ.get("PROBE_SNAP_ALPHA", "0"))
+    # РЕЖИМЫ mode-*: сколько кандидатов показать классификатору и насколько
+    # мягко усреднять в mode-mean. Сид для mode-rand свой: контроль обязан
+    # быть воспроизводимым, иначе его нельзя сравнить с методом.
+    mode_members = int(os.environ.get("PROBE_MODE_MEMBERS", "8"))
+    mode_temp = float(os.environ.get("PROBE_MODE_TEMP", "1.0"))
+    if mode in MODE_MODES and mode_members < 2:
+        raise SystemExit(f"PROBE_MODE_MEMBERS={mode_members}: выбирать не из чего, "
+                         f"нужно хотя бы два кандидата")
+    mode_gen = torch.Generator().manual_seed(int(os.environ.get("PROBE_MODE_SEED", "0")))
     seq_bank = int(os.environ.get("PROBE_SEQ_BANK", "8192"))
     # Банк для МЕТОДА берётся из train. Касательное -- диагностика, там сойдёт
     # и test с пропуском оцениваемых примеров; но притягивать генерации к
@@ -328,7 +403,7 @@ def main():
 
     bank = None
     if mode != "raw":
-        need_seq = seq_bank if mode == "snap-seq" else 0
+        need_seq = seq_bank if mode in ("snap-seq",) + MODE_MODES else 0
         # Кэш банка на диске. Препроцессинг сплита в data/dataset_wiki.py идёт
         # с load_from_cache_file=False, то есть повторяется в КАЖДОМ задании:
         # на train это 1 час 22 минуты (замер 26.10) против секунд на test.
@@ -368,7 +443,8 @@ def main():
     diag = {"rel_norm": [], "tangent_frac": [],
             "snap_dist": [], "cos_cls_manifold": [], "snap_t": []}
     guidance_fn = make_guidance(runner, bank, mode, scale_mode, target_ratio,
-                                lam, sigmoid_factor, diag, snap_alpha)
+                                lam, sigmoid_factor, diag, snap_alpha, mode_members=mode_members,
+                                mode_temp=mode_temp, mode_gen=mode_gen)
 
     loader = probe_loader(runner, split="test", batch_size=batch_size)
     gen_texts, trg_texts, src_texts = [], [], []
@@ -474,6 +550,8 @@ def main():
         "step": runner.step,
         "grad_mode": mode,
         "snap_alpha": snap_alpha if mode.startswith("snap") else None,
+        "mode_members": mode_members if mode in MODE_MODES else None,
+        "mode_temp": mode_temp if mode == "mode-mean" else None,
         "bank_split": bank_split if bank is not None else None,
         "snap_dist_mean": mean(diag["snap_dist"]),
         "cos_cls_manifold_mean": mean(diag["cos_cls_manifold"]),

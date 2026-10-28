@@ -91,6 +91,9 @@
 #                                   классификатора подмешивается сила, тянущая
 #                                   цель НА данные. Свип по alpha, alpha=0 это
 #                                   контроль (обязан совпасть с raw). 10 заданий
+#   ./run_wikipedia.sh probes-mode  МЕТОД ИЗ ВЫКЛАДКИ: вести к ОДНОЙ моде,
+#                                   выбранной самим классификатором, вместо
+#                                   усреднённой цели. 5 заданий
 #   ./run_wikipedia.sh probes-lift  ПАРНАЯ СТАТИСТИКА по уже снятым
 #                                   дампам probes-snap: парная разность вместо
 #                                   агрегата и условный прирост против беглости.
@@ -416,7 +419,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold|probes-sigma|probes-snap|probes-lift)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold|probes-sigma|probes-snap|probes-lift|probes-mode)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -551,6 +554,49 @@ case "$1" in
                 done
             done
         fi
+        if [ "$1" = "probes-mode" ]; then
+            # ПОЛОЖИТЕЛЬНЫЙ МЕТОД, ВЫВЕДЕННЫЙ ИЗ ВЫКЛАДКИ.
+            #
+            # Формула (3) в THEORY.md: score зашумлённой смеси есть выпуклая
+            # комбинация направлений на моды, и при большом шуме она указывает в
+            # центроид. Ось дала цену этого усреднения при ОДНОЙ информации:
+            # реальная последовательность кластера 0.5059, среднее того же
+            # кластера 0.4019. Там моду выбирал ОРАКУЛ. Здесь выбирает
+            # сам классификатор, без доступа к истине.
+            #
+            # ТРИ ПЛЕЧА, и все три нужны:
+            #   mode-pick -- к лучшему кандидату по мнению классификатора;
+            #   mode-mean -- к softmax-среднему ТЕХ ЖЕ кандидатов. Отличие
+            #                от mode-pick ровно в усреднении -- это и есть
+            #                проверка утверждения «беда в усреднении»;
+            #   mode-rand -- к СЛУЧАЙНОМУ кандидату. КОНТРОЛЬ: та же
+            #                механика, но выбор без сигнала классификатора.
+            #                Условный прирост здесь обязан быть нулём.
+            #
+            # Банк из TRAIN, как и у snap: кандидаты из test были бы
+            # подглядыванием в ответ, и работа снимается на этом одном пункте.
+            for M in ${PROBE_MODE_MODES:-mode-pick mode-rand}; do
+                ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
+                    PROBE_GRAD_MODE=${M} PROBE_SCALE_MODE=adaptive \
+                    PROBE_TARGET_RATIO="${PROBE_TARGET_RATIO:-0.005}" \
+                    PROBE_MODE_MEMBERS="${PROBE_MODE_MEMBERS:-8}" \
+                    PROBE_BANK_SPLIT=train \
+                    PROBE_SEQ_BANK="${PROBE_SEQ_BANK:-8192}" \
+                    sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                    --job-name=probe-${M} probe_projected_guidance.sh
+            done
+            for T in ${PROBE_MODE_TEMPS:-0.1 1.0 10.0}; do
+                ARCH_TYPE=guidance AUG_SCHEME="${PROBE_SCHEME:-augmented}" \
+                    PROBE_GRAD_MODE=mode-mean PROBE_SCALE_MODE=adaptive \
+                    PROBE_TARGET_RATIO="${PROBE_TARGET_RATIO:-0.005}" \
+                    PROBE_MODE_MEMBERS="${PROBE_MODE_MEMBERS:-8}" \
+                    PROBE_MODE_TEMP=${T} PROBE_BANK_SPLIT=train \
+                    PROBE_SEQ_BANK="${PROBE_SEQ_BANK:-8192}" \
+                    sbatch --time="${TIME_LIMIT:-04:00:00}" \
+                    --job-name=probe-mode-mean-${T} probe_projected_guidance.sh
+            done
+        fi
+
 
         if [ "$1" = "probes-sweep" ]; then
             # Свип силы шага для выбранного режима. Прогон 24.10 показал, что
@@ -775,7 +821,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,117p' "$0"
+        sed -n '2,120p' "$0"
         exit 1
         ;;
 esac
