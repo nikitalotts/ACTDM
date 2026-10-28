@@ -129,6 +129,7 @@ import torch.distributed as dist
 
 from create_config import create_config, metrics_for_mode
 from estimation_utils.metrics import compute_metric
+from estimation_utils.metrics import compute_mauve
 from probes.common import (
     build_probe_runner, content_mask, dump_json, encode_batch,
     latents_to_tokens, log, masked_cosine, masked_norm, probe_loader,
@@ -434,6 +435,31 @@ def main():
     # зависит: сравнение идёт с тем, что цель есть, а не с истиной.
     fidelity = score(gen_texts, steer_texts, "GEN vs STEER")
 
+    # ЯВЛЯЕТСЯ ЛИ ЦЕЛЬ ЕЩЁ ТЕКСТОМ -- прямое измерение главного утверждения.
+    #
+    # Весь свип построен на том, что цель уходит с многообразия реальных
+    # текстов. До сих пор это измерялось КОСВЕННО: падает bert у генерации.
+    # Евклидово расстояние до данных для этого непригодно (концентрация
+    # расстояний в 49152 измерениях), и как ось оно опровергнуто.
+    #
+    # MAUVE сравнивает РАСПРЕДЕЛЕНИЯ, а не пары, и отвечает ровно на нужный
+    # вопрос: похож ли корпус декодированных целей на корпус реальных текстов.
+    # На beta=1 цель декодируется в "The", и это обязано обрушить MAUVE, тогда
+    # как попарные метрики такое различают плохо.
+    #
+    # Метрика необязательная: ей нужен gpt2-large, и на ноде без интернета его
+    # может не оказаться. Падать из-за этого весь прогон не должен.
+    def mauve_or_none(preds, refs, label):
+        try:
+            log(f"MAUVE {label} (gpt2-large)...")
+            return float(compute_mauve(predictions=preds, references=refs))
+        except Exception as exc:  # noqa: BLE001 -- диагностика не должна падать
+            print(f"[PROBE] MAUVE {label} не посчитан: {exc}", flush=True)
+            return None
+
+    target_mauve = mauve_or_none(steer_texts, trg_texts, "цель против реальных")
+    gen_mauve = mauve_or_none(gen_texts, trg_texts, "генерация против реальных")
+
     def mean(xs):
         return float(sum(xs) / len(xs)) if xs else None
 
@@ -495,9 +521,14 @@ def main():
         "set_sigma_frac": sigma_frac if set_mode == "mixture" else None,
         "set_entropy": mean(diag["set_entropy"]),
         "rel_norm_mean": mean(diag["rel_norm"]),
-        "examples": [{"SRC": src_texts[i], "STEER": steer_texts[i],
-                      "TRG": trg_texts[i], "GEN": gen_texts[i]}
-                     for i in range(min(20, len(gen_texts)))],
+        "target_mauve": target_mauve,
+        "gen_mauve": gen_mauve,
+        # ВСЕ тексты, а не двадцать: по двадцати примерам не посчитать ни
+        # парную статистику, ни распределённые метрики задним числом, а
+        # пересъёмка прогона стоит GPU-часов.
+        "texts": [{"SRC": src_texts[i], "STEER": steer_texts[i],
+                   "TRG": trg_texts[i], "GEN": gen_texts[i]}
+                  for i in range(len(gen_texts))],
     }, out_path)
 
 

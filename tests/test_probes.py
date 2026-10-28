@@ -1973,3 +1973,35 @@ def test_lift_job_fails_loudly_when_there_is_nothing_to_pair():
     assert "exit 1" in src, "задание не падает, когда json-ов нет"
     assert "ls -1 probe_results/" in src, "в логе не видно, что вообще лежит"
     assert "tee" in src, "результат не остаётся нигде, кроме лога"
+
+
+def test_axis_probe_measures_whether_the_target_is_still_text():
+    """Ось обязана мерить главное утверждение ПРЯМО, а не косвенно.
+
+    Весь свип держится на том, что цель уходит с многообразия реальных
+    текстов. Косвенно это видно по падению bert у генерации, но евклидово
+    расстояние до данных как мера опровергнуто (концентрация расстояний),
+    и без распределённой метрики утверждение опирается только на следствие.
+    MAUVE цели против реальных текстов отвечает на вопрос напрямую.
+    """
+    src = open("probe_information_axis.py", encoding="utf-8").read()
+    assert "compute_mauve" in src, "ось не считает распределённую метрику"
+    assert '"target_mauve"' in src, "MAUVE цели не попадает в json"
+    # считается именно по ЦЕЛИ (steer), а не только по генерации
+    assert "mauve_or_none(steer_texts, trg_texts" in src
+
+    # необязательность: gpt2-large может отсутствовать на ноде без интернета,
+    # и это не повод терять весь прогон
+    assert "except Exception" in src, "отсутствие gpt2-large уронит прогон"
+
+
+def test_axis_probe_dumps_every_text():
+    """Дамп всех текстов, а не двадцати примеров.
+
+    По двадцати примерам нельзя посчитать ни парную статистику, ни
+    распределённые метрики задним числом, а пересъёмка стоит GPU-часов.
+    """
+    src = open("probe_information_axis.py", encoding="utf-8").read()
+    assert '"texts"' in src, "нет поля texts"
+    assert "min(20, len(gen_texts))" not in src, "дамп всё ещё обрезан до 20"
+    assert "for i in range(len(gen_texts))" in src
