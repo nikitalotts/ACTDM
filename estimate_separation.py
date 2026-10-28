@@ -179,6 +179,73 @@ def analyse(seq: torch.Tensor, level: int, seed: int = 0) -> dict:
     }
 
 
+def analyse_within(seq: torch.Tensor, level: int, sub: int, seed: int = 0) -> dict:
+    """Разнесённость мод ВНУТРИ кластера -- та пара, которую требует §4.
+
+    Основной замер даёт расстояние между центрами КЛАСТЕРОВ. Для нашей
+    оси это не та величина: ось целиком лежит ВНУТРИ одного кластера, и
+    формула (2) применима к ней только если сам кластер многомодален.
+    Здесь каждый кластер делится на sub подмод, и считается их разнесённость
+    против разброса внутри подмоды.
+    """
+    n, L, D = seq.shape
+    flat = seq.reshape(n, L * D)
+    pooled = pool_sequences(seq)
+    centers = kmeans(pooled, level, seed=seed)
+    assign = torch.cdist(pooled, centers).argmin(dim=1)
+
+    ratios, deltas, sigmas, used = [], [], [], 0
+    for k in range(level):
+        idx = (assign == k).nonzero(as_tuple=True)[0]
+        if idx.numel() < sub * 5:          # меньше пяти точек на подмоду -- шум
+            continue
+        sub_pooled = pooled[idx]
+        sub_c = kmeans(sub_pooled, sub, seed=seed)
+        sub_a = torch.cdist(sub_pooled, sub_c).argmin(dim=1)
+
+        cents, resid = [], []
+        for m in range(sub):
+            jdx = idx[(sub_a == m).nonzero(as_tuple=True)[0]]
+            if jdx.numel() < 2:
+                continue
+            mem = flat[jdx].double()
+            c = mem.mean(dim=0)
+            cents.append(c)
+            resid.append((mem - c).float())
+        if len(cents) < 2:
+            continue
+
+        res = torch.cat(resid)
+        rms = float((res.double() ** 2).sum(dim=1).mean().sqrt())
+        spec = spectrum_stats(res, L * D)
+        de = spec.get("pr", float("nan"))
+        if de != de or de <= 0:
+            continue
+        sig = rms / math.sqrt(de)
+
+        C = torch.stack(cents)
+        pd = torch.cdist(C, C)
+        iu = torch.triu_indices(len(C), len(C), offset=1)
+        dmin = float(pd[iu[0], iu[1]].min())
+
+        deltas.append(dmin)
+        sigmas.append(sig)
+        ratios.append((dmin ** 2) / (4 * sig ** 2))
+        used += 1
+
+    if not ratios:
+        return {"clusters_used": 0}
+    t = torch.tensor(ratios)
+    return {
+        "clusters_used": used,
+        "delta_mean": float(torch.tensor(deltas).mean()),
+        "sigma_mean": float(torch.tensor(sigmas).mean()),
+        "lhs_median": float(t.median()),
+        "lhs_min": float(t.min()),
+        "rhs": math.log(sub),
+    }
+
+
 def report(path: str, levels: List[int]) -> None:
     blob = torch.load(path, map_location="cpu")
     seq = blob.get("sequences")
@@ -260,12 +327,36 @@ def main() -> None:
     ap.add_argument("paths", nargs="*", help="кэши банка; по умолчанию probe_results/latent_bank-*")
     ap.add_argument("--levels", type=int, nargs="+", default=[16, 64],
                     help="уровни K, те же что в свипах")
+    ap.add_argument("--within", type=int, default=0, metavar="K2",
+                    help="подкластеризация: разнесённость K2 мод ВНУТРИ кластера "
+                         "-- именно эта пара нужна для §4 THEORY.md")
     args = ap.parse_args()
     paths = args.paths or sorted(glob.glob("probe_results/latent_bank-*"))
     if not paths:
         raise SystemExit("не найдено ни одного кэша банка латентов")
     for p in paths:
         report(p, args.levels)
+        if args.within:
+            blob = torch.load(p, map_location="cpu")
+            seq = blob["sequences"].float()
+            print("")
+            print(f"--- ВНУТРИ кластера: {args.within} подмод ---")
+            for level in args.levels:
+                if level >= seq.shape[0]:
+                    continue
+                r = analyse_within(seq, level, args.within)
+                if not r.get("clusters_used"):
+                    print(f"  K = {level}: ни один кластер не набрал "
+                          f"{args.within * 5} точек")
+                    continue
+                ok = r["lhs_median"] > r["rhs"]
+                print(f"  K = {level}: кластеров с достаточным числом точек "
+                      f"{r['clusters_used']}")
+                print(f"    Delta между подмодами {r['delta_mean']:.2f}, "
+                      f"sigma внутри подмоды {r['sigma_mean']:.4f}")
+                print(f"    Delta^2/(4 sigma^2): медиана {r['lhs_median']:.1f}, "
+                      f"минимум {r['lhs_min']:.1f}  против ln K2 = {r['rhs']:.2f}"
+                      f"  -> {'ВЫПОЛНЕНО' if ok else 'НЕ ВЫПОЛНЕНО'}")
 
 
 if __name__ == "__main__":

@@ -2227,3 +2227,40 @@ def test_every_diag_key_is_declared_up_front():
 
     missing = sorted(written - declared)
     assert not missing, f"пишутся, но не объявлены: {missing}"
+
+
+def test_synthetic_knee_discriminates_the_two_accounts():
+    """Игрушка обязана РАЗЛИЧАТЬ плотность и границу решения.
+
+    В реальном латенте обе гипотезы дают одинаковую кривую качества. Смысл
+    синтетики ровно в том, что sigma задаётся руками: плотность требует
+    beta* ~ sigma/D, граница решения -- beta* почти постоянного.
+    """
+    import synthetic_knee as sk
+
+    # интерполяция излома: согласие падает ниже 0.5 между 0.6 и 0.8
+    betas = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    agree = [1.0, 1.0, 0.9, 0.7, 0.3, 0.0]
+    k = sk.knee(betas, agree)
+    assert 0.6 < k < 0.8, k
+
+    # без падения излома нет, и это не ноль, а «нет значения»
+    assert sk.knee(betas, [1.0] * 6) != sk.knee(betas, [1.0] * 6)
+
+    src = open("synthetic_knee.py", encoding="utf-8").read()
+    assert "--sigmas" in src, "sigma не варьируется -- различать нечем"
+    assert "D_over_sigma" in src, "не печатается величина, по которой различаем"
+
+
+def test_decoder_boundary_compares_target_to_itself():
+    """Кривая строится по ЦЕЛИ, а не по генерации.
+
+    Если сравнивать генерации, в кривую попадут свойства сэмплера. Вопрос же
+    в том, когда ДЕКОДЕР перестаёт выдавать тот же текст для сдвинутой цели.
+    """
+    src = open("analyze_decoder_boundary.py", encoding="utf-8").read()
+    assert '"STEER"' in src, "кривая строится не по цели"
+    assert "GEN" not in src.split("def load")[1].split("def report")[0], (
+        "в кривую затесалась генерация")
+    for forbidden in ("torch", "cuda"):
+        assert forbidden not in src, f"скрипту нужен не только диск: {forbidden}"
