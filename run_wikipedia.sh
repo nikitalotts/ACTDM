@@ -335,7 +335,13 @@ case "$1" in
         # Итоговая точка потом считается стадией stat на 20 сидах.
         export CHECKPOINT_STEP="${_CKPT_STEP:-87500}"
         echo "==> CHECKPOINT_STEP=${CHECKPOINT_STEP}  схема=${AUG_SCHEME:-shuffled}"
-        for GS in ${CG_SCALES:-1 5 10 50 100 250}; do
+        # СЕТКА РАСШИРЕНА ПО ЗАМЕРУ 28.10. Первый заход (1..250) не нашёл
+        # максимума: bert рос монотонно до самого края (0.49892 при 1 и
+        # 0.51162 при 250), и лексические метрики тоже. Остановиться на
+        # растущей кривой значит подать guidance хуже, чем он есть, и первый
+        # же рецензент спросит, почему свип оборван на подъёме. В дипломе на
+        # rocstories деградация начиналась после 5000, туда и доводим.
+        for GS in ${CG_SCALES:-1 5 10 50 100 250 500 1000 2500 5000}; do
             ARCH_TYPE=guidance CG_SCALE=${GS} AUG_SCHEME="${AUG_SCHEME:-shuffled}" \
                 sbatch --time="${TIME_LIMIT:-06:00:00}" \
                 --job-name=gs-sweep-${GS} eval_diffusion.sh
