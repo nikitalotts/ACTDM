@@ -1920,3 +1920,56 @@ def test_paired_analysis_refuses_runs_without_full_texts():
             load(p)
     finally:
         os.remove(p)
+
+
+# =====================================================================
+# Парная статистика: отдельное задание поверх уже снятых дампов
+# =====================================================================
+
+def test_lift_stage_launches_the_analysis_without_a_gpu():
+    """Стадия probes-lift ничего не считает заново и не занимает карту.
+
+    Задание читает json-ы, уже записанные probes-snap, и делает униграммный F1
+    -- секунды чистого питона. Запрос GPU здесь означал бы, что решающий для
+    рамки статьи ответ стоит в очереди за обучением.
+    """
+    stage = _probes_stage()
+    assert 'if [ "$1" = "probes-lift" ]' in stage, "нет стадии парной статистики"
+    body = stage[stage.index('if [ "$1" = "probes-lift" ]'):]
+    body = body[:body.index("fi")]
+    assert "analyze_paired_lift.sh" in body
+
+    sbatch_directives = [
+        ln for ln in open("analyze_paired_lift.sh", encoding="utf-8")
+        if ln.startswith("#SBATCH")]
+    assert not any("gpus" in ln or "gres" in ln for ln in sbatch_directives), (
+        "задание просит карту, хотя считает на CPU")
+    # escape-люк: аргумент sbatch перебивает директивы файла, если очередь
+    # вообще не принимает задания без карты
+    assert "LIFT_GPU" in body, "нет способа запросить карту, если очередь требует"
+
+
+def test_lift_job_pairs_only_comparable_runs():
+    """Шаблон отбора прогонов приколот к датасету И к доле шага.
+
+    Парная разность считается по примерам: прогоны обязаны идти на одних
+    промптах. Свести в одну таблицу wikipedia с rocstories или ratio 0.005 с
+    0.1 -- значит вычитать друг из друга разные наборы примеров.
+    """
+    src = open("analyze_paired_lift.sh", encoding="utf-8").read()
+    glob_line = next(ln for ln in src.splitlines() if ln.startswith("LIFT_GLOB="))
+    assert "${DATASET:-wikipedia}" in glob_line, "шаблон не приколот к датасету"
+    assert "${PROBE_TARGET_RATIO:-0.005}" in glob_line, "шаблон не приколот к доле шага"
+
+
+def test_lift_job_fails_loudly_when_there_is_nothing_to_pair():
+    """Пустой шаблон обязан быть ошибкой, а не пустой таблицей.
+
+    nullglob превращает непопавший шаблон в НОЛЬ аргументов, и analyze_paired_lift.py
+    молча взял бы свой собственный дефолтный glob -- то есть не те прогоны.
+    """
+    src = open("analyze_paired_lift.sh", encoding="utf-8").read()
+    assert "nullglob" in src
+    assert "exit 1" in src, "задание не падает, когда json-ов нет"
+    assert "ls -1 probe_results/" in src, "в логе не видно, что вообще лежит"
+    assert "tee" in src, "результат не остаётся нигде, кроме лога"

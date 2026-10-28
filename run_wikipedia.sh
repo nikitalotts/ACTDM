@@ -88,6 +88,10 @@
 #                                   классификатора подмешивается сила, тянущая
 #                                   цель НА данные. Свип по alpha, alpha=0 это
 #                                   контроль (обязан совпасть с raw). 10 заданий
+#   ./run_wikipedia.sh probes-lift  ПАРНАЯ СТАТИСТИКА по уже снятым
+#                                   дампам probes-snap: парная разность вместо
+#                                   агрегата и условный прирост против беглости.
+#                                   Без GPU, одно задание на минуту
 #   ./run_wikipedia.sh probes-sigma  тот же сход с многообразия, но через
 #                                   температуру множества: sigma от argmin
 #                                   (цель на данных) до равномерного веса
@@ -375,7 +379,7 @@ case "$1" in
         echo "==> сверить, что все подходы считаны на одном шаге:"
         echo "==>   grep -h -A4 'STATISTICAL EVAL SUMMARY' slurm_logs/*stat*.log | grep -E 'checkpoint|step'"
         ;;
-    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold|probes-sigma|probes-snap)
+    probes|probes-window|probes-signal|probes-geometry|probes-recon|probes-projected|probes-sweep|probes-sigmoid|probes-twostage|probes-infoaxis|probes-dilute|probes-set|probes-offmanifold|probes-sigma|probes-snap|probes-lift)
         # Диагностики ничего не обучают: читают те же чекпоинты шага сравнения,
         # что и таблицы статьи, и считают по одной карте. Поэтому они идут
         # параллельно чему угодно и стоят единицы GPU-часов.
@@ -620,6 +624,24 @@ case "$1" in
             done
         fi
 
+        if [ "$1" = "probes-lift" ]; then
+            # ПАРНАЯ СТАТИСТИКА ПО УЖЕ СНЯТЫМ ПРОГОНАМ -- ничего не считает
+            # заново и не трогает карту.
+            #
+            # Свип 28.10 дал у alpha=0.25 bert 0.51223 против 0.50813 у контроля,
+            # то есть +0.0041. НЕПАРНЫЙ интервал при n=1000 равен +-0.005:
+            # по агрегату эффект не отличим от нуля. Но прогоны идут на одних
+            # промптах и одном сиде, значит сравнение парное, и его точность на
+            # порядок выше. Второй вопрос, на который агрегат не отвечает: улучшилась
+            # ОБУСЛОВЛЕННОСТЬ или только беглость. Различает условный прирост
+            # F1(GEN, своя TRG) - F1(GEN, чужая TRG): всё, что улучшает текст
+            # вообще, поднимает оба слагаемых и из разности уходит.
+            #
+            # От этого ответа зависит рамка статьи, поэтому задание одно и дешёвое.
+            # LIFT_GPU=1 -- если очередь не берёт задания без карты.
+            sbatch ${LIFT_GPU:+--gpus-per-task=1}                 --time="${TIME_LIMIT:-00:10:00}"                 --job-name=paired-lift analyze_paired_lift.sh
+        fi
+
         if [ "$1" = "probes-sigma" ]; then
             # СВИП ПО ТЕМПЕРАТУРЕ МНОЖЕСТВА -- вторая, независимая реализация
             # того же закона.
@@ -716,7 +738,7 @@ case "$1" in
         ;;
     *)
         # показать шапку с описанием стадий
-        sed -n '2,110p' "$0"
+        sed -n '2,113p' "$0"
         exit 1
         ;;
 esac
