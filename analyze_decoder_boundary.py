@@ -43,6 +43,12 @@ beta порядка единицы, а не 0.02, и объясняет, поч�
 ------
     python analyze_decoder_boundary.py
     python analyze_decoder_boundary.py --dataset rocstories
+    python analyze_decoder_boundary.py --dataset wikipedia --step 87500
+
+Кривая по двум чекпоинтам -- не кривая, поэтому при нескольких шагах в выборке
+скрипт отказывается считать и просит указать --step. Так уже вышло 29.10:
+имена json не несли шага, свип по шагам перезаписал часть точек, и смешение
+нашлось только сверкой с логами.
 """
 import argparse
 import glob
@@ -51,6 +57,7 @@ import re
 from typing import Dict, List
 
 WORD = re.compile(r"[a-z0-9']+")
+STEP_IN_NAME = re.compile("-s([0-9]+)[.]json")
 
 
 def tokens(text: str) -> List[str]:
@@ -75,7 +82,15 @@ def f1(pred: List[str], ref: List[str]) -> float:
     return 2 * p * r / (p + r)
 
 
-def load(paths: List[str], dataset: str) -> List[dict]:
+def step_of(blob: dict, path: str):
+    """Шаг чекпоинта: из json, иначе из имени файла, иначе неизвестен."""
+    if blob.get("step") is not None:
+        return int(blob["step"])
+    found = STEP_IN_NAME.search(path)
+    return int(found.group(1)) if found else None
+
+
+def load(paths: List[str], dataset: str, step: int = 0) -> List[dict]:
     rows = []
     for path in paths:
         with open(path, encoding="utf-8") as f:
@@ -84,18 +99,22 @@ def load(paths: List[str], dataset: str) -> List[dict]:
             continue
         if dataset and blob.get("dataset") != dataset:
             continue
+        got = step_of(blob, path)
+        if step and got != step:
+            continue
         texts = blob.get("texts")
         if not texts:
             # прогоны до правки, кладущей все тексты: по двадцати примерам
             # кривую не построить, и молча считать по ним нельзя
             rows.append({"level": blob.get("level"), "dataset": blob.get("dataset"),
-                         "steer": None, "path": path})
+                         "steer": None, "step": got, "path": path})
             continue
         rows.append({
             "level": blob.get("level"),
             "dataset": blob.get("dataset"),
             "steer": [t["STEER"] for t in texts],
             "bert": blob.get("metrics", {}).get("bert-score"),
+            "step": got,
             "path": path,
         })
     return rows
@@ -107,6 +126,19 @@ def report(rows: List[dict], dataset: str) -> None:
         return
     rows.sort(key=lambda r: r["level"] if r["level"] is not None else -1)
 
+    # КРИВАЯ ПО ДВУМ ЧЕКПОИНТАМ -- НЕ КРИВАЯ. Молча взять последний
+    # подвернувшийся файл на каждое beta -- это и есть та ошибка, из-за
+    # которой 29.10 в одной таблице оказались точки с двух шагов.
+    steps = sorted({r["step"] for r in rows})
+    if len(steps) > 1:
+        lines = "".join(
+            f"{chr(10)}  шаг {r['step']}, beta {r['level']}: {r['path']}"
+            for r in rows)
+        raise SystemExit(
+            f"{dataset}: в выборке шаги {steps} -- кривая смешала бы "
+            f"чекпоинты.{chr(10)}Укажите --step <шаг>.{lines}")
+    step = steps[0] if steps else None
+
     base = next((r for r in rows if r["level"] == 0), None)
     if base is None or base["steer"] is None:
         print(f"\n{dataset}: нет прогона beta = 0 с полными текстами, "
@@ -117,6 +149,7 @@ def report(rows: List[dict], dataset: str) -> None:
     print("")
     print("=" * 76)
     print(f"=== {dataset}: когда ЦЕЛЬ перестаёт декодироваться в тот же текст ===")
+    print(f"=== чекпоинт: шаг {'неизвестен' if step is None else step} ===")
     print("")
     print("  beta   совпали  F1 с beta=0   слов в цели   доля целей <=2 слов   bert")
     for r in rows:
@@ -145,12 +178,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("paths", nargs="*")
     ap.add_argument("--dataset", default="")
+    ap.add_argument("--step", type=int, default=0,
+                    help="брать только прогоны этого шага чекпоинта")
     args = ap.parse_args()
     paths = args.paths or sorted(
         glob.glob("probe_results/information_axis-*offmanifold*.json"))
     if not paths:
         raise SystemExit("не найдено ни одного json оси")
-    rows = load(paths, args.dataset)
+    rows = load(paths, args.dataset, args.step)
     if not rows:
         raise SystemExit("подходящих прогонов не нашлось")
     for ds in sorted({r["dataset"] for r in rows}):

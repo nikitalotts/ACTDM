@@ -13,6 +13,7 @@ import argparse
 import ast
 import glob
 import inspect
+import json
 import math
 import os
 import sys
@@ -2266,6 +2267,65 @@ def test_decoder_boundary_compares_target_to_itself():
         "в кривую затесалась генерация")
     for forbidden in ("torch", "cuda"):
         assert forbidden not in src, f"скрипту нужен не только диск: {forbidden}"
+
+
+def test_boundary_curve_refuses_to_mix_checkpoints(tmp_path, capsys):
+    """Кривая по двум чекпоинтам -- не кривая, и скрипт это не пропускает.
+
+    29.10 имена json не несли шага, свип по шагам перезаписал часть точек, и
+    смешение нашлось только сверкой с логами. Теперь глоб всё равно подберёт
+    файлы разных шагов -- значит отказываться должен сам анализатор, а не
+    память того, кто его запускает.
+    """
+    import importlib
+
+    boundary = importlib.import_module("analyze_decoder_boundary")
+
+    def write(level, step, word):
+        path = tmp_path / f"information_axis-wikipedia-offmanifold-L{level}-r0.1-s{step}.json"
+        path.write_text(json.dumps({
+            "degrade": "offmanifold", "dataset": "wikipedia",
+            "level": level, "step": step,
+            "metrics": {"bert-score": 0.5},
+            "texts": [{"STEER": word, "TRG": "t", "GEN": "g", "SRC": "s"}],
+        }), encoding="utf-8")
+        return str(path)
+
+    mixed = [write(0, 87500, "alpha"), write(50, 100000, "beta")]
+    rows = boundary.load(mixed, "wikipedia")
+    with pytest.raises(SystemExit) as err:
+        boundary.report(rows, "wikipedia")
+    assert "87500" in str(err.value) and "100000" in str(err.value), err.value
+    assert "--step" in str(err.value), "не сказано, чем это лечить"
+
+    # С пином на один шаг считает молча.
+    one = boundary.load(mixed, "wikipedia", 87500)
+    assert [r["level"] for r in one] == [0]
+    boundary.report(one, "wikipedia")
+    assert "87500" in capsys.readouterr().out, "шаг не назван в заголовке"
+
+
+def test_boundary_curve_reads_the_step_from_the_file_name(tmp_path):
+    """Старые дампы без поля step опознаются по имени файла."""
+    import importlib
+
+    boundary = importlib.import_module("analyze_decoder_boundary")
+
+    path = tmp_path / "information_axis-wikipedia-offmanifold-L0-r0.1-s87500.json"
+    path.write_text(json.dumps({
+        "degrade": "offmanifold", "dataset": "wikipedia", "level": 0,
+        "texts": [{"STEER": "a", "TRG": "t", "GEN": "g", "SRC": "s"}],
+    }), encoding="utf-8")
+    rows = boundary.load([str(path)], "wikipedia")
+    assert rows[0]["step"] == 87500
+
+    # А дамп, у которого шага нет нигде, остаётся с None и не притворяется.
+    plain = tmp_path / "information_axis-wikipedia-offmanifold-L0-r0.1.json"
+    plain.write_text(json.dumps({
+        "degrade": "offmanifold", "dataset": "wikipedia", "level": 0,
+        "texts": [{"STEER": "a", "TRG": "t", "GEN": "g", "SRC": "s"}],
+    }), encoding="utf-8")
+    assert boundary.load([str(plain)], "wikipedia")[0]["step"] is None
 
 
 def test_axis_json_name_carries_the_checkpoint_step():
