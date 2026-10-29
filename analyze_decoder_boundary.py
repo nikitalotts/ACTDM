@@ -120,6 +120,42 @@ def load(paths: List[str], dataset: str, step: int = 0) -> List[dict]:
     return rows
 
 
+def dedupe(rows: List[dict]) -> List[dict]:
+    """Один дамп на beta. Расхождение между дублями -- отказ, а не выбор.
+
+    Один и тот же прогон лежит под двумя именами: до правки, добавившей шаг
+    чекпоинта в имя, и после. Глоб подбирает оба, и в таблице beta = 25, 65,
+    80, 90, 95 печатались дважды. Числа совпадали, но строить по такой
+    таблице рисунок нельзя, а выбирать "последний подвернувшийся" -- это ровно
+    та привычка, которая уже один раз смешала чекпоинты.
+    """
+    best: Dict[int, dict] = {}
+    for row in rows:
+        key = row["level"]
+        kept = best.get(key)
+        if kept is None:
+            best[key] = row
+            continue
+        # Дамп с текстами всегда предпочтительнее дампа без них.
+        if kept["steer"] is None:
+            best[key] = row
+            continue
+        if row["steer"] is None:
+            continue
+        if row["steer"] != kept["steer"]:
+            raise SystemExit(
+                f"beta {key}: два дампа одного шага расходятся по тексту "
+                f"цели, какой из них настоящий -- неизвестно."
+                f"{chr(10)}  {kept['path']}{chr(10)}  {row['path']}"
+                f"{chr(10)}Удалите устаревший или передайте нужные файлы "
+                f"аргументами.")
+        # Совпали: оставляем тот, чьё имя несёт шаг чекпоинта.
+        if STEP_IN_NAME.search(row["path"]) and not STEP_IN_NAME.search(kept["path"]):
+            best[key] = row
+    return sorted(best.values(),
+                  key=lambda r: r["level"] if r["level"] is not None else -1)
+
+
 def report(rows: List[dict], dataset: str) -> None:
     rows = [r for r in rows if r["dataset"] == dataset]
     if not rows:
@@ -138,6 +174,8 @@ def report(rows: List[dict], dataset: str) -> None:
             f"{dataset}: в выборке шаги {steps} -- кривая смешала бы "
             f"чекпоинты.{chr(10)}Укажите --step <шаг>.{lines}")
     step = steps[0] if steps else None
+
+    rows = dedupe(rows)
 
     base = next((r for r in rows if r["level"] == 0), None)
     if base is None or base["steer"] is None:

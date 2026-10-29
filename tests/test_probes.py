@@ -2305,6 +2305,89 @@ def test_boundary_curve_refuses_to_mix_checkpoints(tmp_path, capsys):
     assert "87500" in capsys.readouterr().out, "шаг не назван в заголовке"
 
 
+def test_boundary_curve_prints_one_row_per_beta(tmp_path, capsys):
+    """Один и тот же прогон под двумя именами -- одна строка, не две.
+
+    Прогон 29.10: один дамп лежал под старым именем (без шага) и под новым,
+    глоб подобрал оба, и beta = 25, 65, 80, 90, 95 печатались дважды. Числа
+    совпадали, но рисунок по такой таблице строить нельзя.
+    """
+    import importlib
+
+    boundary = importlib.import_module("analyze_decoder_boundary")
+
+    def write(name, level, texts, step=87500):
+        path = tmp_path / name
+        blob = {"degrade": "offmanifold", "dataset": "wikipedia",
+                "level": level, "step": step,
+                "metrics": {"bert-score": 0.5}}
+        if texts is not None:
+            blob["texts"] = [{"STEER": t, "TRG": "t", "GEN": "g", "SRC": "s"}
+                             for t in texts]
+        path.write_text(json.dumps(blob), encoding="utf-8")
+        return str(path)
+
+    old = write("information_axis-wikipedia-offmanifold-L25-r0.1.json", 25, ["a b"])
+    new = write("information_axis-wikipedia-offmanifold-L25-r0.1-s87500.json",
+                25, ["a b"])
+    base = write("information_axis-wikipedia-offmanifold-L0-r0.1-s87500.json",
+                 0, ["a b"])
+
+    rows = boundary.dedupe(boundary.load([old, new, base], "wikipedia"))
+    assert [r["level"] for r in rows] == [0, 25], rows
+    kept = next(r for r in rows if r["level"] == 25)
+    assert "s87500" in kept["path"], "оставлен дамп без шага в имени"
+
+    boundary.report(boundary.load([old, new, base], "wikipedia"), "wikipedia")
+    out = capsys.readouterr().out
+    assert out.count(f"{chr(10)}  25 ") == 1, f"beta 25 напечатана не один раз:{chr(10)}{out}"
+
+
+def test_boundary_curve_refuses_two_dumps_that_disagree(tmp_path):
+    """Если дубли расходятся по тексту, выбирать за нас нельзя."""
+    import importlib
+
+    boundary = importlib.import_module("analyze_decoder_boundary")
+
+    def write(name, steer):
+        path = tmp_path / name
+        path.write_text(json.dumps({
+            "degrade": "offmanifold", "dataset": "wikipedia",
+            "level": 25, "step": 87500,
+            "texts": [{"STEER": steer, "TRG": "t", "GEN": "g", "SRC": "s"}],
+        }), encoding="utf-8")
+        return str(path)
+
+    a = write("information_axis-wikipedia-offmanifold-L25-r0.1.json", "alpha")
+    b = write("information_axis-wikipedia-offmanifold-L25-r0.1-s87500.json", "beta")
+    with pytest.raises(SystemExit) as err:
+        boundary.dedupe(boundary.load([a, b], "wikipedia"))
+    assert "alpha" not in str(err.value), "в ошибке текст вместо путей"
+    assert a in str(err.value) and b in str(err.value), err.value
+
+
+def test_boundary_curve_prefers_the_dump_with_full_texts(tmp_path):
+    """Дамп без полных текстов не вытесняет дамп с текстами."""
+    import importlib
+
+    boundary = importlib.import_module("analyze_decoder_boundary")
+
+    thin = tmp_path / "information_axis-wikipedia-offmanifold-L25-r0.1.json"
+    thin.write_text(json.dumps({
+        "degrade": "offmanifold", "dataset": "wikipedia",
+        "level": 25, "step": 87500}), encoding="utf-8")
+    full = tmp_path / "information_axis-wikipedia-offmanifold-L25-r0.1-s87500.json"
+    full.write_text(json.dumps({
+        "degrade": "offmanifold", "dataset": "wikipedia",
+        "level": 25, "step": 87500,
+        "texts": [{"STEER": "a", "TRG": "t", "GEN": "g", "SRC": "s"}],
+    }), encoding="utf-8")
+
+    for order in ([str(thin), str(full)], [str(full), str(thin)]):
+        rows = boundary.dedupe(boundary.load(order, "wikipedia"))
+        assert len(rows) == 1 and rows[0]["steer"] is not None, order
+
+
 def test_boundary_curve_reads_the_step_from_the_file_name(tmp_path):
     """Старые дампы без поля step опознаются по имени файла."""
     import importlib
