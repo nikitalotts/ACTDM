@@ -1,4 +1,7 @@
 #!/bin/bash
+# sbatch требует -A <проект> и дефолта не имеет. Стадии run_wikipedia.sh
+# экспортируют SBATCH_ACCOUNT сами, а этот скрипт отправляют руками.
+#SBATCH --account=proj_1891
 #SBATCH --job-name=eval_diffusion_stat
 #SBATCH --output=slurm_logs/%j-%x.log
 #SBATCH --error=slurm_logs/%j-%x.log
