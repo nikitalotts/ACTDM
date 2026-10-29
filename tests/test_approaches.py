@@ -3942,3 +3942,161 @@ def test_data_stage_downloads_the_requested_dataset():
     # схема нарезки обязана проходить насквозь: по умолчанию она берётся из
     # default_split_scheme, но свериться с чужими артефактами иначе нечем
     assert "SPLIT_SCHEME" in stage, "схему нарезки не передать"
+
+
+# ---------------------------------------------------------------------------
+# Склейка статистических прогонов. Строка таблицы на 20 сидов стоит ~7,5
+# GPU-часов, и при разбиении на два задания по 10 сидов таблица обязана
+# получиться ТОЙ ЖЕ, иначе это не экономия, а другой эксперимент.
+# ---------------------------------------------------------------------------
+def _stat_blob(base_seed, values, step=87500, scale=1000.0, num_seeds=None):
+    import json as _json  # noqa: F401  (symmetry with the writer)
+
+    n = num_seeds if num_seeds is not None else len(values)
+    return {
+        "checkpoint_prefix": "pref", "checkpoint_name": "87500.pth",
+        "split": "test", "N_steps": 50, "num_gen_texts": 1000, "step": step,
+        "num_seeds": n, "base_seed": base_seed, "seed_step": 1000,
+        "guidance": {"use_guidance": True, "scale": scale,
+                     "augmentation_scheme": "shuffled", "time_scale": 1.0},
+        "metrics": {"wikipedia": {"bert-score": {
+            "mean": sum(values) / len(values), "std": 0.0, "stderr": 0.0,
+            "ci95_half_width": 0.0, "n": len(values),
+            "values": list(values)}}},
+    }
+
+
+def _write(tmp_path, name, blob):
+    import json as _json
+
+    path = tmp_path / name
+    path.write_text(_json.dumps(blob), encoding="utf-8")
+    return str(path)
+
+
+def test_merge_of_two_halves_equals_one_full_run(tmp_path):
+    """Два задания по 10 сидов дают ту же статистику, что одно на 20.
+
+    Это единственное, что оправдывает разбиение: если интервал поедет, в
+    статье нельзя будет написать n = 20 без оговорок.
+    """
+    import importlib
+
+    import numpy as np
+
+    merge = importlib.import_module("merge_stat_eval")
+
+    rng = np.random.default_rng(0)
+    first = [float(x) for x in rng.normal(0.516, 0.004, 10)]
+    second = [float(x) for x in rng.normal(0.516, 0.004, 10)]
+
+    paths = [_write(tmp_path, "a.json", _stat_blob(0, first)),
+             _write(tmp_path, "b.json", _stat_blob(10000, second))]
+    blobs = [__import__("json").load(open(p, encoding="utf-8")) for p in paths]
+    merge.check(blobs, paths)
+    got = merge.merge(blobs)["wikipedia"]["bert-score"]
+
+    whole = first + second
+    assert got["n"] == 20
+    assert got["values"] == whole, "сырые значения перепутаны или потеряны"
+    assert abs(got["mean"] - float(np.mean(whole))) < 1e-12
+    assert abs(got["std"] - float(np.std(whole, ddof=1))) < 1e-12
+    # Интервал считается по n = 20. В таблице t нет df = 19, и обе реализации
+    # берут ближайшее МЕНЬШЕЕ df = 15, то есть 2.131 вместо точного 2.093.
+    # Это делает опубликованный интервал на ~2 % ШИРЕ нужного, то есть
+    # осторожнее; важно только, чтобы склейка вела себя так же, как прогон.
+    assert merge.t_crit(20) == 2.131, merge.t_crit(20)
+    expect = 2.131 * float(np.std(whole, ddof=1)) / np.sqrt(20)
+    assert abs(got["ci95_half_width"] - expect) < 1e-12, got
+    exact_df19 = 2.093 * float(np.std(whole, ddof=1)) / np.sqrt(20)
+    assert got["ci95_half_width"] > exact_df19, "интервал уже точного -- так нельзя"
+
+
+def test_merge_refuses_overlapping_seeds(tmp_path):
+    """Один и тот же сид дважды сузил бы интервал на ровном месте."""
+    import importlib
+    import json as _json
+
+    merge = importlib.import_module("merge_stat_eval")
+
+    paths = [_write(tmp_path, "a.json", _stat_blob(0, [0.5] * 10)),
+             _write(tmp_path, "b.json", _stat_blob(5000, [0.5] * 10))]
+    blobs = [_json.load(open(p, encoding="utf-8")) for p in paths]
+    with pytest.raises(SystemExit) as err:
+        merge.check(blobs, paths)
+    assert "5000" in str(err.value), err.value
+
+
+def test_merge_refuses_different_experiments(tmp_path):
+    """Разный чекпоинт или разная сила guidance -- это не одна строка."""
+    import importlib
+    import json as _json
+
+    merge = importlib.import_module("merge_stat_eval")
+
+    for kwargs, needle in (({"step": 100000}, "step"),
+                           ({"scale": 10.0}, "guidance")):
+        paths = [_write(tmp_path, "a.json", _stat_blob(0, [0.5] * 10)),
+                 _write(tmp_path, "b.json",
+                        _stat_blob(10000, [0.5] * 10, **kwargs))]
+        blobs = [_json.load(open(p, encoding="utf-8")) for p in paths]
+        with pytest.raises(SystemExit) as err:
+            merge.check(blobs, paths)
+        assert needle in str(err.value), (kwargs, err.value)
+
+
+def test_merge_refuses_an_incomplete_dump(tmp_path):
+    """Задание, снятое не до конца, молча не усредняется."""
+    import importlib
+    import json as _json
+
+    merge = importlib.import_module("merge_stat_eval")
+
+    paths = [_write(tmp_path, "a.json", _stat_blob(0, [0.5] * 10)),
+             _write(tmp_path, "b.json",
+                    _stat_blob(10000, [0.5] * 7, num_seeds=10))]
+    blobs = [_json.load(open(p, encoding="utf-8")) for p in paths]
+    with pytest.raises(SystemExit) as err:
+        merge.check(blobs, paths)
+    assert "неполный" in str(err.value), err.value
+
+
+def test_merge_uses_the_same_t_table_as_the_evaluator():
+    """Таблица t продублирована -- значит её расхождение надо ловить.
+
+    Если в diffusion_holder таблицу поправят, а в merge_stat_eval нет, склейка
+    начнёт давать другой интервал, чем обычный прогон, и заметить это будет
+    нечем.
+    """
+    import ast
+    import importlib
+
+    merge = importlib.import_module("merge_stat_eval")
+
+    src = open("diffusion_holder.py", encoding="utf-8").read()
+    body = src[src.index("t_crit_95 = {") + len("t_crit_95 = "):]
+    body = body[:body.index("}") + 1]
+    # literal_eval не умеет float("inf"); 1e999 даёт ту же бесконечность
+    theirs = ast.literal_eval(body.replace('float("inf")', "1e999"))
+    assert theirs == merge.T_CRIT_95, (
+        "таблицы t разошлись между diffusion_holder и merge_stat_eval")
+
+
+def test_base_seed_is_configurable_for_splitting_the_run():
+    """Разбить прогон на два задания нельзя, если base_seed забит в скрипт."""
+    src = open("eval_diffusion_stat.sh", encoding="utf-8").read()
+    assert 'BASE_SEED="${BASE_SEED:-0}"' in src, "base_seed не задать снаружи"
+    assert "--seed ${BASE_SEED}" in src, "base_seed не доходит до скрипта"
+
+
+def test_stat_dump_records_guidance_settings():
+    """Настройки guidance лежат в json, а не только в имени файла.
+
+    Один раз имя файла уже оказалось единственным носителем шага чекпоинта,
+    и это стоило смешанной кривой.
+    """
+    src = open("diffusion_holder.py", encoding="utf-8").read()
+    payload = src[src.index('payload = {'):]
+    payload = payload[:payload.index("file_name = ")]
+    for field in ('"guidance"', '"scale"', '"augmentation_scheme"'):
+        assert field in payload, f"в дампе нет {field}"

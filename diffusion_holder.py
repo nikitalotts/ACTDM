@@ -1510,6 +1510,16 @@ class DiffusionRunner:
             "step": self.step,
             "metrics": aggregated,
             "timing": timing_aggregated,
+            # Настройки guidance лежали ТОЛЬКО в имени файла, и склейка
+            # прогонов опиралась бы на разбор имени. Один раз имя уже
+            # оказалось единственным носителем шага чекпоинта -- хватит.
+            "guidance": {
+                "use_guidance": bool(self.use_guidance),
+                "scale": float(self.guidance_scale) if self.use_guidance else 0.0,
+                "augmentation_scheme":
+                    str(self.config.cond_encoder.augmentation_scheme),
+                "time_scale": float(self.config.cond_encoder.time_scale),
+            },
         }
         file_name = (f"statistical_eval-{split}-num_seeds={num_seeds}"
                      f"-base_seed={base_seed}-step={self.step}-N={self.config.dynamic.N}.json")
