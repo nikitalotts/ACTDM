@@ -262,10 +262,14 @@ def main():
     seq_bank = int(os.environ.get("PROBE_SEQ_BANK", "1024"))
 
     tag = mode if set_mode == "centroid" else f"{mode}-{set_mode}"
+    # ШАГ ЧЕКПОИНТА В ИМЕНИ ОБЯЗАТЕЛЕН. Без него свип по шагам молча
+    # перезаписывает результаты другого шага: имена совпадают целиком.
+    # Именно так 29.10 в одной кривой оказались точки с двух чекпоинтов, и
+    # заметить это можно было только сверив bert с логами поштучно.
     out_path = os.environ.get(
         "PROBE_OUT",
         f"probe_results/information_axis-{config.data.datasets.datasets_list[0]}"
-        f"-{tag}-L{level}-r{target_ratio:g}.json")
+        f"-{tag}-L{level}-r{target_ratio:g}-s{runner.step}.json")
 
     # Промпт самой диффузии не подается (она безусловная), но нужен collate и
     # условные метрики -- иначе точки оси не сравнить с таблицей подходов.

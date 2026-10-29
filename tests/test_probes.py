@@ -2264,3 +2264,18 @@ def test_decoder_boundary_compares_target_to_itself():
         "в кривую затесалась генерация")
     for forbidden in ("torch", "cuda"):
         assert forbidden not in src, f"скрипту нужен не только диск: {forbidden}"
+
+
+def test_axis_json_name_carries_the_checkpoint_step():
+    """Шаг чекпоинта обязан быть в имени json.
+
+    29.10 свип по шагам (25000, 50000, 100000) молча перезаписал результаты
+    шага 87500: имена совпадали целиком. В одной кривой оказались точки с
+    двух чекпоинтов, и заметить это можно было только сверив bert с логами
+    поштучно. Цена ошибки -- потерянные результаты и смешанная кривая в
+    статье.
+    """
+    src = open("probe_information_axis.py", encoding="utf-8").read()
+    block = src[src.index("out_path = os.environ.get"):]
+    block = block[:block.index(".json")]
+    assert "runner.step" in block, "в имени json нет шага чекпоинта"
