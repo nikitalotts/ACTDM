@@ -262,14 +262,6 @@ def main():
     seq_bank = int(os.environ.get("PROBE_SEQ_BANK", "1024"))
 
     tag = mode if set_mode == "centroid" else f"{mode}-{set_mode}"
-    # ШАГ ЧЕКПОИНТА В ИМЕНИ ОБЯЗАТЕЛЕН. Без него свип по шагам молча
-    # перезаписывает результаты другого шага: имена совпадают целиком.
-    # Именно так 29.10 в одной кривой оказались точки с двух чекпоинтов, и
-    # заметить это можно было только сверив bert с логами поштучно.
-    out_path = os.environ.get(
-        "PROBE_OUT",
-        f"probe_results/information_axis-{config.data.datasets.datasets_list[0]}"
-        f"-{tag}-L{level}-r{target_ratio:g}-s{runner.step}.json")
 
     # Промпт самой диффузии не подается (она безусловная), но нужен collate и
     # условные метрики -- иначе точки оси не сравнить с таблицей подходов.
@@ -279,6 +271,19 @@ def main():
 
     set_seed(config.seed)
     runner = build_probe_runner(config)
+
+    # ШАГ ЧЕКПОИНТА В ИМЕНИ ОБЯЗАТЕЛЕН. Без него свип по шагам молча
+    # перезаписывает результаты другого шага: имена совпадают целиком.
+    # Именно так 29.10 в одной кривой оказались точки с двух чекпоинтов, и
+    # заметить это можно было только сверив bert с логами поштучно.
+    #
+    # Поэтому имя считается ЗДЕСЬ, после runner: шаг известен только из
+    # загруженного чекпоинта. Выше, рядом с остальными переменными, оно
+    # падало с UnboundLocalError на первом же задании свипа.
+    out_path = os.environ.get(
+        "PROBE_OUT",
+        f"probe_results/information_axis-{config.data.datasets.datasets_list[0]}"
+        f"-{tag}-L{level}-r{target_ratio:g}-s{runner.step}.json")
 
     # Сколько тем у offmanifold: метка кластера фиксирована вдоль свипа, но
     # сам уровень квантизации задаётся отдельно, потому что level занят beta.

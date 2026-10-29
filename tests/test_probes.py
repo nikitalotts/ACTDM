@@ -10,6 +10,8 @@
     python -m pytest tests/test_probes.py -v
 """
 import argparse
+import ast
+import glob
 import inspect
 import math
 import os
@@ -2279,3 +2281,176 @@ def test_axis_json_name_carries_the_checkpoint_step():
     block = src[src.index("out_path = os.environ.get"):]
     block = block[:block.index(".json")]
     assert "runner.step" in block, "в имени json нет шага чекпоинта"
+    # Шаг известен только из ЗАГРУЖЕННОГО чекпоинта, поэтому имя обязано
+    # считаться после runner. Первая версия этой правки стояла выше, рядом с
+    # остальными переменными, и падала с UnboundLocalError на первом задании.
+    assert src.index("runner = build_probe_runner") < src.index(
+        "out_path = os.environ.get"), (
+        "имя считается до создания runner: UnboundLocalError на старте")
+
+
+# ---------------------------------------------------------------------------
+# Чтение имени раньше его привязки. Python такое НЕ ловит при компиляции:
+# файл разбирается, задание встаёт в очередь, модель и банк поднимаются, и
+# только потом прогон падает с UnboundLocalError. Ниже -- разбор дерева,
+# который находит это на месте. Правила области видимости соблюдены: тела
+# вложенных функций не разбираются (исполняются позже), переменные включений
+# наружу не выходят, global и nonlocal считаются известными.
+# ---------------------------------------------------------------------------
+_UB_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+_UB_COMP = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _ub_subtree(root):
+    """Поддерево без тел вложенных функций: это другая область видимости."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, _UB_SCOPE):
+                stack.append(child)
+
+
+def _ub_eager(stmt):
+    """Части оператора, которые вычисляются СРАЗУ.
+
+    У def это декораторы, базовые классы и значения по умолчанию: тело
+    исполнится позже, когда имена уже привязаны.
+    """
+    if not isinstance(stmt, _UB_SCOPE):
+        return [stmt]
+    parts = list(getattr(stmt, "decorator_list", []))
+    parts += list(getattr(stmt, "bases", []))
+    args = getattr(stmt, "args", None)
+    if args is not None:
+        parts += [d for d in list(args.defaults) + list(args.kw_defaults) if d]
+    return parts
+
+
+def _ub_comp_locals(stmt):
+    """Переменные включений: своя область видимости, наружу не выходят."""
+    out = set()
+    for part in _ub_eager(stmt):
+        for node in _ub_subtree(part):
+            if isinstance(node, _UB_COMP):
+                for gen in node.generators:
+                    out |= {t.id for t in ast.walk(gen.target)
+                            if isinstance(t, ast.Name)}
+    return out
+
+
+def _ub_binds(stmt):
+    """Имена, которые оператор привязывает в текущей области видимости."""
+    if isinstance(stmt, _UB_SCOPE):
+        return [stmt.name] if getattr(stmt, "name", None) else []
+    skip = _ub_comp_locals(stmt)
+    out = []
+    for node in _ub_subtree(stmt):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            if node.id not in skip:
+                out.append(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            out += [(a.asname or a.name).split(".")[0] for a in node.names]
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            out.append(node.name)
+        elif isinstance(node, _UB_SCOPE) and getattr(node, "name", None):
+            out.append(node.name)
+    return out
+
+
+def _ub_loads(stmt):
+    skip = _ub_comp_locals(stmt)
+    out = []
+    for part in _ub_eager(stmt):
+        out += [(n.id, n.lineno) for n in _ub_subtree(part)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                and n.id not in skip]
+    return out
+
+
+def _ub_check(path):
+    """Имена, прочитанные РАНЬШЕ своей привязки на верхнем уровне функции."""
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    module = set()
+    for node in tree.body:
+        module |= set(_ub_binds(node))
+
+    bad = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = fn.args
+        known = {p.arg for p in args.args + args.kwonlyargs
+                 + list(getattr(args, "posonlyargs", []))} | module
+        if args.vararg:
+            known.add(args.vararg.arg)
+        if args.kwarg:
+            known.add(args.kwarg.arg)
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                known |= set(node.names)
+
+        # Привязки внутри ОДНОГО оператора верхнего уровня (тело цикла, ветки
+        # if) считаются привязанными на его индексе: на втором витке цикла
+        # имя уже есть, и ругаться тут было бы ложной тревогой.
+        first = {}
+        for i, stmt in enumerate(fn.body):
+            for name in _ub_binds(stmt):
+                first.setdefault(name, i)
+        for i, stmt in enumerate(fn.body):
+            for name, line in _ub_loads(stmt):
+                if name not in known and first.get(name, -1) > i:
+                    bad.append(f"{path}:{line} {fn.name}(): {name}")
+    return sorted(set(bad))
+
+
+def test_no_name_is_read_before_it_is_assigned():
+    """Ни один скрипт не читает локальное имя до его привязки.
+
+    Прогон 29.10: имя json-файла собиралось из runner.step на двадцать строк
+    ВЫШЕ создания runner. Синтаксис валиден, импорт проходит, pytest на имя
+    файла проходит -- а задание падает уже на кластере, подняв модель и банк.
+    Это второй раз, когда такую ошибку поймал не тест, а свип по GPU.
+
+    Проверка умеет врать только в одну сторону: о привязках внутри одного
+    оператора верхнего уровня она молчит, зато о порядке самих операторов --
+    нет.
+    """
+    targets = sorted(
+        glob.glob("*.py") + glob.glob("model/*.py") + glob.glob("probes/*.py")
+        + glob.glob("utils/*.py") + glob.glob("data/*.py"))
+    assert len(targets) > 20, f"нечего проверять: {targets}"
+
+    bad = []
+    for path in targets:
+        bad += _ub_check(path)
+    assert not bad, "имя читается до привязки:\n  " + "\n  ".join(bad)
+
+
+def test_the_name_order_check_catches_the_real_bug(tmp_path):
+    """Сама проверка ловит именно ту ошибку, из-за которой написана."""
+    broken = tmp_path / "broken.py"
+    broken.write_text(
+        "import os\n"
+        "def main():\n"
+        "    tag = 'x'\n"
+        "    out = os.environ.get('P', f'{tag}-s{runner.step}.json')\n"
+        "    runner = build()\n"
+        "    return out\n"
+        "def build():\n"
+        "    return 1\n", encoding="utf-8")
+    found = _ub_check(str(broken))
+    assert len(found) == 1 and "runner" in found[0], found
+
+    # И НЕ ругается на накопитель, который привязывается внутри цикла.
+    ok = tmp_path / "ok.py"
+    ok.write_text(
+        "def main(xs):\n"
+        "    for i, x in enumerate(xs):\n"
+        "        if i:\n"
+        "            acc += x\n"
+        "        else:\n"
+        "            acc = x\n"
+        "    return acc\n", encoding="utf-8")
+    assert _ub_check(str(ok)) == []
