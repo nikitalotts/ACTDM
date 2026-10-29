@@ -344,6 +344,7 @@ def main() -> None:
             for level in args.levels:
                 if level >= seq.shape[0]:
                     continue
+                args_within = args.within
                 r = analyse_within(seq, level, args.within)
                 if not r.get("clusters_used"):
                     print(f"  K = {level}: ни один кластер не набрал "
@@ -357,6 +358,17 @@ def main() -> None:
                 print(f"    Delta^2/(4 sigma^2): медиана {r['lhs_median']:.1f}, "
                       f"минимум {r['lhs_min']:.1f}  против ln K2 = {r['rhs']:.2f}"
                       f"  -> {'ВЫПОЛНЕНО' if ok else 'НЕ ВЫПОЛНЕНО'}")
+                # САМО ПО СЕБЕ «ВЫПОЛНЕНО» ЗДЕСЬ НИЧЕГО НЕ ЗНАЧИТ. Условие (2') -- порог,
+                # за которым пенальти хотя бы НАЧИНАЕТСЯ. Важна его величина, а она
+                # считается по (2) и может оказаться порядка единицы.
+                sub = args_within
+                rmed = sub * math.exp(-r["lhs_median"] * (sub - 1) / sub)
+                rmin = sub * math.exp(-r["lhs_min"] * (sub - 1) / sub)
+                print(f"    p(центроид)/p(мода) по (2): медиана {rmed:.2f}, "
+                      f"худший кластер {rmin:.2f}")
+                if rmed > 0.01:
+                    print(f"    -> плотность НЕ ОБЪЯСНЯЕТ обвал: центроид хуже моды "
+                          f"всего в {1/rmed:.1f} раз, а качество падает с 0.506 до 0.402")
 
 
 if __name__ == "__main__":
